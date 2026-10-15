@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Node & Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# Databases & local state
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Private storage & data artifacts (keep directory structure)
+/data/pdfs/*
+!/data/pdfs/.gitkeep
+/data/indexes/*
+!/data/indexes/.gitkeep
+/data/models/*
+!/data/models/.gitkeep
+/data/reports/*
+!/data/reports/.gitkeep
+
+# Environment variables & secrets
+.env
+.env.production
+.env.staging
+*.pem
+*.key
+
+# Model weights & large ML caches
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+.cache/
+hf_cache/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# Operating System
+.DS_Store
+Thumbs.db
+desktop.ini

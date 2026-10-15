@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # Line length
+    "E402",  # Module level import not at top (needed for sys.path.insert)
+    "E741",  # Ambiguous variable name
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/migrations/env.py" = ["F401", "E402"]
+"tests/backend/conftest.py" = ["E402"]
