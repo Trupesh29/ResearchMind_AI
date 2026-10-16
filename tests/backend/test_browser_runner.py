@@ -837,3 +837,153 @@ def test_suite_unrelated_process_and_attached_server_remain_alive(tmp_path):
             unrelated_proc.wait()
         backend_server.shutdown()
         frontend_server.shutdown()
+
+
+def _run_in_same_powershell_driver(
+    tmp_path: Path,
+    suite_args_string: str,
+    initial_val: str | None,
+) -> dict:
+    """Executes run_browser_suite.ps1 within a single parent PowerShell process
+
+    that establishes an initial VITE_BACKEND_URL and inspects it after execution.
+    """
+    driver_script = tmp_path / "env_driver.ps1"
+    result_file = tmp_path / "env_result.json"
+
+    val_snippet = (
+        f'$initialVal = "{initial_val}"\n[Environment]::SetEnvironmentVariable("VITE_BACKEND_URL", $initialVal, "Process")'
+        if initial_val is not None
+        else '[Environment]::SetEnvironmentVariable("VITE_BACKEND_URL", $null, "Process")'
+    )
+
+    driver_content = f"""
+{val_snippet}
+$before = [Environment]::GetEnvironmentVariable("VITE_BACKEND_URL", "Process")
+$caught = $null
+
+try {{
+    & '{SUITE_SCRIPT}' {suite_args_string}
+}} catch {{
+    $caught = $_.ToString()
+}}
+
+$after = [Environment]::GetEnvironmentVariable("VITE_BACKEND_URL", "Process")
+
+$res = [PSCustomObject]@{{
+    before = $before
+    after = $after
+    exitCode = $LASTEXITCODE
+    error = $caught
+}}
+
+$res | ConvertTo-Json -Compress | Set-Content -Path '{result_file}' -Encoding UTF8
+"""
+    driver_script.write_text(driver_content, encoding="utf-8")
+
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(driver_script),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    assert result_file.exists(), f"Driver script failed to generate result. Output: {proc.stdout} {proc.stderr}"
+    return json.loads(result_file.read_text(encoding="utf-8-sig"))
+
+
+@pytest.mark.parametrize("initial_val", ["http://127.0.0.1:18765", None])
+def test_suite_preserves_caller_environment_in_attach_mode(tmp_path, initial_val):
+    """Calling wrapper in -Attach mode must preserve the calling process's VITE_BACKEND_URL
+
+    whether it was pre-existing or absent.
+    """
+    res = _run_in_same_powershell_driver(
+        tmp_path,
+        "-Attach -BackendPort 0 -FrontendPort 0",
+        initial_val,
+    )
+    assert res["after"] == initial_val
+    assert "Attach mode failed" in (res.get("error") or "")
+
+
+@pytest.mark.parametrize("initial_val", ["http://127.0.0.1:18765", None])
+def test_suite_preserves_caller_environment_on_occupied_port_failure(tmp_path, initial_val):
+    """Early failure (such as occupied port collision) must preserve caller's VITE_BACKEND_URL."""
+    occupied_port = find_free_port()
+    other_port = find_free_port()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", occupied_port))
+        s.listen(1)
+
+        res = _run_in_same_powershell_driver(
+            tmp_path,
+            f"-BackendPort {occupied_port} -FrontendPort {other_port} -TimeoutSeconds 2",
+            initial_val,
+        )
+        assert res["after"] == initial_val
+        assert f"Port {occupied_port} is already occupied" in (res.get("error") or "") or res.get("exitCode") != 0
+
+
+@pytest.mark.parametrize("initial_val", ["http://127.0.0.1:18765", None])
+def test_suite_preserves_caller_environment_on_successful_execution(tmp_path, initial_val):
+    """Successful execution must restore caller's VITE_BACKEND_URL and clean up owned process trees."""
+    b_pid_file = tmp_path / "backend.pid"
+    f_pid_file = tmp_path / "frontend.pid"
+    b_port = find_free_port()
+    f_port = find_free_port()
+
+    server_helper = tmp_path / "disposable_server.py"
+    server_helper.write_text(
+        """
+import sys, os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+pid_file = sys.argv[1]
+port = int(sys.argv[2])
+mode = sys.argv[3]
+
+with open(pid_file, "w") as f:
+    f.write(str(os.getpid()))
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        if mode == "backend":
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status":"ready"}')
+        else:
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"OK")
+    def log_message(self, *args):
+        pass
+
+server = HTTPServer(("127.0.0.1", port), Handler)
+server.serve_forever()
+""",
+        encoding="utf-8",
+    )
+
+    args = (
+        f"-BackendPort {b_port} -FrontendPort {f_port} "
+        f"-BackendCommand \"& '{sys.executable}' '{server_helper}' '{b_pid_file}' {b_port} backend\" "
+        f"-FrontendCommand \"& '{sys.executable}' '{server_helper}' '{f_pid_file}' {f_port} frontend\" "
+        f'-RunnerCommand "powershell -NoProfile -Command exit 0" -TimeoutSeconds 5'
+    )
+
+    res = _run_in_same_powershell_driver(tmp_path, args, initial_val)
+    assert res["after"] == initial_val
+    assert res["exitCode"] == 0
+
+    assert b_pid_file.exists() and f_pid_file.exists()
+    b_pid = int(b_pid_file.read_text(encoding="utf-8").strip())
+    f_pid = int(f_pid_file.read_text(encoding="utf-8").strip())
+
+    assert not is_process_running(b_pid), f"Owned backend PID {b_pid} was not terminated on success"
+    assert not is_process_running(f_pid), f"Owned frontend PID {f_pid} was not terminated on success"

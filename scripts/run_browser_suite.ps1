@@ -67,7 +67,8 @@ function Stop-OwnedProcessTree([int]$targetPid) {
 
 $backendProc = $null
 $frontendProc = $null
-$prevBackendUrl = $null
+$envModified = $false
+$prevBackendUrl = [Environment]::GetEnvironmentVariable("VITE_BACKEND_URL", "Process")
 $exitCode = 1
 
 try {
@@ -102,8 +103,8 @@ try {
         }
 
         # Propagate backend URL to Vite development server
-        $prevBackendUrl = $env:VITE_BACKEND_URL
         $env:VITE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
+        $envModified = $true
 
         # 2. Launch Frontend
         Write-Host "Starting temporary frontend on http://127.0.0.1:$FrontendPort..." -ForegroundColor Cyan
@@ -175,11 +176,13 @@ try {
         Stop-OwnedProcessTree -targetPid $frontendProc.Id
     }
 
-    # Restore previous environment state
-    if ($null -ne $prevBackendUrl) {
-        $env:VITE_BACKEND_URL = $prevBackendUrl
-    } else {
-        [Environment]::SetEnvironmentVariable("VITE_BACKEND_URL", $null, "Process")
+    # Restore previous environment state if modified by this invocation
+    if ($envModified) {
+        if ($null -ne $prevBackendUrl) {
+            $env:VITE_BACKEND_URL = $prevBackendUrl
+        } else {
+            [Environment]::SetEnvironmentVariable("VITE_BACKEND_URL", $null, "Process")
+        }
     }
 }
 

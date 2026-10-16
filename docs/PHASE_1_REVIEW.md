@@ -112,10 +112,26 @@ The modal acceptance correction is verified by the passing mutation regressions.
 
 The nondefault backend proxy regression and strengthened PID-based lifecycle tests pass. Fresh checks: 75 backend/runner tests passed (37 deprecation warnings), nine frontend tests passed, and Python/frontend lint, formatting, TypeScript, and production build passed. No application code was changed in this review; no fresh full live-browser or ML/provider run was performed.
 
-### P2 - Environment cleanup clears untouched caller configuration
+### P2 - Environment cleanup clears untouched caller configuration [RESOLVED]
 
 `scripts/run_browser_suite.ps1` initializes `$prevBackendUrl` to null, captures the actual environment only after backend launch, then unconditionally restores/removes the variable in `finally`. Attach mode, occupied-port rejection, and early backend launch failure never reach the capture. Invoking the script from an existing PowerShell session therefore removes a pre-existing `VITE_BACKEND_URL` on those paths.
 
 Reproduced in a disposable shell: set `VITE_BACKEND_URL` to `http://127.0.0.1:18765`, call the wrapper with `-Attach -BackendPort 0 -FrontendPort 0` inside try/catch, then inspect the environment. The expected attach failure was caught, but the variable was empty afterward; no servers were started. This is a wrapper environment-preservation defect, not a normal application startup blocker.
 
-Capture the original value before all branches, or track whether this invocation changed it and restore only in that case. Add same-PowerShell-process regressions for attach, port conflict/early failure, and success with both an existing value and an initially absent variable. Child-process-only checks cannot detect mutation of the calling shell's environment.
+- **Remediation in `scripts/run_browser_suite.ps1`:**
+  - Captured original caller environment upfront before branching: `$prevBackendUrl = [Environment]::GetEnvironmentVariable("VITE_BACKEND_URL", "Process")`.
+  - Initialized `$envModified = $false`, setting it to `$true` only when `$env:VITE_BACKEND_URL` is explicitly modified before launching the frontend.
+  - In `finally`, wrapped environment restoration inside `if ($envModified)`: restores `$prevBackendUrl` if previously set, or deletes the variable if previously absent. If this invocation never modified the environment (e.g. Attach mode or early startup failure), the calling session's environment remains untouched.
+- **Regressions in `tests/backend/test_browser_runner.py`:**
+  - Implemented `_run_in_same_powershell_driver` executing `run_browser_suite.ps1` within the same PowerShell process that sets and inspects `VITE_BACKEND_URL`.
+  - Added 6 same-process regression tests covering pre-existing and initially absent values across all paths:
+    - `test_suite_preserves_caller_environment_in_attach_mode` (preserves existing and absent values).
+    - `test_suite_preserves_caller_environment_on_occupied_port_failure` (preserves existing and absent values on early port conflict).
+    - `test_suite_preserves_caller_environment_on_successful_execution` (restores existing and absent values on success and verifies owned process termination).
+
+### Fresh verification
+
+- 81 backend/runner tests passed with 37 deprecation warnings (43 core foundation + 38 runner & lifecycle tests).
+- Python lint and format checks passed (`ruff check`, `ruff format --check`).
+- `git diff --check` passed with zero whitespace or line-ending errors.
+- Zero orphaned processes or ports retained after test execution.
