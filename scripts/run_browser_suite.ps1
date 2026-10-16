@@ -67,6 +67,7 @@ function Stop-OwnedProcessTree([int]$targetPid) {
 
 $backendProc = $null
 $frontendProc = $null
+$prevBackendUrl = $null
 $exitCode = 1
 
 try {
@@ -90,7 +91,7 @@ try {
         # 1. Launch Backend
         Write-Host "Starting temporary backend on http://127.0.0.1:$BackendPort..." -ForegroundColor Cyan
         if ($BackendCommand) {
-            $backendProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $BackendCommand -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden
+            $backendProc = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $BackendCommand -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden
         } else {
             $backendProc = Start-Process -FilePath $UvicornExe -ArgumentList "backend.app.main:app", "--host", "127.0.0.1", "--port", "$BackendPort" -WorkingDirectory $ProjectRoot -PassThru -WindowStyle Hidden
         }
@@ -100,11 +101,15 @@ try {
             throw "Backend process exited prematurely with code $($backendProc.ExitCode)."
         }
 
+        # Propagate backend URL to Vite development server
+        $prevBackendUrl = $env:VITE_BACKEND_URL
+        $env:VITE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
+
         # 2. Launch Frontend
         Write-Host "Starting temporary frontend on http://127.0.0.1:$FrontendPort..." -ForegroundColor Cyan
         $frontendDir = Join-Path $ProjectRoot "frontend"
         if ($FrontendCommand) {
-            $frontendProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $FrontendCommand -WorkingDirectory $frontendDir -PassThru -WindowStyle Hidden
+            $frontendProc = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $FrontendCommand -WorkingDirectory $frontendDir -PassThru -WindowStyle Hidden
         } else {
             $frontendProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "$FrontendPort", "--strictPort" -WorkingDirectory $frontendDir -PassThru -WindowStyle Hidden
         }
@@ -168,6 +173,13 @@ try {
     }
     if ($frontendProc) {
         Stop-OwnedProcessTree -targetPid $frontendProc.Id
+    }
+
+    # Restore previous environment state
+    if ($null -ne $prevBackendUrl) {
+        $env:VITE_BACKEND_URL = $prevBackendUrl
+    } else {
+        [Environment]::SetEnvironmentVariable("VITE_BACKEND_URL", $null, "Process")
     }
 }
 

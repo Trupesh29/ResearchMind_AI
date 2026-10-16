@@ -30,7 +30,7 @@ Browser acceptance verification must not rely on passive logging or unconditiona
 
 ## Review evidence: current uncommitted working tree
 
-- Backend: 59 passed, 37 warnings with full database and storage isolation (including 16 dedicated unit/regression tests in `tests/backend/test_browser_runner.py` verifying that all failing acceptance conditions produce a failed verdict and nonzero exit code).
+- Backend: 75 passed, 37 warnings with full database and storage isolation (including 32 dedicated unit/regression tests in `tests/backend/test_browser_runner.py` verifying criteria failure conditions, modal ARIA/dialog contracts, dynamic proxy propagation, and owned PID tree lifecycle termination).
 - Dependency injection defect resolved: fixed `get_settings(request: Request = None)` and `get_db(request: Request = None)`. FastAPI now injects runtime `Request` instead of treating parameters as optional query inputs. OpenAPI schema confirmed to have zero `request` query parameters across all routes.
 - Integration regressions: verified sentinel `app.state.settings` reaches `/api/config/public`, sentinel `app.state.session_factory` bypasses a poisoned global factory on `/api/ready`, `app.state.settings` controls readiness storage and identity checks, normal defaults work without overrides, and state/overrides are restored cleanly.
 - Environment sensitivity resolved: `test_settings_defaults` isolated from caller environment via monkeypatch; explicit URL overrides tested separately.
@@ -58,3 +58,5 @@ Browser acceptance verification must not rely on passive logging or unconditiona
 7. [COMPLETED] Execute live Google Chrome browser verification suite; all 7 criteria passed; portable summary saved at `docs/browser_verification_summary.json` with screenshots ignored in `.gitignore`; Browser Acceptance Gate is CLOSED.
 8. [COMPLETED] Protect runner suite lifecycle in `scripts/run_browser_suite.ps1` with strict port collision checking, strict port binding in Vite (`strictPort: true`), tracked process tree cleanup via `taskkill.exe /PID $pid /T /F`, removal of broad OS/path sweeps, and explicit non-destructive `-Attach` mode.
 9. [COMPLETED] Enforce complete modal dialog & ARIA criteria in `scripts/run_browser_verification.py` (Escape closure, dialog role, aria-modal, trigger state transitions) with 10 dedicated regression tests.
+10. [COMPLETED] Propagate selected `-BackendPort` dynamically to Vite dev server via `VITE_BACKEND_URL` in `scripts/run_browser_suite.ps1` and `frontend/vite.config.ts`, verified by real HTTP proxy routing test.
+11. [COMPLETED] Strengthen process lifecycle tests with identifiable disposable PIDs and descendant trees, asserting termination of owned processes on startup failure, runner failure, and suite success, and verifying survival of attached servers and unrelated background processes.

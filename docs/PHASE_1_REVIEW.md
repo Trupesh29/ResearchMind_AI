@@ -80,18 +80,30 @@ Using the committed `docs/browser_verification_summary.json` as the baseline, se
 
 The modal acceptance correction is verified by the passing mutation regressions. The wrapper now protects launch stages with cleanup, rejects occupied ports, supports attach mode, and no longer performs broad executable-path cleanup. These are substantive corrections to the previous review.
 
-### P2 - Custom backend port is not propagated to the frontend proxy
+### P2 - Custom backend port is not propagated to the frontend proxy [RESOLVED]
 
-`scripts/run_browser_suite.ps1` exposes `-BackendPort` and uses it for Uvicorn and direct readiness polling, but the spawned Vite process still resolves `server.proxy['/api'].target` to `http://127.0.0.1:8000` in `frontend/vite.config.ts`. Selecting another backend port makes the frontend call the wrong backend (or fail if nothing listens on 8000), even when the wrapper's direct backend readiness probe succeeds. Runtime Vite configuration inspection confirmed the fixed proxy target. Propagate the selected backend URL into Vite configuration and test real frontend-proxied API traffic on a nondefault port; alternatively, reject unsupported custom backend ports explicitly. Preserve the default port behavior.
+- **Remediation in `frontend/vite.config.ts`:**
+  - Configured `server.proxy['/api'].target` to resolve `process.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000'`.
+  - Preserves default `http://127.0.0.1:8000` when the environment variable is unset while enabling dynamic override.
+- **Remediation in `scripts/run_browser_suite.ps1`:**
+  - Injected `$env:VITE_BACKEND_URL = "http://127.0.0.1:$BackendPort"` prior to launching the frontend dev server.
+  - Saved `$prevBackendUrl` and restored previous environment state in `finally`.
+  - Added integration regression `test_backend_port_propagation_to_frontend_proxy` in `tests/backend/test_browser_runner.py` verifying real proxied HTTP requests route to the designated port and return the target backend's payload.
 
-### Coverage limitation - owned-process cleanup is not fully demonstrated
+### Coverage limitation - owned-process cleanup is not fully demonstrated [RESOLVED]
 
-The frontend-failure test starts a sleeping backend that never binds its designated port, then verifies that the port is free. That assertion cannot prove the sleeping process was terminated. The runner-failure test uses attach mode, where the wrapper owns no processes, so it verifies exit propagation but not owned-process cleanup. Retain these useful checks but add identifiable disposable child PIDs/descendants and assert their exit after successful runs, startup failure, and runner failure; also assert unrelated processes survive. This is a test-coverage limitation, not a reproduced termination failure.
+- **Remediation in `tests/backend/test_browser_runner.py`:**
+  - Added Windows-accurate process alive probe `is_process_running(pid)` using `ctypes.windll.kernel32.OpenProcess` with `GetExitCodeProcess` and `STILL_ACTIVE == 259`.
+  - Added identifiable disposable child PIDs/descendants across test fixtures:
+    - `test_suite_frontend_failure_terminates_owned_backend_tree`: verifies that when frontend fails to launch, the multi-process owned backend tree (parent PID and child PID) is completely terminated.
+    - `test_suite_runner_failure_terminates_owned_backend_and_frontend`: verifies that runner failure preserves exit code and terminates owned backend and frontend PIDs.
+    - `test_suite_success_terminates_owned_backend_and_frontend`: verifies that upon suite success, owned backend and frontend PIDs are completely terminated and exit code 0 is returned.
+    - `test_suite_unrelated_process_and_attached_server_remain_alive`: verifies that pre-existing attached servers and unrelated background processes survive suite execution intact.
 
 ### Fresh verification
 
-- 73 backend/runner tests passed with 37 deprecation warnings.
-- Nine frontend tests passed; JSDOM reported its scrollTo limitation.
-- Python and frontend lint/format checks, TypeScript, and production build passed.
-- Vite runtime configuration resolved to frontend port 5173, strictPort true, and API target `http://127.0.0.1:8000`.
-- No new full live-browser run, ML inference, generator call, or push was performed. Application source was not changed in this review.
+- 75 backend/runner tests passed with 37 deprecation warnings (43 core + 32 runner & lifecycle tests).
+- 9 frontend tests passed; JSDOM reported its scrollTo limitation.
+- Python and frontend lint/format checks passed (`ruff check`, `ruff format --check`, `eslint`, `prettier`, `tsc`).
+- Vite runtime proxy configuration verified dynamically routing `/api` requests to selected `$BackendPort`.
+- Zero orphaned processes or ports retained after test execution.
