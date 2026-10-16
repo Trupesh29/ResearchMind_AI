@@ -4,7 +4,7 @@
     "base_url": "http://127.0.0.1:5173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-10-16T16:07:40Z",
+    "timestamp": "2026-10-16T16:24:03Z",
     "headless": true
   },
   "viewports": {},

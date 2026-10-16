@@ -8,7 +8,7 @@ This document records the evidence-based verification for **ResearchMind AI — 
 - **Review Commit Remediated:** `51e3071`
 - **Execution Date:** 2026-10-16
 - **Acceptance Status:** **SCOPED VERDICT: PASS (All Phase 1 Gates Satisfied; Live Generator Scoped to Week 4)**
-  - Automated Backend Tests (59 tests): **PASSED** (43 core foundation & isolation tests + 16 browser runner criteria regression tests)
+  - Automated Backend Tests (73 tests): **PASSED** (43 core foundation & isolation tests + 30 browser runner criteria & process lifecycle regression tests)
   - Automated Frontend Tests (9 tests): **PASSED**
   - Python Linters & Formatters (Ruff): **PASSED** (43 files formatted, 0 lint errors)
   - Frontend Linters & Formatters (ESLint, Prettier): **PASSED**
@@ -181,7 +181,15 @@ Command executed:
 - **Automated Acceptance Criteria Checked (7/7 PASSED):**
   1. `no_horizontal_overflow`: 0px overflow across 1440px desktop, 768px tablet (`scroll_width`: 768px), and 375px mobile (`scroll_width`: 375px).
   2. `routes_and_navigation`: Direct CTA navigation `/` → `/dashboard`, sidebar `/dashboard` → `/library`, popstate history back/forward, page reload persistence, and 404 recovery action ("Return to Dashboard" navigating to `/dashboard` with single semantic `<h1>`).
-  3. `mobile_drawer_accessibility`: `aria-expanded` toggle (`false` → `true` → `false`), initial focus on Close button (`aria-label="Close navigation"`), forward `Tab` and reverse `Shift+Tab` cyclic focus containment, background interaction blocking (hit-testing outside element returns modal backdrop), and `Escape` key dismissal with focus restoration to `#mobile-nav-trigger`.
+  3. `mobile_drawer_accessibility`: All 13 modal and ARIA criteria enforced:
+     - `aria-expanded` toggle (`false` → `true` → `false`) and `aria-controls="mobile-nav-drawer"`.
+     - Dialog semantics: `dialog_role="dialog"` and `aria_modal="true"`.
+     - Initial focus on Close button (`aria-label="Close navigation"`).
+     - Forward `Tab` and reverse `Shift+Tab` cyclic focus containment inside dialog.
+     - Background interaction blocking (hit-testing outside panel returns overlay backdrop).
+     - `Escape` key closes drawer (`drawer_closed_on_escape: true`) with focus restoration to `#mobile-nav-trigger`.
+     - Backdrop click dismissal (`backdrop_click_closes: true`).
+     - Explicit failure on any missing or empty drawer evidence.
   4. `reduced_motion_suppressed`: Emulating `prefers-reduced-motion: reduce` suppressed computed sample transition duration from `0.16s` to `0.00001s` (near-zero instant transition).
   5. `contrast_ratios`: WCAG relative luminance evaluation with ancestor background resolution (`getEffectiveBackgroundRgb`):
      - Heading on Canvas: `rgb(29, 29, 31)` on `rgb(245, 245, 247)` = **15.46:1** (Threshold: 4.5:1, PASS)
@@ -190,6 +198,13 @@ Command executed:
      - Primary button text: `rgb(255, 255, 255)` on `rgb(29, 29, 31)` = **16.83:1** (Threshold: 4.5:1, PASS)
   6. `api_states_and_recovery`: Online status `"Backend Connected · SQLite Ready"`, simulated network failure renders `.offline-banner` (`"Backend Connection Error: NETWORK_ERROR: Unable to connect to the ResearchMind API server..."`), and clicking `"Retry Connection"` successfully re-probes `/api/ready` and recovers.
   7. `clean_operation`: 0 unexpected console errors, 0 unexpected failed requests (simulated offline network test requests cleanly isolated without array clearing).
+- **Process Lifecycle & Ownership Safeguards:**
+  - Launch stages wrapped in `try ... finally` with strict port checking (`Test-PortListening`).
+  - Pre-existing listeners on ports 8000 and 5173 trigger immediate abort without killing foreign processes.
+  - Optional `-Attach` flag allows non-destructive verification against existing servers.
+  - Strict port binding configured in `frontend/vite.config.ts` (`server.strictPort = true`) and CLI `--strictPort`.
+  - Process tree termination targets only `$backendProc.Id` and `$frontendProc.Id` via `taskkill.exe /PID $pid /T /F` and CIM child search; broad OS-wide sweeps removed.
+  - Browser runner exit code preserved and returned directly.
 - **Artifacts & Evidence:**
   - Portable machine-readable summary: `docs/browser_verification_summary.json`
   - Screenshots directory: `artifacts/browser_verification/` (`.gitignore` protects binary images from git repository pollution)
@@ -206,8 +221,10 @@ Command executed:
 | **D. Documentation Integrity** | Previous reports claimed full verification and WCAG compliance despite browser blocker and unverified generator, and claimed unified request dependencies were complete before realizing dependency overrides were masking runtime injection failures. | Reconciled all gate statuses separately; corrected earlier claim regarding dependency injection completeness by identifying and fixing the Starlette `Request` type annotation defect; removed unsupported claims of visual WCAG compliance or live generator connectivity; accurately recorded observed test results. | Verification report and `decision.md` updated with strict factual statuses and real test executions. |
 | **E. Mobile Topbar Horizontal Overflow** | Live browser audit on 375px viewport revealed `window.scrollWidth` was 453px (78px horizontal overflow), violating mobile responsive design and causing unintended horizontal scrolling. | Adjusted `Topbar.tsx` with `minWidth: 0`, `flexShrink: 0`, and ellipsis overflow; added responsive CSS classes in `StatusPill.tsx` and media queries in `globals.css` to hide non-critical user name and secondary status sublabel on viewports ≤768px and ≤480px. | Re-verified in live Google Chrome at 375px viewport: `has_horizontal_overflow: false`, `scrollWidth: 375px` (0px overflow). |
 | **F. Heading Hierarchy on 404 Route** | 404 page rendered `<h2>` without an `<h1>`, violating single `<h1>` semantic hierarchy rule. | Changed heading in `NotFoundPage.tsx` to `<h1 style={{ fontSize: "20px", marginBottom: "8px" }}>Page Not Found</h1>`. | Verified via live browser DOM query: exactly one `<h1>` element present on `/non-existent-test-route`. |
-| **G. Runner False-Success Exit Code** | `scripts/run_browser_verification.py` dumped raw JSON without explicit acceptance criteria evaluation and exited `0` even if browser criteria failed or had hardcoded user environment paths. | Added `--chrome-path`, `--base-url`, `--output-dir`, and `--summary-path` CLI arguments; implemented `evaluate_acceptance()` enforcing 7 explicit criteria; returns exit code `0` on full pass or `1` on any failure; isolated simulated offline errors from unexpected errors; added 16 unit tests in `tests/backend/test_browser_runner.py`. | 16/16 runner tests pass; full live runner run returns exit code 0 with all 7 criteria true. |
+| **G. Runner False-Success Exit Code** | `scripts/run_browser_verification.py` dumped raw JSON without explicit acceptance criteria evaluation and exited `0` even if browser criteria failed or had hardcoded user environment paths. | Added `--chrome-path`, `--base-url`, `--output-dir`, and `--summary-path` CLI arguments; implemented `evaluate_acceptance()` enforcing 7 explicit criteria; returns exit code `0` on full pass or `1` on any failure; isolated simulated offline errors from unexpected errors; added unit tests in `tests/backend/test_browser_runner.py`. | 30 runner criteria and lifecycle tests pass; full live runner run returns exit code 0 with all 7 criteria true. |
 | **H. Low Contrast on Status Pill & Sunken Surfaces** | Text with `var(--text-tertiary)` (#86868b) on light surface (#f5f5f7) had contrast ratio ~3.1:1, failing WCAG AA (4.5:1 minimum). | Explicitly styled `StatusPill` with `var(--surface)` background and `var(--text-primary)` (15.5:1 contrast); updated sidebar footer and dashboard/library descriptions to `var(--text-secondary)` (#424245, 9.2:1 on canvas, 8.0:1 on sunken card). | Browser runner computed WCAG relative luminance verifies all ratios exceed 4.5:1 (ranging 9.2:1 to 16.8:1). |
+| **I. Wrapper Process Ownership and Port Lifecycle** | `run_browser_suite.ps1` started processes outside cleanup `try/finally`, polled fixed URLs that accepted pre-existing servers, allowed Vite port fallback, failed to terminate Node child processes when stopping `cmd.exe`, and used broad process-name/path sweeps that could terminate foreign project servers. | Protected all launch phases in `try/finally`; added port collision detection rejecting occupied ports; added `-Attach` mode; added strict port binding (`strictPort: true`); tracked process trees and terminated descendants cleanly using `taskkill.exe /PID $pid /T /F`; removed all broad sweeps; preserved test exit codes. | 4 process lifecycle tests in `test_browser_runner.py` verified port rejection without touching listeners, frontend failure backend cleanup, runner exit code preservation, and immunity of unrelated processes. |
+| **J. Modal Acceptance Evaluation Completeness** | `evaluate_acceptance()` in `run_browser_verification.py` omitted assertions for Escape closure (`drawer_closed_on_escape`), dialog role (`dialog_role="dialog"`), `aria-modal="true"`, and trigger state transitions, silently passing when these fields were invalid or missing. | Added strict enforcement for all 13 drawer criteria in `evaluate_acceptance()`; enforced `drawer_closed_on_escape is True`, `dialog_role == "dialog"`, `aria_modal == "true"`, `initial_aria_expanded == "false"`, `open_aria_expanded == "true"`, `escape_aria_expanded == "false"`, and `aria_controls == "mobile-nav-drawer"`; added explicit failure when `mobile_menu` is missing or empty. | 10 dedicated regression tests in `test_browser_runner.py` verifying all failure and mutation paths on committed summary fixture. |
 
 ---
 

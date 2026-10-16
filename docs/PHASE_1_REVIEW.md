@@ -46,3 +46,32 @@ Using the committed `docs/browser_verification_summary.json` as the baseline, se
 - Nine frontend tests passed; frontend lint, formatting, TypeScript, and production build passed. JSDOM emitted scrollTo-not-implemented diagnostics.
 - Acceptance mutation checks reproduced the three false-pass cases above.
 - No live browser suite, ML inference, provider call, or remote push was performed in this follow-up review.
+
+## Resolution of Follow-up Review Findings (Post-19397ec)
+
+### P1 - Wrapper process ownership and port lifecycle [RESOLVED]
+- **Remediation in `scripts/run_browser_suite.ps1`:**
+  - Entire launch and execution lifecycle is wrapped in a `try ... finally` block from the start.
+  - Added strict port collision guard (`Test-PortListening`): if ports 8000 or 5173 are occupied, the suite terminates immediately with an informative error rather than colliding with or killing pre-existing servers.
+  - Added explicit `-Attach` mode switch: connects to pre-existing running servers without terminating them upon suite completion.
+  - Configured strict port binding in `frontend/vite.config.ts` (`server.strictPort = true`) and CLI `--strictPort` argument.
+  - Implemented PID tree tracking and termination via `Stop-OwnedProcessTree`: uses Windows `taskkill.exe /PID $pid /T /F` followed by CIM child process inspection to terminate only the launched process trees (`$backendProc.Id` and `$frontendProc.Id`).
+  - Broad executable-name and project path process sweeps (`Get-Process -Name node, uvicorn ...`) were completely removed.
+  - Preserved the test runner's failure exit code in `$exitCode` without modification during cleanup.
+  - Verified with 4 disposable lifecycle regressions in `tests/backend/test_browser_runner.py` testing port collision, frontend launch failure backend cleanup, runner exit code preservation, and immunity of unrelated processes.
+
+### P2 - Modal acceptance evaluation completeness [RESOLVED]
+- **Remediation in `scripts/run_browser_verification.py`:**
+  - Enforced all 13 mobile modal criteria in `evaluate_acceptance()`:
+    - Escape closure: `drawer_closed_on_escape == True`.
+    - Dialog semantics: `dialog_role == "dialog"`, `aria_modal == "true"`.
+    - Trigger state transitions: `initial_aria_expanded == "false"`, `open_aria_expanded == "true"`, `escape_aria_expanded == "false"`, `aria_controls == "mobile-nav-drawer"`.
+    - Initial focus on close button, Tab and Shift+Tab containment, Escape focus restoration, backdrop click closure, and background interaction blocking.
+    - Missing or empty `mobile_menu` dictionary explicitly fails instead of passing silently.
+  - Added 10 regression tests in `tests/backend/test_browser_runner.py` covering every modal failure path and testing direct mutations of `docs/browser_verification_summary.json`.
+
+### Verification Status After Remediation
+- Backend tests: 73 passed (43 core foundation + 30 runner criteria & lifecycle tests), 0 failures.
+- Frontend tests: 9 passed, 0 failures.
+- Live Google Chrome run: All 7 acceptance criteria verified passing under host Chrome; summary saved to `docs/browser_verification_summary.json`.
+- Zero ports or orphaned processes retained post-run.

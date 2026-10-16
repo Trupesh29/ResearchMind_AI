@@ -74,29 +74,72 @@ def evaluate_acceptance(results: dict) -> tuple[bool, list[str], dict[str, bool]
         failures.append("404 recovery action did not navigate back to dashboard")
     criteria["routes_and_navigation"] = c2_passed
 
-    # 3. Mobile Navigation Drawer Accessibility
-    drawer = results.get("mobile_menu", {})
-    c3_passed = (
-        drawer.get("initial_focus_correct") is True
-        and drawer.get("tab_containment") is True
-        and drawer.get("shift_tab_containment") is True
-        and drawer.get("escape_focus_restoration") is True
-        and drawer.get("backdrop_click_closes") is True
-        and drawer.get("background_interaction_blocked") is True
-    )
-    if drawer.get("initial_focus_correct") is not True:
-        failures.append(f"Mobile drawer initial focus invalid: {drawer.get('initial_focus')}")
-    if drawer.get("tab_containment") is not True:
-        failures.append("Mobile drawer Tab focus containment failed (focus escaped dialog)")
-    if drawer.get("shift_tab_containment") is not True:
-        failures.append("Mobile drawer Shift+Tab focus containment failed (focus escaped dialog)")
-    if drawer.get("escape_focus_restoration") is not True:
-        failures.append("Mobile drawer Escape key did not restore focus to hamburger trigger button")
-    if drawer.get("backdrop_click_closes") is not True:
-        failures.append("Clicking mobile drawer backdrop did not close the drawer")
-    if drawer.get("background_interaction_blocked") is not True:
-        failures.append("Mobile drawer did not block background interactions while open")
-    criteria["mobile_drawer_accessibility"] = c3_passed
+    # 3. Mobile Navigation Drawer Accessibility & Dialog Semantics
+    drawer = results.get("mobile_menu")
+    if not isinstance(drawer, dict) or not drawer:
+        failures.append("Mobile drawer accessibility verification results missing or empty")
+        criteria["mobile_drawer_accessibility"] = False
+    else:
+        c3_checks = [
+            (
+                drawer.get("drawer_closed_on_escape") is True,
+                "Mobile drawer did not close when Escape key was pressed",
+            ),
+            (
+                drawer.get("dialog_role") == "dialog",
+                f"Mobile drawer role is not 'dialog': got '{drawer.get('dialog_role')}'",
+            ),
+            (
+                drawer.get("aria_modal") == "true",
+                f"Mobile drawer aria-modal is not 'true': got '{drawer.get('aria_modal')}'",
+            ),
+            (
+                drawer.get("initial_aria_expanded") == "false",
+                f"Mobile drawer trigger initial aria-expanded is not 'false': got '{drawer.get('initial_aria_expanded')}'",
+            ),
+            (
+                drawer.get("open_aria_expanded") == "true",
+                f"Mobile drawer trigger open aria-expanded is not 'true': got '{drawer.get('open_aria_expanded')}'",
+            ),
+            (
+                drawer.get("escape_aria_expanded") == "false",
+                f"Mobile drawer trigger post-escape aria-expanded is not 'false': got '{drawer.get('escape_aria_expanded')}'",
+            ),
+            (
+                drawer.get("aria_controls") == "mobile-nav-drawer",
+                f"Mobile drawer trigger aria-controls is not 'mobile-nav-drawer': got '{drawer.get('aria_controls')}'",
+            ),
+            (
+                drawer.get("initial_focus_correct") is True,
+                f"Mobile drawer initial focus invalid: {drawer.get('initial_focus')}",
+            ),
+            (
+                drawer.get("tab_containment") is True,
+                "Mobile drawer Tab focus containment failed (focus escaped dialog)",
+            ),
+            (
+                drawer.get("shift_tab_containment") is True,
+                "Mobile drawer Shift+Tab focus containment failed (focus escaped dialog)",
+            ),
+            (
+                drawer.get("escape_focus_restoration") is True,
+                "Mobile drawer Escape key did not restore focus to hamburger trigger button",
+            ),
+            (
+                drawer.get("backdrop_click_closes") is True,
+                "Clicking mobile drawer backdrop did not close the drawer",
+            ),
+            (
+                drawer.get("background_interaction_blocked") is True,
+                "Mobile drawer did not block background interactions while open",
+            ),
+        ]
+        c3_passed = True
+        for passed, msg in c3_checks:
+            if not passed:
+                c3_passed = False
+                failures.append(msg)
+        criteria["mobile_drawer_accessibility"] = c3_passed
 
     # 4. Reduced Motion Suppression
     motion = results.get("reduced_motion", {})
