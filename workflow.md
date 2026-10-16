@@ -2,16 +2,16 @@
 
 ## Purpose
 
-Guide implementation and review with less redundant agent context, while preserving correctness. This is a development-agent workflow, not application runtime functionality. Read `decision.md` for decisions and remaining Phase 1 gates.
+Guide implementation and review with less redundant agent context, while preserving correctness. This is a development-agent workflow, not application runtime functionality. Read `decision.md` for current scope and `docs/PHASE_2_PROMPT.md` for the Week 1 Phase 2 handoff.
 
 ## 1. Establish scope
 
-Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. For the current corrective pass, limit changes to demonstrated Phase 1 issues, affected tests, and documentation; do not build Phase 2 or push changes.
+Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 1 Phase 2: workspace CRUD, safe PDF upload/storage, library search/list/delete, original PDF viewing, related tests, and documentation. Preserve Phase 1 behavior and defer ingestion, retrieval, and analysis to their scheduled weeks. Do not push changes.
 
 Gravitas policy equivalent:
 
 ```json
-{"planning":"compact","context_depth":"dependency","verification_depth":"impact","delegation":"none","reason_codes":["phase-1-review","database-and-settings-boundaries"]}
+{"planning":"compact","context_depth":"dependency","verification_depth":"impact","delegation":"none","reason_codes":["phase-2-library","database-and-file-lifecycle"]}
 ```
 
 This is a documented policy choice, not evidence that Gravitas CLI/hooks ran.
@@ -66,6 +66,6 @@ Inspect each exit code separately. Browser checks cover 1440, 768, and 375 pixel
 
 Commit policy (user instruction, 2026-10-16): after reviewing and checking task changes, create a local Git commit. Do not push. A commit records a checkpoint, not proof of acceptance; document unresolved findings and distinguish them from passing checks. Review the staged files and exclude secrets, generated runtime data, and unrelated changes. Do not create empty commits when nothing changed.
 
-Update `decision.md` only for actual decisions or changed evidence. Update `docs/PHASE_1_VERIFICATION.md` with commands, outcomes, warnings, and unresolved gates. Distinguish static checks, tests, live application, browser, clean setup, ML, and generator results. Do not copy old timings or outputs as new evidence.
+Update `decision.md` only for actual decisions or changed evidence. Record Phase 2 commands, outcomes, warnings, and unresolved gates in `docs/PHASE_2_VERIFICATION.md`; retain Phase 1 reports as historical evidence. Distinguish static checks, tests, live application, browser, clean setup, ML, and generator results. Do not copy old timings or outputs as new evidence.
 
-End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed Phase 1 acceptance criteria.
+End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.

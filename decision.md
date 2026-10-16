@@ -1,10 +1,12 @@
 # ResearchMind AI decisions
 
-Updated: 2026-10-16. Scope: Week 1 Phase 1 review and agent workflow.
+Updated: 2026-10-16. Scope: Week 1 Phase 2 handoff and agent workflow.
 
 ## D001 - Phase boundaries
 
-Retain the two-phase Week 1 plan. Phase 1 supplies project foundation and app shell; Phase 2 supplies workspace and PDF library lifecycle. The latest changes improve Phase 1 but do not yet satisfy all acceptance gates. Do not begin Phase 2 as part of the remaining correction task.
+Retain the two-phase Week 1 plan. Phase 1 supplies project foundation and app shell; Phase 2 supplies workspace and PDF library lifecycle. The final Phase 1 wrapper finding was accepted in the review of `b084a3f`, recorded in `24eadea`. The user has now authorized moving to Week 1 Phase 2. Follow `docs/PHASE_2_PROMPT.md` for the implementation handoff. This is distinct from ROADMAP.md Phase 2 (Week 2 ingestion).
+
+Phase 2 uploads remain `uploaded`; extraction, indexing, and processing jobs belong to later weeks. Reconcile the API specification's eventual background-job promise with this explicit incremental scope before implementing. Preserve its batch response shape and document the temporary behavior. Original PDF viewing is available before processing; analysis readiness is not implied.
 
 ## D002 - Gravitas is agent guidance
 
@@ -28,7 +30,7 @@ Passing unit tests/builds does not establish browser accessibility, clean-instal
 
 Browser acceptance verification must not rely on passive logging or unconditional success messages. The browser runner (`scripts/run_browser_verification.py`) must evaluate explicit acceptance criteria, fail with a nonzero exit code on any violation, and preserve diagnostic JSON and screenshots on failure. Simulated network faults must be recorded separately from unexpected runtime errors. The runner must support configurable arguments (`--chrome-path`, `--base-url`, `--output-dir`, `--summary-path`, `--no-headless`) and environment variables, with screenshots kept out of Git via `.gitignore`. Claims of accessibility must be backed by actual measurements (e.g. WCAG contrast ratios, active CSS animation/transition suppression under reduced motion, modal background interaction blocking, and Escape focus restoration) rather than assumptions or emulated queries alone.
 
-## Review evidence: current uncommitted working tree
+## Historical Phase 1 review evidence (before final wrapper correction)
 
 - Backend: 75 passed, 37 warnings with full database and storage isolation (including 32 dedicated unit/regression tests in `tests/backend/test_browser_runner.py` verifying criteria failure conditions, modal ARIA/dialog contracts, dynamic proxy propagation, and owned PID tree lifecycle termination).
 - Dependency injection defect resolved: fixed `get_settings(request: Request = None)` and `get_db(request: Request = None)`. FastAPI now injects runtime `Request` instead of treating parameters as optional query inputs. OpenAPI schema confirmed to have zero `request` query parameters across all routes.
