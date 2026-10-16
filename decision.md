@@ -24,26 +24,35 @@ Application lifespan, readiness, public configuration, identity/bootstrap, and d
 
 Passing unit tests/builds does not establish browser accessibility, clean-install reproducibility, ML inference, or generator connectivity. Keep those statuses separate. No hosted provider or spending budget is approved by this review. Generator live connectivity remains unverified in this review (mock mode active). Browser acceptance is verified via live Google Chrome automation.
 
+## D006 - Browser acceptance enforcement and reproducibility
+
+Browser acceptance verification must not rely on passive logging or unconditional success messages. The browser runner (`scripts/run_browser_verification.py`) must evaluate explicit acceptance criteria, fail with a nonzero exit code on any violation, and preserve diagnostic JSON and screenshots on failure. Simulated network faults must be recorded separately from unexpected runtime errors. The runner must support configurable arguments (`--chrome-path`, `--base-url`, `--output-dir`, `--summary-path`, `--no-headless`) and environment variables, with screenshots kept out of Git via `.gitignore`. Claims of accessibility must be backed by actual measurements (e.g. WCAG contrast ratios, active CSS animation/transition suppression under reduced motion, modal background interaction blocking, and Escape focus restoration) rather than assumptions or emulated queries alone.
+
 ## Review evidence: current uncommitted working tree
 
-- Backend: 43 passed, 37 warnings with full database and storage isolation (executed against real `get_settings` and `get_db` without dependency overrides).
+- Backend: 59 passed, 37 warnings with full database and storage isolation (including 16 dedicated unit/regression tests in `tests/backend/test_browser_runner.py` verifying that all failing acceptance conditions produce a failed verdict and nonzero exit code).
 - Dependency injection defect resolved: fixed `get_settings(request: Request = None)` and `get_db(request: Request = None)`. FastAPI now injects runtime `Request` instead of treating parameters as optional query inputs. OpenAPI schema confirmed to have zero `request` query parameters across all routes.
-- Integration regressions: added `tests/backend/test_dependency_injection.py` verifying sentinel `app.state.settings` reaches `/api/config/public`, sentinel `app.state.session_factory` bypasses a poisoned global factory on `/api/ready`, `app.state.settings` controls readiness storage and identity checks, normal defaults work without overrides, and state/overrides are restored cleanly.
+- Integration regressions: verified sentinel `app.state.settings` reaches `/api/config/public`, sentinel `app.state.session_factory` bypasses a poisoned global factory on `/api/ready`, `app.state.settings` controls readiness storage and identity checks, normal defaults work without overrides, and state/overrides are restored cleanly.
 - Environment sensitivity resolved: `test_settings_defaults` isolated from caller environment via monkeypatch; explicit URL overrides tested separately.
 - Frontend: 9 tests passed; lint (`eslint`), formatting (`prettier`), typecheck (`tsc`), and production build (`vite build`) passed with zero errors.
-- Python: Ruff lint passed; format check reported 41 files already formatted.
+- Python: Ruff lint passed; format check reported 43 files already formatted.
 - Readiness migration checks: deep revision comparison implemented covering `up_to_date`, `outdated`, `empty`, `absent`, and `unknown` states; pending migrations return HTTP 503 without mutating database.
 - Schema comparison: `papers.status` aligned with `server_default="uploaded"`; Alembic regression check tests all differences (`compare_type=True`, `compare_server_default=True`) with 0 diffs.
 - Populated database upgrade: verified upgrade from `0001` to `head` (`0002`) preserves existing records and enforces newly added check constraints on subsequent inserts.
-- Browser Acceptance Gate CLOSED: Automated live browser verification executed via host Google Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe`) driven by Playwright (`F:\dev\apps\scrapling\Scripts\python.exe`). Verified routes (`/`, `/dashboard`, `/library`, `/non-existent-test-route`), viewports (1440x900 desktop, 768x1024 tablet, 375x812 mobile), drawer focus trap & Escape restoration, navigation & popstate history, offline banner & recovery, visible focus dual rings, reduced motion, and 0 console errors / failed assets.
-- Responsive defect remediated: Fixed mobile horizontal overflow on 375px viewport (`scrollWidth` was 453px due to unconstrained topbar flex elements); adjusted `Topbar.tsx`, `StatusPill.tsx`, and `globals.css` with responsive hiding/truncation, reducing overflow to 0px. Fixed heading hierarchy on 404 page (`<h1>`).
-- Generator status: offline development mode; live provider connectivity unverified (no external API key or spend approved).
+- Browser Acceptance Gate CLOSED & ENFORCED: Automated live browser verification executed via host Google Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe`) driven by Playwright (`F:\dev\apps\scrapling\Scripts\python.exe`) and orchestrated via `scripts/run_browser_suite.ps1`.
+  - All 7 acceptance criteria verified and passed: `no_horizontal_overflow` (0px overflow on 768px tablet and 375px mobile), `routes_and_navigation` (landing, dashboard, library, 404 route + recovery button navigation to dashboard), `mobile_drawer_accessibility` (initial focus close button, Tab and Shift+Tab containment, Escape focus restoration, backdrop click closes, background interaction blocked), `reduced_motion_suppressed` (0.00001s transition duration under `prefers-reduced-motion: reduce` vs 0.16s normal), `contrast_ratios` (heading 15.46:1, body text 9.2:1, status pill 15.46:1, button 16.83:1 — all $\ge 4.5:1$), `api_states_and_recovery` (connected status, offline alert banner on simulated failure, clean recovery on retry), and `clean_operation` (0 unexpected console errors, 0 unexpected failed requests).
+- Defect remediations:
+  - Mobile horizontal overflow on 375px viewport fixed in `Topbar.tsx`, `StatusPill.tsx`, and `globals.css` (reduced to 0px).
+  - Heading hierarchy on 404 page fixed in `NotFoundPage.tsx` (`<h1>`).
+  - Text contrast on status pill and body/footer text fixed in `StatusPill.tsx`, `Sidebar.tsx`, `DashboardPage.tsx`, and `LibraryPage.tsx` using `--text-secondary` and `--text-primary` (all $\ge 9.2:1$, exceeding WCAG AA 4.5:1).
+- Generator status: offline development mode; live provider connectivity unverified (no external API key or spend approved; scheduled for Week 4).
 
 ## Status of corrections
 
 1. [COMPLETED] Check actual migration head(s) in readiness and cover old/empty/unknown revisions.
-2. [COMPLETED] Fix FastAPI dependency injection signatures (`request: Request = None`) in `get_settings` and `get_db`; remove masking `app.dependency_overrides` from test client; add 5 dedicated integration regressions covering app.state overrides, poisoned global factory bypass, OpenAPI parameters, readiness storage/identity checks, and default fallbacks.
+2. [COMPLETED] Fix FastAPI dependency injection signatures (`request: Request = None`) in `get_settings` and `get_db`; remove masking `app.dependency_overrides` from test client; add dedicated integration regressions.
 3. [COMPLETED] Unify effective settings/session access and fully restore test overrides; isolate default-settings tests from caller environment; enforce full recursive storage directory snapshot guard.
 4. [COMPLETED] Align ORM server defaults and compare all supported schema changes; explicitly test constraints and data-preserving upgrades.
-5. [COMPLETED] Correct `docs/PHASE_1_VERIFICATION.md` and `README.md` to accurately report all verification gates.
-6. [COMPLETED] Browser visual and interaction verification executed via native Google Chrome Playwright automation; mobile overflow defect fixed and verified; 8 screenshots captured; Browser Acceptance Gate is CLOSED.
+5. [COMPLETED] Strengthen browser runner (`scripts/run_browser_verification.py`) with explicit acceptance evaluation, configurable CLI flags, separate simulated network collections, lazy playwright import, and nonzero exit code on failure.
+6. [COMPLETED] Add 16 focused unit/regression tests in `tests/backend/test_browser_runner.py` verifying all failure conditions produce a failed verdict and nonzero exit code.
+7. [COMPLETED] Execute live Google Chrome browser verification suite; all 7 criteria passed; portable summary saved at `docs/browser_verification_summary.json` with screenshots ignored in `.gitignore`; Browser Acceptance Gate is CLOSED.

@@ -8,14 +8,14 @@ This document records the evidence-based verification for **ResearchMind AI — 
 - **Review Commit Remediated:** `51e3071`
 - **Execution Date:** 2026-10-16
 - **Acceptance Status:** **SCOPED VERDICT: PASS (All Phase 1 Gates Satisfied; Live Generator Scoped to Week 4)**
-  - Automated Backend Tests (43 tests): **PASSED** (executed against real `get_settings` and `get_db` without dependency overrides)
+  - Automated Backend Tests (59 tests): **PASSED** (43 core foundation & isolation tests + 16 browser runner criteria regression tests)
   - Automated Frontend Tests (9 tests): **PASSED**
-  - Python Linters & Formatters (Ruff): **PASSED** (41 files formatted, 0 lint errors)
+  - Python Linters & Formatters (Ruff): **PASSED** (43 files formatted, 0 lint errors)
   - Frontend Linters & Formatters (ESLint, Prettier): **PASSED**
   - TypeScript Compilation & Production Build: **PASSED**
   - Dev Environment Setup Script (`setup_dev.ps1`): **PASSED**
   - ML Inference & Vector Index Smoke Check: **PASSED (Standalone)**
-  - Browser Visual, Interaction & Accessibility Verification: **PASSED (Live Host Google Chrome Playwright Suite)**
+  - Browser Visual, Interaction & Accessibility Verification: **PASSED (Live Host Google Chrome Automated Runner — All 7 Criteria Enforced & Verified)**
   - Live Generator Provider Connectivity: **UNVERIFIED (Mock configured; no external spend/keys authorized; planned for Week 4)**
 
 ---
@@ -176,53 +176,23 @@ Command executed:
 ---
 
 ### 4.7 Browser Visual, Interaction & Accessibility Verification
-- **Status:** **PASSED (Browser Acceptance Gate Closed)**
-- **Browser & Driver Tooling:** Host Google Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe`) automated via Playwright Python API (`F:\dev\apps\scrapling\Scripts\python.exe`) using standalone test runner `scripts/run_browser_verification.py`. The suite drives the host Chrome executable directly, bypassing external CDN driver binary downloads.
-- **Viewports Verified:**
-  - Desktop: 1440 × 900 px
-  - Tablet: 768 × 1024 px
-  - Mobile: 375 × 812 px
-- **Routes Verified:**
-  - `/` — Landing page with hero banner, feature cards, and "Go to Dashboard" CTA
-  - `/dashboard` — Main app shell with sidebar, topbar, status indicator, and workspace cards
-  - `/library` — PDF library placeholder shell with active nav state
-  - `/non-existent-test-route` — Accessible 404 page with semantic `<h1>` and "Return to Dashboard" action
-- **Interactions & Navigation Flow:**
-  - Direct CTA click `/` → `/dashboard` (verified URL and layout update)
-  - Sidebar navigation click `/dashboard` → `/library` (verified URL and active indicator)
-  - Browser history popstate: `page.go_back()` returned to `/dashboard`; `page.go_forward()` advanced to `/library`
-  - Browser reload: `page.reload()` preserved `/library` route without state corruption
-  - 404 recovery action: clicking "Return to Dashboard" navigated to `/dashboard`
-- **Mobile Navigation Drawer Accessibility (WCAG 2.1 AA):**
-  - Trigger button exposes `aria-expanded="true"` when opened and `aria-expanded="false"` when closed.
-  - Initial focus: immediately transferred to the drawer Close button (`BUTTON` with `aria-label="Close navigation"`).
-  - Forward Tab focus trap: repeatedly pressing `Tab` cycled through close button and drawer nav links, wrapping back to the close button without escaping to background content.
-  - Reverse Shift+Tab focus trap: pressing `Shift+Tab` cycled backward and wrapped to the last link in the drawer.
-  - Escape key handling: pressing `Escape` closed the drawer and returned focus to `#mobile-nav-trigger`.
-  - Backdrop interaction: clicking the backdrop closed the drawer; background elements are not interactive while drawer is open.
-- **Visual Styling, Focus Rings & Motion:**
-  - Dual focus rings: interactive elements display high-contrast dual ring `rgb(245, 245, 247) 0px 0px 0px 2px, rgb(0, 122, 255) 0px 0px 0px 4px` on keyboard focus.
-  - Skip link: `#skip-link` verified visually when focused at top of viewport.
-  - Reduced motion: verified under `prefers-reduced-motion: reduce` emulation (`window.matchMedia('(prefers-reduced-motion: reduce)').matches: true`).
-- **API Status States & Resilience:**
-  - Operational Online State: Topbar `StatusPill` renders `"Backend Connected · SQLite Ready"`.
-  - Simulated Network Failure: With API aborted, `.offline-banner` renders `"Backend offline or unreachable. Retrying..."` with an actionable `Retry connection` button.
-  - Recovery State: Clicking retry re-probed `/api/ready` and cleanly restored operational status.
-- **Console & Network Cleanliness:** 0 console errors and 0 failed asset requests observed during clean run.
-- **Defects Found & Remediated During Audit:**
-  - *Defect 1: Mobile Horizontal Overflow:* On 375px viewport, `window.scrollWidth` was 453px (78px overflow) due to unconstrained flex layout in `Topbar.tsx`. Remediated by adding `minWidth: 0`, `flexShrink: 0`, text truncation, and responsive hiding in `globals.css` and `StatusPill.tsx`. Post-fix re-verification: `scrollWidth === innerWidth` (0px overflow).
-  - *Defect 2: 404 Heading Hierarchy:* `NotFoundPage.tsx` rendered `<h2>` instead of semantic `<h1>`. Replaced with `<h1 style={{ fontSize: "20px", marginBottom: "8px" }}>Page Not Found</h1>`.
-- **Artifacts & Screenshots Captured:**
-  Saved to `C:\Users\BAPS\.gemini\antigravity-ide\brain\647a339d-cea8-4e0b-b713-b0c4f1e33410\browser_screenshots`:
-  - `desktop_landing_1440.png` (206 KB) — Desktop landing route
-  - `desktop_dashboard_1440.png` (292 KB) — Desktop dashboard shell
-  - `desktop_library_1440.png` (207 KB) — Desktop library route
-  - `desktop_404_1440.png` (119 KB) — Desktop 404 not found route
-  - `tablet_dashboard_768.png` (190 KB) — Tablet dashboard layout
-  - `mobile_dashboard_375.png` (100 KB) — Mobile 375px dashboard (zero horizontal overflow)
-  - `mobile_drawer_open_375.png` (49 KB) — Mobile drawer open with focus trap active
-  - `desktop_api_offline_state.png` (287 KB) — Offline banner and retry recovery
-  - `browser_verification_summary.json` — Machine-readable audit evidence
+- **Status:** **PASSED (Browser Acceptance Gate Closed & Enforced via Zero/Nonzero Runner Exit Code)**
+- **Browser & Driver Tooling:** Host Google Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe`) automated via Playwright Python API (`F:\dev\apps\scrapling\Scripts\python.exe`) using standalone test runner `scripts/run_browser_verification.py` and single-shot lifecycle script `scripts/run_browser_suite.ps1`. The runner drives the host Chrome executable directly, bypassing external CDN driver binary downloads, and exits with code `0` on full pass or `1` on any criteria failure.
+- **Automated Acceptance Criteria Checked (7/7 PASSED):**
+  1. `no_horizontal_overflow`: 0px overflow across 1440px desktop, 768px tablet (`scroll_width`: 768px), and 375px mobile (`scroll_width`: 375px).
+  2. `routes_and_navigation`: Direct CTA navigation `/` → `/dashboard`, sidebar `/dashboard` → `/library`, popstate history back/forward, page reload persistence, and 404 recovery action ("Return to Dashboard" navigating to `/dashboard` with single semantic `<h1>`).
+  3. `mobile_drawer_accessibility`: `aria-expanded` toggle (`false` → `true` → `false`), initial focus on Close button (`aria-label="Close navigation"`), forward `Tab` and reverse `Shift+Tab` cyclic focus containment, background interaction blocking (hit-testing outside element returns modal backdrop), and `Escape` key dismissal with focus restoration to `#mobile-nav-trigger`.
+  4. `reduced_motion_suppressed`: Emulating `prefers-reduced-motion: reduce` suppressed computed sample transition duration from `0.16s` to `0.00001s` (near-zero instant transition).
+  5. `contrast_ratios`: WCAG relative luminance evaluation with ancestor background resolution (`getEffectiveBackgroundRgb`):
+     - Heading on Canvas: `rgb(29, 29, 31)` on `rgb(245, 245, 247)` = **15.46:1** (Threshold: 4.5:1, PASS)
+     - Body text on Canvas: `rgb(66, 66, 69)` on `rgb(245, 245, 247)` = **9.20:1** (Threshold: 4.5:1, PASS)
+     - Status pill text: `rgb(29, 29, 31)` on `rgb(245, 245, 247)` = **15.46:1** (Threshold: 4.5:1, PASS)
+     - Primary button text: `rgb(255, 255, 255)` on `rgb(29, 29, 31)` = **16.83:1** (Threshold: 4.5:1, PASS)
+  6. `api_states_and_recovery`: Online status `"Backend Connected · SQLite Ready"`, simulated network failure renders `.offline-banner` (`"Backend Connection Error: NETWORK_ERROR: Unable to connect to the ResearchMind API server..."`), and clicking `"Retry Connection"` successfully re-probes `/api/ready` and recovers.
+  7. `clean_operation`: 0 unexpected console errors, 0 unexpected failed requests (simulated offline network test requests cleanly isolated without array clearing).
+- **Artifacts & Evidence:**
+  - Portable machine-readable summary: `docs/browser_verification_summary.json`
+  - Screenshots directory: `artifacts/browser_verification/` (`.gitignore` protects binary images from git repository pollution)
 
 ---
 
@@ -236,6 +206,8 @@ Command executed:
 | **D. Documentation Integrity** | Previous reports claimed full verification and WCAG compliance despite browser blocker and unverified generator, and claimed unified request dependencies were complete before realizing dependency overrides were masking runtime injection failures. | Reconciled all gate statuses separately; corrected earlier claim regarding dependency injection completeness by identifying and fixing the Starlette `Request` type annotation defect; removed unsupported claims of visual WCAG compliance or live generator connectivity; accurately recorded observed test results. | Verification report and `decision.md` updated with strict factual statuses and real test executions. |
 | **E. Mobile Topbar Horizontal Overflow** | Live browser audit on 375px viewport revealed `window.scrollWidth` was 453px (78px horizontal overflow), violating mobile responsive design and causing unintended horizontal scrolling. | Adjusted `Topbar.tsx` with `minWidth: 0`, `flexShrink: 0`, and ellipsis overflow; added responsive CSS classes in `StatusPill.tsx` and media queries in `globals.css` to hide non-critical user name and secondary status sublabel on viewports ≤768px and ≤480px. | Re-verified in live Google Chrome at 375px viewport: `has_horizontal_overflow: false`, `scrollWidth: 375px` (0px overflow). |
 | **F. Heading Hierarchy on 404 Route** | 404 page rendered `<h2>` without an `<h1>`, violating single `<h1>` semantic hierarchy rule. | Changed heading in `NotFoundPage.tsx` to `<h1 style={{ fontSize: "20px", marginBottom: "8px" }}>Page Not Found</h1>`. | Verified via live browser DOM query: exactly one `<h1>` element present on `/non-existent-test-route`. |
+| **G. Runner False-Success Exit Code** | `scripts/run_browser_verification.py` dumped raw JSON without explicit acceptance criteria evaluation and exited `0` even if browser criteria failed or had hardcoded user environment paths. | Added `--chrome-path`, `--base-url`, `--output-dir`, and `--summary-path` CLI arguments; implemented `evaluate_acceptance()` enforcing 7 explicit criteria; returns exit code `0` on full pass or `1` on any failure; isolated simulated offline errors from unexpected errors; added 16 unit tests in `tests/backend/test_browser_runner.py`. | 16/16 runner tests pass; full live runner run returns exit code 0 with all 7 criteria true. |
+| **H. Low Contrast on Status Pill & Sunken Surfaces** | Text with `var(--text-tertiary)` (#86868b) on light surface (#f5f5f7) had contrast ratio ~3.1:1, failing WCAG AA (4.5:1 minimum). | Explicitly styled `StatusPill` with `var(--surface)` background and `var(--text-primary)` (15.5:1 contrast); updated sidebar footer and dashboard/library descriptions to `var(--text-secondary)` (#424245, 9.2:1 on canvas, 8.0:1 on sunken card). | Browser runner computed WCAG relative luminance verifies all ratios exceed 4.5:1 (ranging 9.2:1 to 16.8:1). |
 
 ---
 

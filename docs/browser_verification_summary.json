@@ -1,0 +1,145 @@
+{
+  "meta": {
+    "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "base_url": "http://127.0.0.1:5173",
+    "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
+    "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
+    "timestamp": "2026-10-16T16:07:40Z",
+    "headless": true
+  },
+  "viewports": {},
+  "routes": {
+    "landing": {
+      "title": "ResearchMind AI \u2014 Universal Research Document Analyzer",
+      "status_pill": "Backend Connected\u00b7 SQLite Ready",
+      "active_nav": "Home"
+    },
+    "dashboard": {
+      "heading": "Workspace Dashboard",
+      "cards_count": 6
+    },
+    "library": {
+      "heading": "Research Paper Library",
+      "empty_state_present": true
+    },
+    "not_found": {
+      "heading": "Page Not Found",
+      "h1_count": 1,
+      "back_link_present": true,
+      "recovery_action_navigates_to_dashboard": true
+    }
+  },
+  "navigation_history": {
+    "button_nav_to_dashboard": true,
+    "sidebar_nav_to_library": true,
+    "history_back_success": true,
+    "history_forward_success": true,
+    "refresh_state_preserved": true
+  },
+  "mobile_menu": {
+    "initial_aria_expanded": "false",
+    "open_aria_expanded": "true",
+    "escape_aria_expanded": "false",
+    "aria_controls": "mobile-nav-drawer",
+    "dialog_role": "dialog",
+    "aria_modal": "true",
+    "initial_focus": {
+      "tag": "BUTTON",
+      "label": "Close navigation"
+    },
+    "initial_focus_correct": true,
+    "tab_containment": true,
+    "shift_tab_containment": true,
+    "background_interaction_blocked": true,
+    "drawer_closed_on_escape": true,
+    "escape_focus_restoration": true,
+    "backdrop_click_closes": true
+  },
+  "focus_management": {
+    "tab_focus_style": {
+      "tag": "A",
+      "boxShadow": "rgb(245, 245, 247) 0px 0px 0px 2px, rgb(0, 122, 255) 0px 0px 0px 4px",
+      "outline": "rgb(255, 255, 255) none 3px"
+    }
+  },
+  "overflow_checks": {
+    "tablet_768": {
+      "scroll_width": 768,
+      "inner_width": 768,
+      "has_horizontal_overflow": false
+    },
+    "mobile_375": {
+      "scroll_width": 375,
+      "inner_width": 375,
+      "has_horizontal_overflow": false
+    }
+  },
+  "reduced_motion": {
+    "prefers_reduced_motion_query_matches": true,
+    "normal_sample_transition_duration_s": 0.16,
+    "reduced_sample_transition_duration_s": 1e-05,
+    "animations_and_transitions_suppressed": true
+  },
+  "contrast_checks": {
+    "heading_on_canvas": {
+      "fg": "rgb(29, 29, 31)",
+      "bg": "rgb(245, 245, 247)",
+      "ratio": 15.46,
+      "threshold": 4.5,
+      "passes": true
+    },
+    "body_text_on_canvas": {
+      "fg": "rgb(66, 66, 69)",
+      "bg": "rgb(245, 245, 247)",
+      "ratio": 9.2,
+      "threshold": 4.5,
+      "passes": true
+    },
+    "status_pill_text": {
+      "fg": "rgb(29, 29, 31)",
+      "bg": "rgb(245, 245, 247)",
+      "ratio": 15.46,
+      "threshold": 4.5,
+      "passes": true
+    },
+    "primary_button_text": {
+      "fg": "rgb(255, 255, 255)",
+      "bg": "rgb(29, 29, 31)",
+      "ratio": 16.83,
+      "threshold": 4.5,
+      "passes": true
+    }
+  },
+  "api_states": {
+    "connected_status_text": "Backend Connected\u00b7 SQLite Ready",
+    "offline_banner_visible": true,
+    "offline_banner_text": "Backend Connection Error: NETWORK_ERROR: Unable to connect to the ResearchMind API server. Please ensure the backend is running.\nRetry Connection",
+    "recovered_status_text": "Backend Connected\u00b7 SQLite Ready",
+    "recovered_successfully": true
+  },
+  "unexpected_console_errors": [],
+  "unexpected_failed_requests": [],
+  "simulated_offline_requests": [
+    {
+      "url": "http://127.0.0.1:5173/api/ready",
+      "failure": "net::ERR_FAILED"
+    },
+    {
+      "url": "http://127.0.0.1:5173/api/config/public",
+      "failure": "net::ERR_FAILED"
+    }
+  ],
+  "acceptance_evaluation": {
+    "passed": true,
+    "failure_reasons": [],
+    "criteria": {
+      "no_horizontal_overflow": true,
+      "routes_and_navigation": true,
+      "mobile_drawer_accessibility": true,
+      "reduced_motion_suppressed": true,
+      "contrast_ratios": true,
+      "api_states_and_recovery": true,
+      "clean_operation": true
+    }
+  }
+}

@@ -29,7 +29,7 @@ export const LibraryPage: React.FC = () => {
             <h1 style={{ fontSize: "28px" }}>Research Paper Library</h1>
             <Badge variant="info">Phase 2 Lifecycle</Badge>
           </div>
-          <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
+          <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
             Manage research papers, view processing statuses, and inspect
             original PDF evidence.
           </p>

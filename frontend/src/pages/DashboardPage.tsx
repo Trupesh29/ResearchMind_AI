@@ -44,7 +44,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <h1 style={{ fontSize: "28px", marginBottom: "6px" }}>
             Workspace Dashboard
           </h1>
-          <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
+          <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
             Overview of uploaded research documents, processing statuses, and
             system foundation.
           </p>
@@ -243,7 +243,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <h2 style={{ fontSize: "18px", marginBottom: "4px" }}>
               System Architecture & Environment
             </h2>
-            <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
               Live runtime status verified via FastAPI <code>/api/ready</code>{" "}
               probe.
             </p>

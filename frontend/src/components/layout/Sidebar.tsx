@@ -256,7 +256,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <p
           style={{
             fontSize: "11px",
-            color: "var(--text-muted)",
+            color: "var(--text-secondary)",
             margin: 0,
             lineHeight: 1.4,
           }}

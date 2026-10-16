@@ -33,12 +33,13 @@ export const StatusPill: React.FC<StatusPillProps> = ({
         gap: "8px",
         padding: "6px 14px",
         borderRadius: "var(--r-pill)",
+        backgroundColor: "var(--surface)",
         background: "var(--surface-soft)",
         boxShadow: "var(--raise-1)",
         border: "1px solid rgba(255, 255, 255, 0.7)",
         fontSize: "12px",
         fontWeight: 500,
-        color: "var(--text-secondary)",
+        color: "var(--text-primary)",
       }}
       role="status"
       aria-live="polite"
