@@ -107,3 +107,15 @@ The modal acceptance correction is verified by the passing mutation regressions.
 - Python and frontend lint/format checks passed (`ruff check`, `ruff format --check`, `eslint`, `prettier`, `tsc`).
 - Vite runtime proxy configuration verified dynamically routing `/api` requests to selected `$BackendPort`.
 - Zero orphaned processes or ports retained after test execution.
+
+## Review of commit fe1112e
+
+The nondefault backend proxy regression and strengthened PID-based lifecycle tests pass. Fresh checks: 75 backend/runner tests passed (37 deprecation warnings), nine frontend tests passed, and Python/frontend lint, formatting, TypeScript, and production build passed. No application code was changed in this review; no fresh full live-browser or ML/provider run was performed.
+
+### P2 - Environment cleanup clears untouched caller configuration
+
+`scripts/run_browser_suite.ps1` initializes `$prevBackendUrl` to null, captures the actual environment only after backend launch, then unconditionally restores/removes the variable in `finally`. Attach mode, occupied-port rejection, and early backend launch failure never reach the capture. Invoking the script from an existing PowerShell session therefore removes a pre-existing `VITE_BACKEND_URL` on those paths.
+
+Reproduced in a disposable shell: set `VITE_BACKEND_URL` to `http://127.0.0.1:18765`, call the wrapper with `-Attach -BackendPort 0 -FrontendPort 0` inside try/catch, then inspect the environment. The expected attach failure was caught, but the variable was empty afterward; no servers were started. This is a wrapper environment-preservation defect, not a normal application startup blocker.
+
+Capture the original value before all branches, or track whether this invocation changed it and restore only in that case. Add same-PowerShell-process regressions for attach, port conflict/early failure, and success with both an existing value and an initially absent variable. Child-process-only checks cannot detect mutation of the calling shell's environment.
