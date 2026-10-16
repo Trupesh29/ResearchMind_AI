@@ -1,4 +1,4 @@
-import React from 'react';
+import React from "react";
 import {
   FileText,
   CheckCircle,
@@ -9,15 +9,15 @@ import {
   Cpu,
   HardDrive,
   Bot,
-} from 'lucide-react';
-import { Button } from '../components/ui/Button';
-import { Card } from '../components/ui/Card';
-import { Badge } from '../components/ui/Badge';
-import { ReadyResponse, PublicConfigResponse } from '../api/types';
+} from "lucide-react";
+import { Button } from "../components/ui/Button";
+import { Card } from "../components/ui/Card";
+import { Badge } from "../components/ui/Badge";
+import { ReadyResponse, PublicConfigResponse } from "../api/types";
 
 interface DashboardPageProps {
   onNavigateToLibrary: () => void;
-  readyStatus: 'online' | 'degraded' | 'offline' | 'loading';
+  readyStatus: "online" | "degraded" | "offline" | "loading";
   readyData: ReadyResponse | null;
   configData: PublicConfigResponse | null;
 }
@@ -29,13 +29,24 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   configData,
 }) => {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
       {/* Header Row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px' }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          flexWrap: "wrap",
+          gap: "16px",
+        }}
+      >
         <div>
-          <h1 style={{ fontSize: '28px', marginBottom: '6px' }}>Workspace Dashboard</h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>
-            Overview of uploaded research documents, processing statuses, and system foundation.
+          <h1 style={{ fontSize: "28px", marginBottom: "6px" }}>
+            Workspace Dashboard
+          </h1>
+          <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
+            Overview of uploaded research documents, processing statuses, and
+            system foundation.
           </p>
         </div>
 
@@ -48,195 +59,450 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       {/* Metric KPI Cards */}
       <div
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-          gap: '16px',
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+          gap: "16px",
         }}
       >
         <Card elevation={1}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>Total Papers</span>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "12px",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "var(--text-muted)",
+              }}
+            >
+              Total Papers
+            </span>
             <FileText size={18} color="var(--blue-action)" />
           </div>
-          <div className="tabular-nums" style={{ fontSize: '32px', fontWeight: 800, color: 'var(--text-primary)' }}>
-            0
+          <div
+            className="tabular-nums"
+            style={{
+              fontSize: "32px",
+              fontWeight: 800,
+              color: "var(--text-muted)",
+            }}
+          >
+            —
           </div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-            Awaiting Phase 2 uploads
+          <div
+            style={{
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              marginTop: "4px",
+            }}
+          >
+            Uploads activate in Phase 2
           </div>
         </Card>
 
         <Card elevation={1}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>Ready for Search</span>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "12px",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "var(--text-muted)",
+              }}
+            >
+              Ready for Search
+            </span>
             <CheckCircle size={18} color="var(--green-strong)" />
           </div>
-          <div className="tabular-nums" style={{ fontSize: '32px', fontWeight: 800, color: 'var(--text-primary)' }}>
-            0
+          <div
+            className="tabular-nums"
+            style={{
+              fontSize: "32px",
+              fontWeight: 800,
+              color: "var(--text-muted)",
+            }}
+          >
+            —
           </div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-            Indexed with FAISS & BM25
+          <div
+            style={{
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              marginTop: "4px",
+            }}
+          >
+            FAISS & BM25 indexing in Week 3
           </div>
         </Card>
 
         <Card elevation={1}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>In Processing</span>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "12px",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "var(--text-muted)",
+              }}
+            >
+              Extraction Jobs
+            </span>
             <Clock size={18} color="var(--orange-strong)" />
           </div>
-          <div className="tabular-nums" style={{ fontSize: '32px', fontWeight: 800, color: 'var(--text-primary)' }}>
-            0
+          <div
+            className="tabular-nums"
+            style={{
+              fontSize: "32px",
+              fontWeight: 800,
+              color: "var(--text-muted)",
+            }}
+          >
+            —
           </div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-            Active extraction jobs
+          <div
+            style={{
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              marginTop: "4px",
+            }}
+          >
+            PyMuPDF parsing in Week 2
           </div>
         </Card>
 
         <Card elevation={1}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>Quality Flagged</span>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "12px",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "var(--text-muted)",
+              }}
+            >
+              Quality Alerts
+            </span>
             <AlertTriangle size={18} color="var(--gray-500)" />
           </div>
-          <div className="tabular-nums" style={{ fontSize: '32px', fontWeight: 800, color: 'var(--text-primary)' }}>
-            0
+          <div
+            className="tabular-nums"
+            style={{
+              fontSize: "32px",
+              fontWeight: 800,
+              color: "var(--text-muted)",
+            }}
+          >
+            —
           </div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-            Scans / unread tables
+          <div
+            style={{
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              marginTop: "4px",
+            }}
+          >
+            Scan & table detection in Week 2
           </div>
         </Card>
       </div>
 
       {/* System Foundation & Environment Verification Panel */}
       <Card elevation={2}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "20px",
+          }}
+        >
           <div>
-            <h2 style={{ fontSize: '18px', marginBottom: '4px' }}>System Architecture & Environment</h2>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-              Live runtime status verified via FastAPI <code>/api/ready</code> probe.
+            <h2 style={{ fontSize: "18px", marginBottom: "4px" }}>
+              System Architecture & Environment
+            </h2>
+            <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+              Live runtime status verified via FastAPI <code>/api/ready</code>{" "}
+              probe.
             </p>
           </div>
           <Badge
-            variant={readyStatus === 'online' ? 'success' : readyStatus === 'loading' ? 'info' : 'error'}
+            variant={
+              readyStatus === "online"
+                ? "success"
+                : readyStatus === "loading"
+                  ? "info"
+                  : "error"
+            }
           >
-            {readyStatus === 'online' ? 'System Operational' : readyStatus === 'loading' ? 'Probing...' : 'Offline'}
+            {readyStatus === "online"
+              ? "System Operational"
+              : readyStatus === "loading"
+                ? "Probing..."
+                : "Offline / Degraded"}
           </Badge>
         </div>
 
         <div
           style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-            gap: '16px',
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: "16px",
           }}
         >
           {/* Database Block */}
           <div
             style={{
-              padding: '16px',
-              borderRadius: 'var(--r-lg)',
-              background: 'var(--surface-sunken)',
-              boxShadow: 'var(--inset-1)',
+              padding: "16px",
+              borderRadius: "var(--r-lg)",
+              background: "var(--surface-sunken)",
+              boxShadow: "var(--inset-1)",
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                marginBottom: "8px",
+              }}
+            >
               <Database size={16} color="var(--blue-action)" />
-              <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>Database</span>
+              <span
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
+                Database
+              </span>
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <div><strong>Engine:</strong> SQLite (WAL + Foreign Keys)</div>
-              <div><strong>Status:</strong> {readyData?.checks.database || 'Connecting...'}</div>
-              <div><strong>Migrations:</strong> Alembic Initial Schema</div>
+            <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+              <div>
+                <strong>Engine:</strong> SQLite (WAL + FK)
+              </div>
+              <div>
+                <strong>Status:</strong>{" "}
+                {readyData?.checks.database?.status === "healthy"
+                  ? "Operational & Schema Verified"
+                  : readyData?.checks.database?.message || "Connecting..."}
+              </div>
+              <div>
+                <strong>Schema:</strong> Alembic Head (Core & Constraints)
+              </div>
             </div>
           </div>
 
           {/* Storage Block */}
           <div
             style={{
-              padding: '16px',
-              borderRadius: 'var(--r-lg)',
-              background: 'var(--surface-sunken)',
-              boxShadow: 'var(--inset-1)',
+              padding: "16px",
+              borderRadius: "var(--r-lg)",
+              background: "var(--surface-sunken)",
+              boxShadow: "var(--inset-1)",
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                marginBottom: "8px",
+              }}
+            >
               <HardDrive size={16} color="var(--green-strong)" />
-              <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>Private Storage</span>
+              <span
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
+                Private Storage
+              </span>
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <div><strong>Directory:</strong> <code>data/</code></div>
-              <div><strong>Write Permission:</strong> {readyData?.checks.storage || 'Checking...'}</div>
-              <div><strong>Max Upload:</strong> {configData?.max_upload_mb || 25} MB</div>
+            <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+              <div>
+                <strong>Directory:</strong> <code>data/</code>
+              </div>
+              <div>
+                <strong>Write Status:</strong>{" "}
+                {readyData?.checks.storage?.status === "healthy"
+                  ? "Writable (Verified)"
+                  : readyData?.checks.storage?.message || "Checking..."}
+              </div>
+              <div>
+                <strong>Max Upload:</strong> {configData?.max_upload_mb || 25}{" "}
+                MB
+              </div>
             </div>
           </div>
 
           {/* Machine Learning Block */}
           <div
             style={{
-              padding: '16px',
-              borderRadius: 'var(--r-lg)',
-              background: 'var(--surface-sunken)',
-              boxShadow: 'var(--inset-1)',
+              padding: "16px",
+              borderRadius: "var(--r-lg)",
+              background: "var(--surface-sunken)",
+              boxShadow: "var(--inset-1)",
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                marginBottom: "8px",
+              }}
+            >
               <Cpu size={16} color="var(--orange-strong)" />
-              <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>ML Embedder</span>
+              <span
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
+                ML Embedder
+              </span>
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <div><strong>Model:</strong> all-MiniLM-L6-v2</div>
-              <div><strong>Dimension:</strong> 384 vectors</div>
-              <div><strong>FAISS:</strong> CPU Fallback Ready</div>
+            <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+              <div>
+                <strong>Model:</strong>{" "}
+                {configData?.embedding_model || "all-MiniLM-L6-v2"}
+              </div>
+              <div>
+                <strong>Dimension:</strong> 384 vectors
+              </div>
+              <div>
+                <strong>Runtime:</strong> Installed (Weights load on demand)
+              </div>
             </div>
           </div>
 
           {/* Generator Provider Block */}
           <div
             style={{
-              padding: '16px',
-              borderRadius: 'var(--r-lg)',
-              background: 'var(--surface-sunken)',
-              boxShadow: 'var(--inset-1)',
+              padding: "16px",
+              borderRadius: "var(--r-lg)",
+              background: "var(--surface-sunken)",
+              boxShadow: "var(--inset-1)",
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                marginBottom: "8px",
+              }}
+            >
               <Bot size={16} color="var(--ink)" />
-              <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>Generator</span>
+              <span
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
+                Generator
+              </span>
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <div><strong>Provider:</strong> {readyData?.checks.generator.provider || 'mock'}</div>
-              <div><strong>Model:</strong> {readyData?.checks.generator.model || 'gpt-4o-mini'}</div>
-              <div><strong>Status:</strong> {readyData?.checks.generator.status || 'Active'}</div>
+            <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+              <div>
+                <strong>Provider:</strong>{" "}
+                {readyData?.checks.generator?.provider ||
+                  configData?.generator_provider ||
+                  "mock"}
+              </div>
+              <div>
+                <strong>Model:</strong>{" "}
+                {readyData?.checks.generator?.model || "gpt-4o-mini"}
+              </div>
+              <div>
+                <strong>Status:</strong>{" "}
+                {readyData?.checks.generator?.message || "Unverified"}
+              </div>
             </div>
           </div>
         </div>
       </Card>
 
-      {/* Build Roadmap Progress Panel */}
+      {/* Workspace Readiness Overview Card */}
       <Card elevation={1}>
-        <h2 style={{ fontSize: '18px', marginBottom: '16px' }}>Build Sequence & Readiness</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--r-md)', background: 'var(--surface-soft)' }}>
+        <h2 style={{ fontSize: "18px", marginBottom: "16px" }}>
+          Workspace Foundation & Capabilities
+        </h2>
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "12px 16px",
+              borderRadius: "var(--r-md)",
+              background: "var(--surface-soft)",
+            }}
+          >
             <div>
-              <strong style={{ fontSize: '14px', color: 'var(--text-primary)' }}>Week 1 Phase 1: Project Foundation & App Shell</strong>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>FastAPI backend, SQLite/Alembic, models, Apple Modern design tokens, ML smoke check.</div>
+              <strong
+                style={{ fontSize: "14px", color: "var(--text-primary)" }}
+              >
+                Universal Document Architecture
+              </strong>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                Evidence-first universal PDF research analyzer. Full local
+                privacy and schema-enforced workspace isolation.
+              </div>
             </div>
-            <Badge variant="success">Completed</Badge>
+            <Badge variant="success">Foundation Ready</Badge>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--r-md)', background: 'var(--surface)' }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "12px 16px",
+              borderRadius: "var(--r-md)",
+              background: "var(--surface)",
+            }}
+          >
             <div>
-              <strong style={{ fontSize: '14px', color: 'var(--text-primary)' }}>Week 1 Phase 2: PDF Library & Multi-file Upload Lifecycle</strong>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Drag-and-drop uploads, %PDF- magic bytes check, SHA-256 deduplication, original PDF viewer.</div>
+              <strong
+                style={{ fontSize: "14px", color: "var(--text-primary)" }}
+              >
+                Document Library & Ingestion
+              </strong>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                Multi-file drag-and-drop, PDF validation, SHA-256 deduplication,
+                and viewer activate in Week 1 Phase 2.
+              </div>
             </div>
-            <Badge variant="info">Next Phase</Badge>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--r-md)', background: 'var(--surface)' }}>
-            <div>
-              <strong style={{ fontSize: '14px', color: 'var(--text-primary)' }}>Week 2: Universal Extraction & Quality Center</strong>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>PyMuPDF page block extraction, 200-token chunking, scan/table detection flags.</div>
-            </div>
-            <Badge variant="neutral">Upcoming</Badge>
+            <Badge variant="info">Phase 2 Target</Badge>
           </div>
         </div>
       </Card>

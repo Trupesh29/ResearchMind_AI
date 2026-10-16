@@ -1,5 +1,7 @@
-# Heavyweight ML & Vector Search dependencies
-torch>=2.2.0
-sentence-transformers>=3.0.0
-faiss-cpu>=1.8.0
-numpy>=1.26.0
+# Machine Learning & Embedding Dependencies (Separable from Core API)
+# CPU execution default:
+# For CUDA-enabled environments, install torch with:
+#   uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+torch==2.14.1
+sentence-transformers==6.1.0
+faiss-cpu==1.15.1

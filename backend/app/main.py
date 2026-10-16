@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.app.api.router import api_router
-from backend.app.core.config import settings
+from backend.app.core.config import ensure_data_directories, settings
 from backend.app.core.errors import (
     AppException,
     app_exception_handler,
@@ -31,25 +31,32 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan manager:
     - Runs on server startup and shutdown.
+    - Ensures storage directories exist.
     - Idempotently bootstraps the default local user.
     """
+    effective_settings = getattr(app.state, "settings", None) or settings
+    ensure_data_directories(effective_settings.DATA_DIR)
+
     logger.info(
-        f"Starting {settings.PROJECT_NAME} v{settings.VERSION} [{settings.APP_ENV}]"
+        f"Starting {effective_settings.PROJECT_NAME} v{effective_settings.VERSION} [{effective_settings.APP_ENV}]"
     )
-    logger.info(f"Storage directory: {settings.DATA_DIR.resolve()}")
-    logger.info(f"Database URL: {settings.DATABASE_URL}")
+    logger.info(f"Storage directory: {effective_settings.DATA_DIR.resolve()}")
+    logger.info(f"Database URL: {effective_settings.DATABASE_URL}")
 
     # Bootstrap local default user
+    session_factory = getattr(app.state, "session_factory", None) or SessionLocal
     try:
-        with SessionLocal() as db:
+        with session_factory() as db:
             user = bootstrap_default_user(db)
             logger.info(f"Active local user ready: {user.email}")
+            app.state.bootstrap_error = None
     except Exception as exc:
+        app.state.bootstrap_error = str(exc)
         logger.error(f"Error during local user bootstrap: {exc}")
 
     yield
 
-    logger.info(f"Shutting down {settings.PROJECT_NAME}")
+    logger.info(f"Shutting down {effective_settings.PROJECT_NAME}")
 
 
 app = FastAPI(

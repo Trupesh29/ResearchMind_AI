@@ -1,7 +1,22 @@
-# ResearchMind AI — Frontend Development Server Launcher
-$ErrorActionPreference = "Stop"
+# ResearchMind AI - Frontend Development Server Launcher
+param (
+    [string]$HostAddress = "127.0.0.1",
+    [int]$Port = 5173
+)
 
-Write-Host "Starting ResearchMind AI React/Vite Frontend on http://127.0.0.1:5173..." -ForegroundColor Cyan
-Push-Location frontend
-npm run dev -- --host 127.0.0.1 --port 5173
-Pop-Location
+$ErrorActionPreference = "Stop"
+$ProjectRoot = (Resolve-Path "$PSScriptRoot\..").Path
+$FrontendDir = Join-Path $ProjectRoot "frontend"
+
+Push-Location $FrontendDir
+try {
+    if (-not (Test-Path "node_modules")) {
+        Write-Error "Frontend dependencies not installed. Please run powershell -File scripts/setup_dev.ps1 first."
+        exit 1
+    }
+
+    Write-Host "Starting ResearchMind AI React/Vite Frontend on http://${HostAddress}:${Port}..." -ForegroundColor Cyan
+    npm run dev -- --host $HostAddress --port $Port
+} finally {
+    Pop-Location
+}

@@ -110,22 +110,26 @@ powershell -ExecutionPolicy Bypass -File scripts/start_frontend.ps1
 ```bash
 .venv/Scripts/pytest -v
 ```
-*Result: 18 passed tests covering config, SQLite foreign key enforcement, uniqueness constraints, cascade deletion, bootstrap idempotency, and error envelopes.*
+*Result: 36 passed tests covering config, SQLite foreign key enforcement, table check constraints, Alembic schema drift prevention (with server default and type checks), populated database migration upgrade, cascade deletion, bootstrap idempotency, deep migration-aware ready checks, and error envelopes.*
 
 ### 2. Run Python Linter & Formatter
 ```bash
-.venv/Scripts/ruff check backend tests scripts
+.venv/Scripts/ruff check .
+.venv/Scripts/ruff format --check .
 ```
-*Result: All checks passed with 0 errors.*
+*Result: All checks passed with 0 errors and all files correctly formatted.*
 
-### 3. Run Frontend Typecheck & Build
+### 3. Run Frontend Automated Tests, Linter, Formatter & Build
 ```bash
 cd frontend
+npm test
+npm run lint
+npm run format:check
 npm run typecheck
 npm run build
 cd ..
 ```
-*Result: Clean TypeScript compilation and Vite production bundle generated.*
+*Result: 9 tests passed across 3 test suites with Vitest, clean ESLint and Prettier checks, zero TypeScript errors, and production bundle generated.*
 
 ### 4. Run Machine Learning & Vector Search Smoke Check
 ```bash

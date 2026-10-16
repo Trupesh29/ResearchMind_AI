@@ -46,9 +46,7 @@ def main() -> int:
             res_gpu = torch.matmul(t_gpu, t_gpu)
             print(f"  - GPU Tensor Matmul Check: Passed (shape: {res_gpu.shape})")
         else:
-            print(
-                "  - Notice: CUDA not detected, using CPU execution (verified fallback)."
-            )
+            print("  - Notice: CUDA not detected, using CPU execution (verified fallback).")
 
         # CPU tensor test
         t_cpu = torch.randn(100, 100, device="cpu")
@@ -73,9 +71,7 @@ def main() -> int:
         eval_device = "cuda" if cuda_avail else "cpu"
         model = SentenceTransformer(model_name, device=eval_device)
         load_time = time.perf_counter() - t0
-        print(
-            f"  - Model loaded successfully in {load_time:.2f}s on device: '{eval_device}'"
-        )
+        print(f"  - Model loaded successfully in {load_time:.2f}s on device: '{eval_device}'")
 
         # Synthetic test inputs
         sample_texts = [
@@ -84,24 +80,14 @@ def main() -> int:
             "Hardware benchmarking compares DDR4 and DDR5 memory bandwidth.",
         ]
         t1 = time.perf_counter()
-        embeddings = model.encode(
-            sample_texts, convert_to_numpy=True, normalize_embeddings=True
-        )
+        embeddings = model.encode(sample_texts, convert_to_numpy=True, normalize_embeddings=True)
         encode_time = time.perf_counter() - t1
 
-        print(
-            f"  - Encoded {len(sample_texts)} sentences in {encode_time * 1000:.1f}ms"
-        )
-        print(
-            f"  - Embedding Matrix Shape: {embeddings.shape} (Expected: ({len(sample_texts)}, 384))"
-        )
-        assert embeddings.shape == (len(sample_texts), 384), (
-            f"Unexpected embedding shape: {embeddings.shape}"
-        )
+        print(f"  - Encoded {len(sample_texts)} sentences in {encode_time * 1000:.1f}ms")
+        print(f"  - Embedding Matrix Shape: {embeddings.shape} (Expected: ({len(sample_texts)}, 384))")
+        assert embeddings.shape == (len(sample_texts), 384), f"Unexpected embedding shape: {embeddings.shape}"
         assert np.all(np.isfinite(embeddings)), "Embeddings contain NaN or Inf values!"
-        print(
-            "  - Embedding Verification: Passed (Normalized finite vectors, dimension=384)"
-        )
+        print("  - Embedding Verification: Passed (Normalized finite vectors, dimension=384)")
     except Exception as exc:
         print(f"  [ERROR] SentenceTransformers verification failed: {exc}")
         return 1
@@ -111,48 +97,32 @@ def main() -> int:
     try:
         import faiss
 
-        print(
-            f"  - FAISS CPU Version: {faiss.__version__ if hasattr(faiss, '__version__') else 'Available'}"
-        )
+        print(f"  - FAISS CPU Version: {faiss.__version__ if hasattr(faiss, '__version__') else 'Available'}")
 
         dimension = 384
-        index = faiss.IndexFlatIP(
-            dimension
-        )  # Inner Product on normalized vectors = Cosine Similarity
+        index = faiss.IndexFlatIP(dimension)  # Inner Product on normalized vectors = Cosine Similarity
         print(f"  - Created FAISS IndexFlatIP (dimension={dimension})")
 
         # Add vectors
         index.add(embeddings.astype("float32"))
         print(f"  - Indexed {index.ntotal} vectors")
-        assert index.ntotal == len(sample_texts), (
-            f"Index count mismatch: {index.ntotal}"
-        )
+        assert index.ntotal == len(sample_texts), f"Index count mismatch: {index.ntotal}"
 
         # Query test
         query_text = ["evidence-based citations for academic research"]
-        query_vec = model.encode(
-            query_text, convert_to_numpy=True, normalize_embeddings=True
-        ).astype("float32")
+        query_vec = model.encode(query_text, convert_to_numpy=True, normalize_embeddings=True).astype("float32")
         k = 2
         distances, indices = index.search(query_vec, k)
 
         print(f"  - Top-{k} Query Search Results:")
         for rank, (idx, score) in enumerate(zip(indices[0], distances[0])):
-            print(
-                f'    Rank {rank + 1}: [Index {idx}] Score={score:.4f} => "{sample_texts[idx]}"'
-            )
+            print(f'    Rank {rank + 1}: [Index {idx}] Score={score:.4f} => "{sample_texts[idx]}"')
 
         # Both sentence 0 and 1 are relevant to evidence and citations; check top-2 contains both
         top_indices = set(indices[0])
-        assert 0 in top_indices and 1 in top_indices, (
-            f"Expected indices 0 and 1 in top results, got {indices[0]}"
-        )
-        assert distances[0][0] > 0.4, (
-            f"Expected strong positive similarity score, got {distances[0][0]}"
-        )
-        print(
-            "  - FAISS Search Verification: Passed (Relevant nearest neighbors retrieved with cosine scores > 0.4)"
-        )
+        assert 0 in top_indices and 1 in top_indices, f"Expected indices 0 and 1 in top results, got {indices[0]}"
+        assert distances[0][0] > 0.4, f"Expected strong positive similarity score, got {distances[0][0]}"
+        print("  - FAISS Search Verification: Passed (Relevant nearest neighbors retrieved with cosine scores > 0.4)")
     except Exception as exc:
         print(f"  [ERROR] FAISS verification failed: {exc}")
         return 1
@@ -175,9 +145,7 @@ def main() -> int:
     elif settings.GENERATOR_API_KEY.strip():
         print("  - Provider Status: Live API key detected in environment.")
     else:
-        print(
-            "  - Provider Status: Key missing for hosted provider (set GENERATOR_API_KEY in .env when ready)."
-        )
+        print("  - Provider Status: Key missing for hosted provider (set GENERATOR_API_KEY in .env when ready).")
 
     print("\n" + "=" * 70)
     print(" ALL MACHINE LEARNING & VECTOR ENVIRONMENT CHECKS PASSED SUCCESSFULLY!")

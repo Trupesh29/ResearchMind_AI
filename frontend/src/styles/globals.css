@@ -1,6 +1,8 @@
 @import "./tokens.css";
 
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
@@ -33,7 +35,12 @@ body {
 }
 
 /* Typography */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   color: var(--text-primary);
   font-weight: 700;
   line-height: 1.2;
@@ -106,4 +113,47 @@ a:hover {
 .tabular-nums {
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
+}
+
+/* Responsive Layout */
+.mobile-menu-btn {
+  display: flex;
+}
+
+@media (min-width: 769px) {
+  .mobile-menu-btn {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .desktop-sidebar {
+    display: none;
+  }
+  .topbar-header {
+    padding: 0 12px !important;
+  }
+  .topbar-workspace-name {
+    max-width: 140px;
+  }
+  .topbar-user-name {
+    display: none;
+  }
+  .container {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .topbar-workspace-name {
+    max-width: 85px;
+  }
+  .status-pill-sublabel {
+    display: none;
+  }
+  .container {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
 }

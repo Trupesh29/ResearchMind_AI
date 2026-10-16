@@ -13,16 +13,139 @@ def test_health_endpoint(client: TestClient):
     assert res_api.json() == {"status": "ok"}
 
 
-def test_ready_endpoint(client: TestClient):
+def test_ready_endpoint_healthy(client: TestClient):
     res = client.get("/api/ready")
     assert res.status_code == 200
     data = res.json()
-    assert "status" in data
+    assert data["status"] == "ready"
     assert "checks" in data
-    assert data["checks"]["database"] == "connected"
-    assert data["checks"]["storage"] == "writable"
-    assert "generator" in data["checks"]
-    assert "ml_environment" in data["checks"]
+    db_check = data["checks"]["database"]
+    assert db_check["status"] == "healthy"
+    assert db_check["message"] == "Connected and schema verified"
+    assert db_check["migration_state"] == "up_to_date"
+    assert "0002_add_paper_check_constraints" in db_check["current_revisions"]
+    assert data["checks"]["storage"]["status"] == "healthy"
+    assert data["checks"]["storage"]["message"] == "Storage directory writable"
+    assert data["checks"]["generator"]["configured"] is True
+    assert data["checks"]["generator"]["connectivity"] == "unverified"
+    assert data["checks"]["ml_environment"]["model_loaded"] is False
+    assert data["checks"]["ml_environment"]["runtime_status"] == "unverified"
+
+
+def test_ready_endpoint_outdated_migration_returns_503(client: TestClient, db_session):
+    from sqlalchemy import text
+
+    # Set version to 0001 while 0002 is pending
+    db_session.execute(text("UPDATE alembic_version SET version_num = '0001_initial_core_schema'"))
+    db_session.commit()
+
+    res = client.get("/api/ready")
+    assert res.status_code == 503
+    data = res.json()
+    assert data["status"] == "degraded"
+    db_check = data["checks"]["database"]
+    assert db_check["status"] == "unhealthy"
+    assert db_check["migration_state"] == "outdated"
+    assert "pending" in db_check["message"]
+
+
+def test_ready_endpoint_empty_alembic_version_returns_503(client: TestClient, db_session):
+    from sqlalchemy import text
+
+    db_session.execute(text("DELETE FROM alembic_version"))
+    db_session.commit()
+
+    res = client.get("/api/ready")
+    assert res.status_code == 503
+    data = res.json()
+    assert data["status"] == "degraded"
+    db_check = data["checks"]["database"]
+    assert db_check["status"] == "unhealthy"
+    assert db_check["migration_state"] == "empty"
+
+
+def test_ready_endpoint_absent_alembic_version_returns_503(client: TestClient, db_session):
+    from sqlalchemy import text
+
+    db_session.execute(text("DROP TABLE alembic_version"))
+    db_session.commit()
+
+    res = client.get("/api/ready")
+    assert res.status_code == 503
+    data = res.json()
+    assert data["status"] == "degraded"
+    db_check = data["checks"]["database"]
+    assert db_check["status"] == "unhealthy"
+    assert db_check["migration_state"] == "absent"
+
+
+def test_ready_endpoint_unknown_revision_returns_503(client: TestClient, db_session):
+    from sqlalchemy import text
+
+    db_session.execute(text("UPDATE alembic_version SET version_num = '9999_unknown_future_rev'"))
+    db_session.commit()
+
+    res = client.get("/api/ready")
+    assert res.status_code == 503
+    data = res.json()
+    assert data["status"] == "degraded"
+    db_check = data["checks"]["database"]
+    assert db_check["status"] == "unhealthy"
+    assert db_check["migration_state"] == "unknown"
+    assert "unknown migration revision" in db_check["message"]
+
+
+def test_ready_endpoint_missing_table_returns_503(client: TestClient, db_session):
+    from sqlalchemy import text
+
+    # Drop papers table to simulate incomplete schema
+    db_session.execute(text("DROP TABLE papers"))
+    db_session.commit()
+
+    res = client.get("/api/ready")
+    assert res.status_code == 503
+    data = res.json()
+    assert data["status"] == "degraded"
+    assert data["checks"]["database"]["status"] == "unhealthy"
+    assert "not initialized" in data["checks"]["database"]["message"]
+
+
+def test_ready_endpoint_unwritable_storage_returns_503(client: TestClient, isolated_env):
+    # Point injected DATA_DIR to an unwritable location without mutating global settings
+    old_data_dir = isolated_env["settings"].DATA_DIR
+    try:
+        blocking_file = isolated_env["data_dir"] / "blocking_file.txt"
+        blocking_file.write_text("blocker")
+        invalid_path = blocking_file / "sub_data"
+        isolated_env["settings"].DATA_DIR = invalid_path
+
+        res = client.get("/api/ready")
+        assert res.status_code == 503
+        data = res.json()
+        assert data["status"] == "degraded"
+        assert data["checks"]["storage"]["status"] == "unhealthy"
+        assert data["checks"]["storage"]["message"] == "Storage directory unwritable"
+        # Ensure no raw tracebacks or paths leaked
+        assert "blocking_file.txt" not in data["checks"]["storage"]["message"]
+    finally:
+        isolated_env["settings"].DATA_DIR = old_data_dir
+
+
+def test_ready_endpoint_unconfigured_generator(client: TestClient, isolated_env):
+    old_prov = isolated_env["settings"].GENERATOR_PROVIDER
+    old_key = isolated_env["settings"].GENERATOR_API_KEY
+    try:
+        isolated_env["settings"].GENERATOR_PROVIDER = "openai"
+        isolated_env["settings"].GENERATOR_API_KEY = ""
+        res = client.get("/api/ready")
+        data = res.json()
+        gen = data["checks"]["generator"]
+        assert gen["configured"] is False
+        assert gen["connectivity"] == "unconfigured"
+        assert gen["status"] == "api_key_missing"
+    finally:
+        isolated_env["settings"].GENERATOR_PROVIDER = old_prov
+        isolated_env["settings"].GENERATOR_API_KEY = old_key
 
 
 def test_public_config_endpoint(client: TestClient):

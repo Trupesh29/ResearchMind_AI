@@ -60,19 +60,13 @@ def upgrade() -> None:
         sa.Column("publication_year", sa.Integer(), nullable=True),
         sa.Column("keywords_json", sa.Text(), nullable=True),
         sa.Column("metadata_source_json", sa.Text(), nullable=True),
-        sa.Column(
-            "status", sa.String(length=32), server_default="uploaded", nullable=False
-        ),
+        sa.Column("status", sa.String(length=32), server_default="uploaded", nullable=False),
         sa.Column("quality_json", sa.Text(), nullable=True),
         sa.Column("created_at", sa.String(length=32), nullable=False),
         sa.Column("updated_at", sa.String(length=32), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["workspace_id"], ["workspaces.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "workspace_id", "sha256", name="uq_papers_workspace_sha256"
-        ),
+        sa.UniqueConstraint("workspace_id", "sha256", name="uq_papers_workspace_sha256"),
     )
     op.create_index("ix_papers_workspace_id", "papers", ["workspace_id"], unique=False)
     op.create_index(

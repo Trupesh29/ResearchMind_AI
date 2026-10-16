@@ -1,6 +1,11 @@
-import { ApiErrorDetail, HealthResponse, ReadyResponse, PublicConfigResponse } from './types';
+import {
+  ApiErrorDetail,
+  HealthResponse,
+  ReadyResponse,
+  PublicConfigResponse,
+} from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
 export class ApiClientError extends Error {
   public code: string;
@@ -10,7 +15,7 @@ export class ApiClientError extends Error {
 
   constructor(error: ApiErrorDetail, statusCode?: number) {
     super(error.message);
-    this.name = 'ApiClientError';
+    this.name = "ApiClientError";
     this.code = error.code;
     this.details = error.details || {};
     this.requestId = error.request_id;
@@ -18,12 +23,15 @@ export class ApiClientError extends Error {
   }
 }
 
-async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const url = `${API_BASE}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
-  
+async function request<T>(
+  endpoint: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const url = `${API_BASE}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
+
   const headers = new Headers(options.headers || {});
-  if (!headers.has('Accept')) {
-    headers.set('Accept', 'application/json');
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "application/json");
   }
 
   try {
@@ -47,9 +55,9 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       throw new ApiClientError(
         {
           code: `HTTP_${res.status}`,
-          message: res.statusText || 'An error occurred during the request.',
+          message: res.statusText || "An error occurred during the request.",
         },
-        res.status
+        res.status,
       );
     }
 
@@ -60,15 +68,16 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     }
     // Network or client-side connection error
     throw new ApiClientError({
-      code: 'NETWORK_ERROR',
-      message: 'Unable to connect to the ResearchMind API server. Please ensure the backend is running.',
+      code: "NETWORK_ERROR",
+      message:
+        "Unable to connect to the ResearchMind API server. Please ensure the backend is running.",
       details: { original_error: err?.message || String(err) },
     });
   }
 }
 
 export const api = {
-  getHealth: () => request<HealthResponse>('/health'),
-  getReady: () => request<ReadyResponse>('/ready'),
-  getPublicConfig: () => request<PublicConfigResponse>('/config/public'),
+  getHealth: () => request<HealthResponse>("/health"),
+  getReady: () => request<ReadyResponse>("/ready"),
+  getPublicConfig: () => request<PublicConfigResponse>("/config/public"),
 };

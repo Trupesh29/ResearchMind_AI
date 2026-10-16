@@ -171,3 +171,299 @@ def test_foreign_key_enforcement(db_session):
     with pytest.raises(IntegrityError):
         db_session.commit()
     db_session.rollback()
+
+
+def test_paper_status_check_constraint_valid(db_session):
+    u = User(email="paper_status_user@test.org", password_hash="h1")
+    db_session.add(u)
+    db_session.commit()
+    ws = Workspace(user_id=u.id, name="Status WS")
+    db_session.add(ws)
+    db_session.commit()
+
+    valid_statuses = ["uploaded", "processing", "ready", "failed"]
+    for idx, st in enumerate(valid_statuses):
+        p = Paper(
+            workspace_id=ws.id,
+            original_filename=f"doc_{idx}.pdf",
+            storage_path=f"path_{idx}.pdf",
+            sha256=f"sha_valid_{idx}_{st}" * 3,
+            size_bytes=1024,
+            status=st,
+        )
+        db_session.add(p)
+    db_session.commit()
+
+
+def test_paper_status_check_constraint_invalid(db_session):
+    u = User(email="invalid_status_user@test.org", password_hash="h1")
+    db_session.add(u)
+    db_session.commit()
+    ws = Workspace(user_id=u.id, name="Invalid Status WS")
+    db_session.add(ws)
+    db_session.commit()
+
+    p = Paper(
+        workspace_id=ws.id,
+        original_filename="bad_status.pdf",
+        storage_path="bad_path.pdf",
+        sha256="sha_bad_status_1234567890",
+        size_bytes=1024,
+        status="non_existent_status",
+    )
+    db_session.add(p)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_paper_size_bytes_check_constraint(db_session):
+    u = User(email="bad_size_user@test.org", password_hash="h1")
+    db_session.add(u)
+    db_session.commit()
+    ws = Workspace(user_id=u.id, name="Bad Size WS")
+    db_session.add(ws)
+    db_session.commit()
+
+    p = Paper(
+        workspace_id=ws.id,
+        original_filename="zero_size.pdf",
+        storage_path="zero_path.pdf",
+        sha256="sha_zero_size_1234567890",
+        size_bytes=0,
+        status="uploaded",
+    )
+    db_session.add(p)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_paper_page_count_check_constraint(db_session):
+    u = User(email="page_count_user@test.org", password_hash="h1")
+    db_session.add(u)
+    db_session.commit()
+    ws = Workspace(user_id=u.id, name="Page Count WS")
+    db_session.add(ws)
+    db_session.commit()
+
+    # Valid with None
+    p_none = Paper(
+        workspace_id=ws.id,
+        original_filename="none_pages.pdf",
+        storage_path="p1.pdf",
+        sha256="sha_page_none_12345",
+        size_bytes=1024,
+        page_count=None,
+        status="uploaded",
+    )
+    db_session.add(p_none)
+    db_session.commit()
+
+    # Valid with positive int
+    p_pos = Paper(
+        workspace_id=ws.id,
+        original_filename="pos_pages.pdf",
+        storage_path="p2.pdf",
+        sha256="sha_page_pos_12345",
+        size_bytes=1024,
+        page_count=15,
+        status="uploaded",
+    )
+    db_session.add(p_pos)
+    db_session.commit()
+
+    # Invalid with 0
+    p_zero = Paper(
+        workspace_id=ws.id,
+        original_filename="zero_pages.pdf",
+        storage_path="p3.pdf",
+        sha256="sha_page_zero_12345",
+        size_bytes=1024,
+        page_count=0,
+        status="uploaded",
+    )
+    db_session.add(p_zero)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_paper_publication_year_check_constraint(db_session):
+    u = User(email="year_user@test.org", password_hash="h1")
+    db_session.add(u)
+    db_session.commit()
+    ws = Workspace(user_id=u.id, name="Year WS")
+    db_session.add(ws)
+    db_session.commit()
+
+    # Valid: None
+    p_none = Paper(
+        workspace_id=ws.id,
+        original_filename="none_year.pdf",
+        storage_path="py1.pdf",
+        sha256="sha_year_none_12345",
+        size_bytes=1024,
+        publication_year=None,
+        status="uploaded",
+    )
+    db_session.add(p_none)
+    db_session.commit()
+
+    # Valid: 2024
+    p_valid = Paper(
+        workspace_id=ws.id,
+        original_filename="valid_year.pdf",
+        storage_path="py2.pdf",
+        sha256="sha_year_valid_12345",
+        size_bytes=1024,
+        publication_year=2024,
+        status="uploaded",
+    )
+    db_session.add(p_valid)
+    db_session.commit()
+
+    # Invalid: < 1900
+    p_too_early = Paper(
+        workspace_id=ws.id,
+        original_filename="early_year.pdf",
+        storage_path="py3.pdf",
+        sha256="sha_year_early_12345",
+        size_bytes=1024,
+        publication_year=1850,
+        status="uploaded",
+    )
+    db_session.add(p_too_early)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+    # Invalid: > 2100
+    p_too_late = Paper(
+        workspace_id=ws.id,
+        original_filename="late_year.pdf",
+        storage_path="py4.pdf",
+        sha256="sha_year_late_12345",
+        size_bytes=1024,
+        publication_year=2150,
+        status="uploaded",
+    )
+    db_session.add(p_too_late)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_alembic_schema_drift_regression(isolated_env):
+    """
+    Compares the migrated database schema with declared ORM metadata.
+    Enables compare_type=True and compare_server_default=True to verify
+    zero schema differences across tables, columns, types, and server defaults.
+    """
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    from backend.app.db.base import Base
+
+    engine = isolated_env["engine"]
+    with engine.connect() as connection:
+        context = MigrationContext.configure(
+            connection,
+            opts={
+                "compare_type": True,
+                "compare_server_default": True,
+            },
+        )
+        diff = compare_metadata(context, Base.metadata)
+        assert len(diff) == 0, f"Detected schema differences against Base.metadata: {diff}"
+
+
+def test_upgrade_populated_database_preserves_records(temp_test_dir):
+    """
+    Verifies upgrade of a database populated at 0001_initial_core_schema
+    to head (0002_add_paper_check_constraints) preserves all existing records
+    and enforces check constraints on subsequent inserts.
+    """
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    db_file = temp_test_dir / "migration_upgrade_populated_test.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+
+    alembic_cfg = Config(str(PROJECT_ROOT / "backend" / "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", str(PROJECT_ROOT / "backend" / "migrations"))
+    alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+
+    # 1. Migrate only to 0001_initial_core_schema
+    command.upgrade(alembic_cfg, "0001_initial_core_schema")
+
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    SessionCls = sessionmaker(bind=engine)
+
+    # 2. Insert records into 0001 schema
+    with SessionCls() as session:
+        user = User(
+            email="historical@test.org",
+            password_hash="h1",
+            display_name="Historical Researcher",
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+        ws = Workspace(user_id=user.id, name="Historical WS")
+        session.add(ws)
+        session.commit()
+        session.refresh(ws)
+
+        paper = Paper(
+            workspace_id=ws.id,
+            original_filename="historical_paper.pdf",
+            storage_path="path/to/historical.pdf",
+            sha256="sha_hist_1234567890",
+            size_bytes=2048,
+            publication_year=2021,
+            status="uploaded",
+        )
+        session.add(paper)
+        session.commit()
+
+    # 3. Upgrade to head (0002_add_paper_check_constraints)
+    command.upgrade(alembic_cfg, "head")
+
+    # 4. Verify existing records are preserved intact after batch recreation
+    with SessionCls() as session:
+        u = session.query(User).filter_by(email="historical@test.org").first()
+        assert u is not None
+        assert u.display_name == "Historical Researcher"
+
+        w = session.query(Workspace).filter_by(user_id=u.id).first()
+        assert w is not None
+        assert w.name == "Historical WS"
+
+        p = session.query(Paper).filter_by(workspace_id=w.id).first()
+        assert p is not None
+        assert p.original_filename == "historical_paper.pdf"
+        assert p.status == "uploaded"
+        assert p.size_bytes == 2048
+
+        # 5. Verify check constraints from 0002 are now enforced on new inserts
+        invalid_paper = Paper(
+            workspace_id=w.id,
+            original_filename="invalid_negative.pdf",
+            storage_path="path/to/inv.pdf",
+            sha256="sha_inv_999",
+            size_bytes=-100,
+            status="uploaded",
+        )
+        session.add(invalid_paper)
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+    engine.dispose()

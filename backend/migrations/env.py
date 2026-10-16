@@ -12,6 +12,7 @@ if str(BASE_DIR) not in sys.path:
 
 from backend.app.core.config import settings
 from backend.app.db.base import Base
+from backend.app.db.models import Paper, User, Workspace  # noqa: F401
 
 config = context.config
 
@@ -22,6 +23,9 @@ target_metadata = Base.metadata
 
 
 def get_url():
+    url = config.get_main_option("sqlalchemy.url")
+    if url and url.strip():
+        return url.strip()
     return settings.DATABASE_URL
 
 

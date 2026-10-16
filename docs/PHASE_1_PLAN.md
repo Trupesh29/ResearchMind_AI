@@ -232,13 +232,13 @@ ResearchMind AI/
 ## 7. Task Checklist & Verification Strategy
 
 - [x] Create project directories and `.gitignore`.
-- [ ] Configure Python backend with dependencies, SQLite session, Alembic migrations, and P0 models.
-- [ ] Implement default local-user bootstrap and local user dependency.
-- [ ] Implement API routers, request ID middleware, centralized error handling, and health/ready endpoints.
-- [ ] Configure React/TypeScript/Vite frontend with DESIGN.md tokens and accessible components.
-- [ ] Implement Landing, Dashboard, Library, and 404 views with typed API integration.
-- [ ] Create ML smoke check script (`scripts/ml_smoke_check.py`) testing PyTorch, MiniLM, and FAISS.
-- [ ] Write backend unit & integration tests covering config, migrations, bootstrap, constraints, and error envelopes.
-- [ ] Run automated tests and visual browser checks at Desktop (1440px), Tablet (768px), and Mobile (375px).
-- [ ] Verify clean completion evidence in `docs/PHASE_1_VERIFICATION.md`.
-- [ ] Push clean codebase to remote branch `manav`.
+- [x] Configure Python backend with dependencies, SQLite session, Alembic migrations, and P0 models.
+- [x] Implement default local-user bootstrap and local user dependency.
+- [x] Implement API routers, request ID middleware, centralized error handling, and health/ready endpoints.
+- [x] Configure React/TypeScript/Vite frontend with DESIGN.md tokens and accessible components.
+- [x] Implement Landing, Dashboard, Library, and 404 views with typed API integration.
+- [x] Create ML smoke check script (`scripts/ml_smoke_check.py`) testing PyTorch, MiniLM, and FAISS.
+- [x] Write backend unit & integration tests covering config, migrations, bootstrap, constraints, schema drift, and error envelopes.
+- [x] Add frontend automated test suites (Vitest), linters (ESLint, Ruff), and formatters (Prettier, Ruff format).
+- [x] Complete code review remediation for all 7 defect areas (models registered in env.py, table check constraints, isolated test environments, anchored scripts, accessible modal focus traps, truthful status reporting).
+- [x] Verify clean completion evidence in `docs/PHASE_1_VERIFICATION.md`.
