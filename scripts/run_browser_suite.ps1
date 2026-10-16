@@ -26,7 +26,7 @@ if (-not (Test-Path $ScraplingPython)) {
 
 function Test-PortListening([int]$port) {
     try {
-        $conn = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
+        $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
         if ($null -ne $conn) {
             return $true
         }

@@ -1,8 +1,17 @@
 import {
   ApiErrorDetail,
   HealthResponse,
-  ReadyResponse,
+  PaperItem,
+  PaperListResponse,
+  PaperStatusResponse,
+  PaperUploadBatchResponse,
   PublicConfigResponse,
+  ReadyResponse,
+  WorkspaceCreatePayload,
+  WorkspaceDetail,
+  WorkspaceItem,
+  WorkspaceListResponse,
+  WorkspaceUpdatePayload,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -34,6 +43,13 @@ async function request<T>(
     headers.set("Accept", "application/json");
   }
 
+  // Handle JSON vs FormData Content-Type
+  const isFormData =
+    typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (!isFormData && options.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   try {
     const res = await fetch(url, {
       ...options,
@@ -61,6 +77,11 @@ async function request<T>(
       );
     }
 
+    // Support empty 204 No Content responses safely
+    if (res.status === 204) {
+      return null as T;
+    }
+
     return (await res.json()) as T;
   } catch (err: any) {
     if (err instanceof ApiClientError) {
@@ -80,4 +101,66 @@ export const api = {
   getHealth: () => request<HealthResponse>("/health"),
   getReady: () => request<ReadyResponse>("/ready"),
   getPublicConfig: () => request<PublicConfigResponse>("/config/public"),
+
+  // Workspaces
+  listWorkspaces: (cursor?: string | null, limit: number = 50) => {
+    const params = new URLSearchParams();
+    if (cursor) params.set("cursor", cursor);
+    if (limit) params.set("limit", String(limit));
+    const qs = params.toString();
+    return request<WorkspaceListResponse>(`/workspaces${qs ? `?${qs}` : ""}`);
+  },
+  getWorkspace: (id: string) => request<WorkspaceDetail>(`/workspaces/${id}`),
+  createWorkspace: (data: WorkspaceCreatePayload) =>
+    request<WorkspaceItem>("/workspaces", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateWorkspace: (id: string, data: WorkspaceUpdatePayload) =>
+    request<WorkspaceItem>(`/workspaces/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteWorkspace: (id: string) =>
+    request<void>(`/workspaces/${id}`, {
+      method: "DELETE",
+    }),
+
+  // Papers
+  uploadPapers: (workspaceId: string, files: File[]) => {
+    const formData = new FormData();
+    formData.append("workspace_id", workspaceId);
+    for (const file of files) {
+      formData.append("files", file);
+    }
+    return request<PaperUploadBatchResponse>("/papers", {
+      method: "POST",
+      body: formData,
+    });
+  },
+  listPapers: (
+    workspaceId: string,
+    options: {
+      status?: string;
+      q?: string;
+      cursor?: string | null;
+      limit?: number;
+    } = {},
+  ) => {
+    const params = new URLSearchParams();
+    params.set("workspace_id", workspaceId);
+    if (options.status) params.set("status", options.status);
+    if (options.q && options.q.trim()) params.set("q", options.q.trim());
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit) params.set("limit", String(options.limit));
+    return request<PaperListResponse>(`/papers?${params.toString()}`);
+  },
+  getPaper: (id: string) => request<PaperItem>(`/papers/${id}`),
+  getPaperStatus: (id: string) =>
+    request<PaperStatusResponse>(`/papers/${id}/status`),
+  getPaperFileUrl: (id: string) => `${API_BASE}/papers/${id}/file`,
+  deletePaper: (id: string) =>
+    request<void>(`/papers/${id}`, {
+      method: "DELETE",
+    }),
 };

@@ -1,10 +1,10 @@
 {
   "meta": {
     "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "base_url": "http://127.0.0.1:5173",
+    "base_url": "http://127.0.0.1:5178",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-10-16T16:24:03Z",
+    "timestamp": "2026-10-16T18:40:06Z",
     "headless": true
   },
   "viewports": {},
@@ -16,11 +16,11 @@
     },
     "dashboard": {
       "heading": "Workspace Dashboard",
-      "cards_count": 6
+      "cards_count": 7
     },
     "library": {
       "heading": "Research Paper Library",
-      "empty_state_present": true
+      "empty_state_present": false
     },
     "not_found": {
       "heading": "Page Not Found",
@@ -121,14 +121,25 @@
   "unexpected_failed_requests": [],
   "simulated_offline_requests": [
     {
-      "url": "http://127.0.0.1:5173/api/ready",
+      "url": "http://127.0.0.1:5178/api/ready",
       "failure": "net::ERR_FAILED"
     },
     {
-      "url": "http://127.0.0.1:5173/api/config/public",
+      "url": "http://127.0.0.1:5178/api/config/public",
       "failure": "net::ERR_FAILED"
     }
   ],
+  "phase2_lifecycle": {
+    "workspace_created": true,
+    "pdf_uploaded": true,
+    "duplicate_identified": true,
+    "corrupt_rejected": true,
+    "search_success": true,
+    "viewer_opened": true,
+    "cancel_deletion_kept_paper": true,
+    "confirm_deletion_removed_paper": true,
+    "workspace_deleted": true
+  },
   "acceptance_evaluation": {
     "passed": true,
     "failure_reasons": [],
@@ -139,7 +150,8 @@
       "reduced_motion_suppressed": true,
       "contrast_ratios": true,
       "api_states_and_recovery": true,
-      "clean_operation": true
+      "clean_operation": true,
+      "phase2_library_lifecycle": true
     }
   }
 }

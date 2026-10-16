@@ -8,13 +8,16 @@
 
 ResearchMind AI is designed to analyze academic research papers and technical documents locally with zero loss of provenance. Every factual claim is backed by page-level citations, coordinate-highlighted evidence, and strict abstention when the uploaded evidence does not support an answer.
 
-This repository represents **Week 1, Phase 1: Project Foundation and App Shell** of the six-week development roadmap.
+This repository represents **Week 1, Phase 2: Workspace Management and PDF Research Library** of the six-week development roadmap.
 
-### Key Capabilities in Phase 1:
+### Key Capabilities in Phase 1 & 2:
 - **FastAPI Backend:** Modular API architecture with standardized error envelopes (`API_SPEC.md §2.2`), request correlation IDs, CORS configuration, and structured logging.
 - **Relational Persistence (SQLite + Alembic):** Foundational P0 schema for `users`, `workspaces`, and `papers` with cascading foreign keys, uniqueness constraints, and SQLite WAL pragmas.
 - **Idempotent Local Identity:** Single-user local bootstrap seeding `local@researchmind.ai` without requiring authentication or exposing passwords.
-- **Apple Modern Design System (DESIGN.md):** Soft-raised surfaces, dual-shadow elevation, capsule pills, responsive navigation, and WCAG AA contrast compliance.
+- **Workspace Management:** Full CRUD operations under `/api/workspaces` with trim/validation, per-user uniqueness, ownership isolation, and live document counts.
+- **PDF Research Library:** Multi-file drag & drop upload dropzone, streaming SHA-256 deduplication, PyMuPDF integrity verification, tripartite batch responses (`202 Accepted`), and live search filtering.
+- **Original Document Streaming:** HTTP Byte Range streaming (`200 OK`, `206 Partial Content`, `416 Range Not Satisfiable`) on `/api/papers/{id}/file` with safe content-disposition and no server path leakage.
+- **Apple Modern Design System (DESIGN.md):** Soft-raised surfaces, dual-shadow elevation, capsule pills, responsive navigation, embedded PDF viewer modal, accessible delete confirmation alertdialogs with focus trapping, and WCAG AA contrast compliance.
 - **React 19 + TypeScript + Vite Frontend:** Responsive AppShell with desktop sidebar, mobile drawer, topbar with live health checks, Landing, Dashboard, and Library views.
 - **ML Environment Verification:** Standalone smoke check verifying PyTorch (CPU/CUDA fallback), Sentence Transformers (`all-MiniLM-L6-v2`), and FAISS vector index querying.
 

@@ -1,244 +1,431 @@
-import React from "react";
-import { UploadCloud, FileText, CheckCircle2, ShieldAlert } from "lucide-react";
-import { Card } from "../components/ui/Card";
-import { Badge } from "../components/ui/Badge";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Folder, Plus, AlertCircle, RefreshCw } from "lucide-react";
+import { api, ApiClientError } from "../api/client";
+import {
+  WorkspaceItem,
+  PaperItem,
+  PaperUploadBatchResponse,
+} from "../api/types";
+import { WorkspaceSelector } from "../components/workspace/WorkspaceSelector";
+import { WorkspaceModal } from "../components/workspace/WorkspaceModal";
+import { UploadDropzone } from "../components/library/UploadDropzone";
+import { PaperList } from "../components/library/PaperList";
+import { PdfViewerModal } from "../components/library/PdfViewerModal";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Button } from "../components/ui/Button";
 
+const STORAGE_KEY_SELECTED_WS = "researchmind_selected_workspace_id";
+
 export const LibraryPage: React.FC = () => {
+  // Workspaces state
+  const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
+  const [selectedWorkspace, setSelectedWorkspace] =
+    useState<WorkspaceItem | null>(null);
+  const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true);
+
+  // Papers state
+  const [papers, setPapers] = useState<PaperItem[]>([]);
+  const [totalPaperCount, setTotalPaperCount] = useState<number>(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isLoadingPapers, setIsLoadingPapers] = useState(false);
+
+  // Upload state
+  const [isUploading, setIsUploading] = useState(false);
+  const [lastBatchResult, setLastBatchResult] =
+    useState<PaperUploadBatchResponse | null>(null);
+
+  // Modals & Dialogs state
+  const [isWsModalOpen, setIsWsModalOpen] = useState(false);
+  const [wsModalMode, setWsModalMode] = useState<"create" | "edit">("create");
+  const [viewingPaper, setViewingPaper] = useState<PaperItem | null>(null);
+  const [deletingPaper, setDeletingPaper] = useState<PaperItem | null>(null);
+  const [isDeletingWs, setIsDeletingWs] = useState(false);
+  const [isActionLoading, setIsActionLoading] = useState(false);
+
+  // Error banners
+  const [pageError, setPageError] = useState<string | null>(null);
+
+  // Track active request ID to ignore stale responses
+  const activePaperReqRef = useRef<number>(0);
+
+  // 1. Fetch Workspaces
+  const loadWorkspaces = useCallback(async (selectIdAfter?: string) => {
+    setIsLoadingWorkspaces(true);
+    setPageError(null);
+    try {
+      const res = await api.listWorkspaces(null, 100);
+      setWorkspaces(res.items);
+
+      if (res.items.length === 0) {
+        setSelectedWorkspace(null);
+        localStorage.removeItem(STORAGE_KEY_SELECTED_WS);
+        return;
+      }
+
+      // Determine active workspace
+      const targetId =
+        selectIdAfter || localStorage.getItem(STORAGE_KEY_SELECTED_WS);
+      const matched = res.items.find((w) => w.id === targetId);
+      const active = matched || res.items[0];
+      setSelectedWorkspace(active);
+      localStorage.setItem(STORAGE_KEY_SELECTED_WS, active.id);
+    } catch (err: any) {
+      setPageError(err?.message || "Failed to load research workspaces.");
+    } finally {
+      setIsLoadingWorkspaces(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadWorkspaces();
+  }, [loadWorkspaces]);
+
+  // 2. Fetch Papers for selected workspace & search query
+  const loadPapers = useCallback(
+    async (workspaceId: string, query: string = "") => {
+      const reqId = ++activePaperReqRef.current;
+      setIsLoadingPapers(true);
+      setPageError(null);
+      try {
+        const res = await api.listPapers(workspaceId, { q: query, limit: 100 });
+        if (reqId === activePaperReqRef.current) {
+          setPapers(res.items);
+          setTotalPaperCount(res.total_count);
+        }
+      } catch (err: any) {
+        if (reqId === activePaperReqRef.current) {
+          setPageError(err?.message || "Failed to load workspace documents.");
+        }
+      } finally {
+        if (reqId === activePaperReqRef.current) {
+          setIsLoadingPapers(false);
+        }
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (selectedWorkspace) {
+      loadPapers(selectedWorkspace.id, searchQuery);
+    } else {
+      setPapers([]);
+      setTotalPaperCount(0);
+    }
+  }, [selectedWorkspace, searchQuery, loadPapers]);
+
+  // Workspace Actions
+  const handleSelectWorkspace = (ws: WorkspaceItem) => {
+    setSelectedWorkspace(ws);
+    localStorage.setItem(STORAGE_KEY_SELECTED_WS, ws.id);
+    setSearchQuery("");
+    setLastBatchResult(null);
+  };
+
+  const handleSaveWorkspace = async (name: string, description: string) => {
+    if (wsModalMode === "create") {
+      const created = await api.createWorkspace({ name, description });
+      await loadWorkspaces(created.id);
+    } else if (selectedWorkspace) {
+      const updated = await api.updateWorkspace(selectedWorkspace.id, {
+        name,
+        description,
+      });
+      await loadWorkspaces(updated.id);
+    }
+  };
+
+  const handleDeleteWorkspace = async () => {
+    if (!selectedWorkspace) return;
+    setIsActionLoading(true);
+    try {
+      await api.deleteWorkspace(selectedWorkspace.id);
+      setIsDeletingWs(false);
+      await loadWorkspaces();
+    } catch (err: any) {
+      setPageError(err?.message || "Failed to delete workspace.");
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  // Upload Action
+  const handleUploadFiles = async (files: File[]) => {
+    if (!selectedWorkspace) return;
+    setIsUploading(true);
+    setPageError(null);
+    try {
+      const batchResult = await api.uploadPapers(selectedWorkspace.id, files);
+      setLastBatchResult(batchResult);
+      // Reload papers and refresh workspace count
+      await Promise.all([
+        loadPapers(selectedWorkspace.id, searchQuery),
+        loadWorkspaces(selectedWorkspace.id),
+      ]);
+    } catch (err: any) {
+      if (err instanceof ApiClientError) {
+        setPageError(`${err.code}: ${err.message}`);
+      } else {
+        setPageError(err?.message || "An error occurred during file upload.");
+      }
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // Delete Paper Action
+  const handleConfirmDeletePaper = async () => {
+    if (!deletingPaper || !selectedWorkspace) return;
+    setIsActionLoading(true);
+    try {
+      await api.deletePaper(deletingPaper.id);
+      setDeletingPaper(null);
+      await Promise.all([
+        loadPapers(selectedWorkspace.id, searchQuery),
+        loadWorkspaces(selectedWorkspace.id),
+      ]);
+    } catch (err: any) {
+      setPageError(err?.message || "Failed to delete paper.");
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
-      {/* Header */}
+    <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
+      {/* Top Header & Workspace Selector Bar */}
       <div
         style={{
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "flex-start",
+          alignItems: "center",
           flexWrap: "wrap",
           gap: "16px",
         }}
       >
         <div>
-          <div
+          <h1
+            style={{ fontSize: "26px", fontWeight: 700, margin: "0 0 6px 0" }}
+          >
+            Research Paper Library
+          </h1>
+          <p
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "10px",
-              marginBottom: "6px",
+              color: "var(--text-secondary)",
+              fontSize: "14px",
+              margin: 0,
             }}
           >
-            <h1 style={{ fontSize: "28px" }}>Research Paper Library</h1>
-            <Badge variant="info">Phase 2 Lifecycle</Badge>
-          </div>
-          <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-            Manage research papers, view processing statuses, and inspect
-            original PDF evidence.
+            Upload, manage, and inspect scientific literature within dedicated
+            workspaces.
           </p>
+        </div>
+
+        {/* Workspace Controls */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            flexWrap: "wrap",
+          }}
+        >
+          {workspaces.length > 0 ? (
+            <WorkspaceSelector
+              workspaces={workspaces}
+              selectedWorkspace={selectedWorkspace}
+              onSelect={handleSelectWorkspace}
+              onCreateNew={() => {
+                setWsModalMode("create");
+                setIsWsModalOpen(true);
+              }}
+              onEditCurrent={() => {
+                setWsModalMode("edit");
+                setIsWsModalOpen(true);
+              }}
+              onDeleteCurrent={() => setIsDeletingWs(true)}
+              isLoading={isLoadingWorkspaces}
+            />
+          ) : (
+            <Button
+              variant="ink"
+              onClick={() => {
+                setWsModalMode("create");
+                setIsWsModalOpen(true);
+              }}
+            >
+              <Plus size={16} />
+              <span>Create Workspace</span>
+            </Button>
+          )}
         </div>
       </div>
 
-      {/* Upload Dropzone Preview (Phase 2) */}
-      <Card
-        variant="sunken"
-        style={{
-          border: "2px dashed var(--border-control)",
-          borderRadius: "var(--r-2xl)",
-          padding: "48px 24px",
-          textAlign: "center",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: "16px",
-        }}
-      >
+      {/* Global Error Banner */}
+      {pageError && (
         <div
           style={{
-            width: "64px",
-            height: "64px",
-            borderRadius: "50%",
-            background: "var(--surface-soft)",
-            boxShadow: "var(--raise-2)",
+            padding: "12px 18px",
+            borderRadius: "var(--r-lg)",
+            background: "var(--red-surface)",
+            border: "1px solid rgba(255, 59, 48, 0.3)",
             display: "flex",
             alignItems: "center",
-            justifyContent: "center",
-            color: "var(--blue-action)",
+            justifyContent: "space-between",
+            gap: "12px",
+            color: "var(--red-text)",
+            fontSize: "13px",
           }}
+          role="alert"
         >
-          <UploadCloud size={32} />
-        </div>
-
-        <div>
-          <h3 style={{ fontSize: "18px", marginBottom: "6px" }}>
-            Multi-File PDF Upload Pipeline
-          </h3>
-          <p
-            style={{
-              fontSize: "14px",
-              color: "var(--text-muted)",
-              maxWidth: "480px",
-              margin: "0 auto",
-            }}
-          >
-            Drag and drop text-based academic papers or browse your file system.
-            Files are validated via <code>%PDF-</code> magic bytes and
-            deduplicated by SHA-256.
-          </p>
-        </div>
-
-        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <AlertCircle size={18} color="var(--red-strong)" />
+            <span>{pageError}</span>
+          </div>
           <Button
             variant="soft"
-            disabled
-            title="Will be interactive in Phase 2"
+            size="sm"
+            onClick={() => {
+              setPageError(null);
+              if (selectedWorkspace)
+                loadPapers(selectedWorkspace.id, searchQuery);
+            }}
           >
-            Select PDF Files
+            <RefreshCw size={12} />
+            <span>Retry</span>
           </Button>
-          <Badge variant="neutral">Max 25 MB per document</Badge>
         </div>
-      </Card>
+      )}
 
-      {/* Contract & Integrity Rules Card */}
-      <Card elevation={1}>
-        <h2 style={{ fontSize: "18px", marginBottom: "16px" }}>
-          Document Ingestion Contract (Phase 2 Ready)
-        </h2>
+      {/* No Workspace State */}
+      {!isLoadingWorkspaces && workspaces.length === 0 ? (
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+            padding: "64px 24px",
+            textAlign: "center",
+            background: "var(--surface)",
+            border: "1px solid var(--border-control)",
+            borderRadius: "var(--r-2xl)",
+            boxShadow: "var(--raise-1)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
             gap: "16px",
           }}
         >
           <div
             style={{
-              padding: "16px",
-              borderRadius: "var(--r-md)",
-              background: "var(--surface)",
+              width: "56px",
+              height: "56px",
+              borderRadius: "50%",
+              background: "var(--surface-soft)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--blue-action)",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                marginBottom: "6px",
-              }}
+            <Folder size={28} />
+          </div>
+          <div>
+            <h2
+              style={{ fontSize: "18px", fontWeight: 700, margin: "0 0 8px 0" }}
             >
-              <CheckCircle2 size={16} color="var(--green-strong)" />
-              <strong style={{ fontSize: "14px" }}>
-                Binary Magic Bytes Check
-              </strong>
-            </div>
+              No Research Workspaces Yet
+            </h2>
             <p
               style={{
-                fontSize: "12px",
-                color: "var(--text-muted)",
+                fontSize: "14px",
+                color: "var(--text-secondary)",
+                maxWidth: "420px",
+                margin: "0 auto",
                 lineHeight: 1.5,
               }}
             >
-              Files are verified by inspecting the first 4 bytes for{" "}
-              <code>%PDF-</code>, preventing malicious or corrupted file
-              extensions.
+              Workspaces isolate research domains and maintain document
+              deduplication boundaries. Create your first workspace to start
+              uploading papers.
             </p>
           </div>
-
-          <div
-            style={{
-              padding: "16px",
-              borderRadius: "var(--r-md)",
-              background: "var(--surface)",
+          <Button
+            variant="ink"
+            onClick={() => {
+              setWsModalMode("create");
+              setIsWsModalOpen(true);
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                marginBottom: "6px",
-              }}
-            >
-              <ShieldAlert size={16} color="var(--orange-strong)" />
-              <strong style={{ fontSize: "14px" }}>
-                SHA-256 Deduplication
-              </strong>
-            </div>
-            <p
-              style={{
-                fontSize: "12px",
-                color: "var(--text-muted)",
-                lineHeight: 1.5,
-              }}
-            >
-              Database uniqueness constraint{" "}
-              <code>UNIQUE(workspace_id, sha256)</code> strictly rejects
-              duplicate uploads within the same workspace.
-            </p>
-          </div>
+            <Plus size={16} />
+            <span>Create Workspace</span>
+          </Button>
+        </div>
+      ) : (
+        <>
+          {/* Upload Dropzone Area */}
+          <UploadDropzone
+            isUploading={isUploading}
+            lastBatchResult={lastBatchResult}
+            onClearBatchResult={() => setLastBatchResult(null)}
+            onUpload={handleUploadFiles}
+            disabled={!selectedWorkspace}
+          />
 
-          <div
-            style={{
-              padding: "16px",
-              borderRadius: "var(--r-md)",
-              background: "var(--surface)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                marginBottom: "6px",
-              }}
-            >
-              <FileText size={16} color="var(--blue-action)" />
-              <strong style={{ fontSize: "14px" }}>
-                Private Storage & Streaming
-              </strong>
-            </div>
-            <p
-              style={{
-                fontSize: "12px",
-                color: "var(--text-muted)",
-                lineHeight: 1.5,
-              }}
-            >
-              Original PDFs are stored with generated UUID filenames in private{" "}
-              <code>data/pdfs/</code> and streamed through{" "}
-              <code>GET /papers/&#123;id&#125;/file</code>.
-            </p>
-          </div>
-        </div>
-      </Card>
+          {/* Paper List and Search */}
+          <PaperList
+            papers={papers}
+            totalCount={totalPaperCount}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onViewPaper={setViewingPaper}
+            onDeletePaper={setDeletingPaper}
+            isLoading={isLoadingPapers}
+          />
+        </>
+      )}
 
-      {/* Empty State Table */}
-      <Card elevation={1} style={{ padding: 0, overflow: "hidden" }}>
-        <div
-          style={{
-            padding: "16px 20px",
-            borderBottom: "1px solid var(--hairline)",
-            background: "var(--surface-alt)",
-          }}
-        >
-          <strong style={{ fontSize: "14px", color: "var(--text-primary)" }}>
-            Workspace Documents (0)
-          </strong>
-        </div>
-        <div style={{ padding: "48px 24px", textAlign: "center" }}>
-          <p
-            style={{
-              color: "var(--text-muted)",
-              fontSize: "14px",
-              marginBottom: "8px",
-            }}
-          >
-            No documents in this library yet.
-          </p>
-          <p style={{ color: "var(--text-disabled)", fontSize: "12px" }}>
-            Uploading and library management lifecycle activates in Week 1,
-            Phase 2.
-          </p>
-        </div>
-      </Card>
+      {/* Workspace Modal */}
+      <WorkspaceModal
+        isOpen={isWsModalOpen}
+        mode={wsModalMode}
+        initialName={wsModalMode === "edit" ? selectedWorkspace?.name : ""}
+        initialDescription={
+          wsModalMode === "edit" ? selectedWorkspace?.description || "" : ""
+        }
+        onSave={handleSaveWorkspace}
+        onClose={() => setIsWsModalOpen(false)}
+      />
+
+      {/* Delete Workspace Confirmation */}
+      <ConfirmDialog
+        isOpen={isDeletingWs}
+        title="Delete Workspace"
+        description={`Are you sure you want to delete "${selectedWorkspace?.name}"? All associated papers and disk files in this workspace will be permanently removed.`}
+        confirmLabel="Delete Workspace"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={isActionLoading}
+        onConfirm={handleDeleteWorkspace}
+        onCancel={() => setIsDeletingWs(false)}
+      />
+
+      {/* Delete Paper Confirmation */}
+      <ConfirmDialog
+        isOpen={!!deletingPaper}
+        title="Delete Research Paper"
+        description={`Are you sure you want to delete "${deletingPaper?.title || deletingPaper?.original_filename}"? This action removes the document record and cleans up the stored file from disk.`}
+        confirmLabel="Delete Paper"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={isActionLoading}
+        onConfirm={handleConfirmDeletePaper}
+        onCancel={() => setDeletingPaper(null)}
+      />
+
+      {/* PDF Viewer Modal */}
+      <PdfViewerModal
+        isOpen={!!viewingPaper}
+        paper={viewingPaper}
+        onClose={() => setViewingPaper(null)}
+      />
     </div>
   );
 };

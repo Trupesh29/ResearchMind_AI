@@ -54,3 +54,88 @@ export interface PublicConfigResponse {
     display_name: string;
   };
 }
+
+export interface WorkspaceItem {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  paper_count: number;
+  ready_count: number;
+}
+
+export interface WorkspaceDetail extends WorkspaceItem {
+  active_index?: {
+    model_name: string;
+    version: number;
+  } | null;
+}
+
+export interface WorkspaceListResponse {
+  items: WorkspaceItem[];
+  next_cursor: string | null;
+  total_count: number;
+}
+
+export interface WorkspaceCreatePayload {
+  name: string;
+  description?: string;
+}
+
+export interface WorkspaceUpdatePayload {
+  name?: string;
+  description?: string;
+}
+
+export interface PaperItem {
+  id: string;
+  workspace_id: string;
+  original_filename: string;
+  title: string | null;
+  authors: string[];
+  publication_year: number | null;
+  keywords: string[];
+  metadata_source: Record<string, string> | null;
+  page_count: number | null;
+  size_bytes: number;
+  status: "uploaded" | "processing" | "ready" | "failed";
+  quality: Record<string, any> | null;
+  created_at: string;
+}
+
+export interface PaperListResponse {
+  items: PaperItem[];
+  next_cursor: string | null;
+  total_count: number;
+}
+
+export interface PaperUploadSuccessItem {
+  id: string;
+  original_filename: string;
+  status: string;
+}
+
+export interface PaperUploadDuplicateItem {
+  original_filename: string;
+  existing_paper_id: string;
+}
+
+export interface PaperUploadRejectedItem {
+  original_filename: string;
+  code: string;
+  message: string;
+}
+
+export interface PaperUploadBatchResponse {
+  papers: PaperUploadSuccessItem[];
+  duplicates: PaperUploadDuplicateItem[];
+  rejected: PaperUploadRejectedItem[];
+}
+
+export interface PaperStatusResponse {
+  status: string;
+  stage: string;
+  progress: number;
+  attempt: number;
+  error?: string | null;
+}

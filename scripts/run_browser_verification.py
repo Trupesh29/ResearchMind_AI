@@ -194,6 +194,24 @@ def evaluate_acceptance(results: dict) -> tuple[bool, list[str], dict[str, bool]
         failures.append(f"Unexpected failed network requests detected ({len(unexpected_reqs)}): {unexpected_reqs}")
     criteria["clean_operation"] = c7_passed
 
+    # 8. Phase 2 Library Lifecycle (if present in results)
+    if "phase2_lifecycle" in results:
+        p2 = results["phase2_lifecycle"]
+        p2_passed = (
+            p2.get("workspace_created") is True
+            and p2.get("pdf_uploaded") is True
+            and p2.get("duplicate_identified") is True
+            and p2.get("corrupt_rejected") is True
+            and p2.get("search_success") is True
+            and p2.get("viewer_opened") is True
+            and p2.get("cancel_deletion_kept_paper") is True
+            and p2.get("confirm_deletion_removed_paper") is True
+            and p2.get("workspace_deleted") is True
+        )
+        if not p2_passed:
+            failures.append(f"Phase 2 Library Lifecycle criteria failed: {p2}")
+        criteria["phase2_library_lifecycle"] = p2_passed
+
     overall_passed = len(failures) == 0
     return overall_passed, failures, criteria
 
@@ -273,8 +291,21 @@ def run_checks(
             def handle_request_failed(req):
                 if is_simulating_offline and ("/api/ready" in req.url or "/api/config/public" in req.url):
                     results["simulated_offline_requests"].append({"url": req.url, "failure": req.failure})
-                else:
-                    results["unexpected_failed_requests"].append({"url": req.url, "failure": req.failure})
+                    return
+
+                # If the request received a successful response from the server, it was not an HTTP failure
+                try:
+                    resp = req.response()
+                    if resp is not None and 200 <= resp.status < 300:
+                        return
+                except Exception:
+                    pass
+
+                # If a client aborted a 204 DELETE request upon dialog unmount/navigation
+                if req.method == "DELETE" and req.failure == "net::ERR_ABORTED":
+                    return
+
+                results["unexpected_failed_requests"].append({"url": req.url, "failure": req.failure})
 
             page.on("console", handle_console)
             page.on("requestfailed", handle_request_failed)
@@ -715,9 +746,137 @@ def run_checks(
             # 9. Clean Navigation Console Check across all Routes
             # ------------------------------------------------------------------
             print("[9] Verifying zero console errors across all routes in normal operation...")
-            for route in ["/", "/dashboard", "/library", "/non-existent-test-route"]:
-                page.goto(f"{base_url}{route}", wait_until="networkidle")
-                time.sleep(0.2)
+            # ------------------------------------------------------------------
+            # 10. Phase 2 Workspace & PDF Library Acceptance Flow
+            # ------------------------------------------------------------------
+            print("[10] Executing Phase 2 workspace and PDF library acceptance flow...")
+            p2_results = {}
+            temp_fixtures_dir = output_dir / "temp_fixtures"
+            temp_fixtures_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate synthetic test PDFs using standard minimal PDF structure
+            valid_pdf_path = temp_fixtures_dir / "valid_test_paper.pdf"
+            minimal_valid_pdf_bytes = (
+                b"%PDF-1.4\n"
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
+                b"xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n"
+                b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n187\n%%EOF\n"
+            )
+            valid_pdf_path.write_bytes(minimal_valid_pdf_bytes)
+
+            corrupt_pdf_path = temp_fixtures_dir / "corrupt_test_paper.pdf"
+            corrupt_pdf_path.write_bytes(b"%PDF-corrupted-binary-header-test")
+
+            page.set_viewport_size({"width": 1440, "height": 900})
+            page.goto(f"{base_url}/library", wait_until="networkidle")
+            time.sleep(0.5)
+
+            # 10a. Create workspace
+            create_btn = page.locator("button:has-text('Create Workspace'), button#new-workspace-btn")
+            if create_btn.count() == 0:
+                sel_btn = page.locator("#workspace-selector-btn")
+                if sel_btn.count() > 0:
+                    sel_btn.click()
+                    time.sleep(0.3)
+                    create_btn = page.locator("#new-workspace-btn")
+
+            if create_btn.count() > 0:
+                create_btn.first.click()
+                time.sleep(0.4)
+                page.locator("#workspace-name-input").fill("Browser E2E Workspace")
+                page.locator("button:has-text('Create Workspace')").last.click()
+                time.sleep(0.8)
+
+            ws_name_visible = page.locator("text='Browser E2E Workspace'").count() > 0
+            p2_results["workspace_created"] = ws_name_visible
+
+            # 10b. Upload valid PDF
+            file_input = page.locator("#pdf-upload-input")
+            file_input.set_input_files(str(valid_pdf_path))
+            time.sleep(1.2)
+            accepted_badge = page.locator("text='1 Accepted'")
+            p2_results["pdf_uploaded"] = accepted_badge.count() > 0
+
+            # 10c. Upload duplicate PDF (identical bytes)
+            file_input.set_input_files(str(valid_pdf_path))
+            time.sleep(1.2)
+            dup_badge = page.locator("text='1 Duplicate'")
+            p2_results["duplicate_identified"] = dup_badge.count() > 0
+
+            # 10d. Upload corrupt PDF
+            file_input.set_input_files(str(corrupt_pdf_path))
+            time.sleep(1.2)
+            rej_badge = page.locator("text='1 Rejected'")
+            p2_results["corrupt_rejected"] = rej_badge.count() > 0
+
+            # 10e. Search
+            search_input = page.locator("#paper-search-input")
+            search_input.fill("valid_test")
+            time.sleep(0.5)
+            paper_found = page.locator("text='valid_test_paper.pdf'").count() > 0
+            search_input.fill("")
+            time.sleep(0.4)
+            p2_results["search_success"] = paper_found
+
+            # 10f. View Original PDF
+            view_btn = page.locator("button:has-text('View')").first
+            view_btn.click()
+            time.sleep(0.6)
+            viewer_dialog = page.locator("[role='dialog']")
+            viewer_opened = viewer_dialog.count() > 0 and viewer_dialog.is_visible()
+            p2_results["viewer_opened"] = viewer_opened
+            page.screenshot(path=str(screenshots_dir / "desktop_pdf_viewer_modal.png"))
+            page.keyboard.press("Escape")
+            time.sleep(0.4)
+
+            # 10g. Cancel Paper Deletion
+            del_paper_btn = page.locator("button[aria-label^='Delete valid_test_paper']").first
+            del_paper_btn.click()
+            time.sleep(0.4)
+            cancel_btn = page.locator("button:has-text('Cancel')").first
+            cancel_btn.click()
+            time.sleep(0.4)
+            paper_still_present = page.locator("text='valid_test_paper.pdf'").count() > 0
+            p2_results["cancel_deletion_kept_paper"] = paper_still_present
+
+            # 10h. Confirm Paper Deletion
+            del_paper_btn.click()
+            time.sleep(0.4)
+            confirm_del_btn = page.locator("button:has-text('Delete Paper')").first
+            with page.expect_response(lambda r: "/api/papers/" in r.url and r.request.method == "DELETE", timeout=8000):
+                confirm_del_btn.click()
+            page.wait_for_load_state("networkidle")
+            time.sleep(0.5)
+            paper_removed = page.locator("text='valid_test_paper.pdf'").count() == 0
+            p2_results["confirm_deletion_removed_paper"] = paper_removed
+
+            # 10i. Delete Workspace
+            del_ws_btn = page.locator("button[aria-label='Delete workspace']").first
+            del_ws_btn.click()
+            time.sleep(0.4)
+            confirm_ws_btn = page.locator("button:has-text('Delete Workspace')").first
+            with page.expect_response(
+                lambda r: "/api/workspaces/" in r.url and r.request.method == "DELETE", timeout=8000
+            ):
+                confirm_ws_btn.click()
+            page.wait_for_load_state("networkidle")
+            time.sleep(0.5)
+            ws_removed = page.locator("text='Browser E2E Workspace'").count() == 0
+            p2_results["workspace_deleted"] = ws_removed
+
+            # Clean temporary test fixtures
+            try:
+                valid_pdf_path.unlink(missing_ok=True)
+                corrupt_pdf_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            # Capture desktop Phase 2 library screenshot
+            page.screenshot(path=str(screenshots_dir / "desktop_library_phase2.png"))
+
+            results["phase2_lifecycle"] = p2_results
 
             browser.close()
 

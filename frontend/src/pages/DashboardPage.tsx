@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   FileText,
   CheckCircle,
@@ -9,11 +9,17 @@ import {
   Cpu,
   HardDrive,
   Bot,
+  Folder,
 } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
-import { ReadyResponse, PublicConfigResponse } from "../api/types";
+import {
+  ReadyResponse,
+  PublicConfigResponse,
+  WorkspaceItem,
+} from "../api/types";
+import { api } from "../api/client";
 
 interface DashboardPageProps {
   onNavigateToLibrary: () => void;
@@ -28,6 +34,36 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   readyData,
   configData,
 }) => {
+  const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
+  const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    api
+      .listWorkspaces(null, 100)
+      .then((res) => {
+        if (isMounted) {
+          setWorkspaces(res.items);
+          setIsLoadingWorkspaces(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setIsLoadingWorkspaces(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const totalPapers = workspaces.reduce(
+    (acc, w) => acc + (w.paper_count || 0),
+    0,
+  );
+  const readyPapers = workspaces.reduce(
+    (acc, w) => acc + (w.ready_count || 0),
+    0,
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
       {/* Header Row */}
@@ -89,10 +125,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             style={{
               fontSize: "32px",
               fontWeight: 800,
-              color: "var(--text-muted)",
+              color: "var(--text-primary)",
             }}
           >
-            —
+            {isLoadingWorkspaces ? "..." : totalPapers}
           </div>
           <div
             style={{
@@ -101,7 +137,49 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               marginTop: "4px",
             }}
           >
-            Uploads activate in Phase 2
+            Across {workspaces.length} workspace
+            {workspaces.length === 1 ? "" : "s"}
+          </div>
+        </Card>
+
+        <Card elevation={1}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "12px",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "var(--text-muted)",
+              }}
+            >
+              Research Workspaces
+            </span>
+            <Folder size={18} color="var(--blue-action)" />
+          </div>
+          <div
+            className="tabular-nums"
+            style={{
+              fontSize: "32px",
+              fontWeight: 800,
+              color: "var(--text-primary)",
+            }}
+          >
+            {isLoadingWorkspaces ? "..." : workspaces.length}
+          </div>
+          <div
+            style={{
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              marginTop: "4px",
+            }}
+          >
+            Active isolated environments
           </div>
         </Card>
 
@@ -130,10 +208,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             style={{
               fontSize: "32px",
               fontWeight: 800,
-              color: "var(--text-muted)",
+              color: "var(--text-primary)",
             }}
           >
-            —
+            {isLoadingWorkspaces ? "..." : readyPapers}
           </div>
           <div
             style={{
@@ -142,7 +220,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               marginTop: "4px",
             }}
           >
-            FAISS & BM25 indexing in Week 3
+            FAISS indexing in Phase 3
           </div>
         </Card>
 

@@ -8,6 +8,8 @@ python-dotenv==1.2.4
 sqlalchemy==2.1.4
 alembic==1.20.0
 httpx==0.28.1
+python-multipart==0.0.32
+pymupdf==1.28.2
 
 # Testing & Dev
 pytest==9.1.1
