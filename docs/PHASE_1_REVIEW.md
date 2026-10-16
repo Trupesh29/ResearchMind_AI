@@ -135,3 +135,11 @@ Reproduced in a disposable shell: set `VITE_BACKEND_URL` to `http://127.0.0.1:18
 - Python lint and format checks passed (`ruff check`, `ruff format --check`).
 - `git diff --check` passed with zero whitespace or line-ending errors.
 - Zero orphaned processes or ports retained after test execution.
+
+## Independent review of commit b084a3f
+
+The caller-environment preservation fix is accepted. No new actionable findings were found in this diff, so no corrective Antigravity prompt is needed.
+
+Fresh verification: 81 backend/runner tests passed (37 deprecation warnings); Ruff lint and formatting passed for backend, tests, and scripts; `git diff --check` passed. The six added same-session regressions cover existing and absent environment values on attach rejection, occupied-port rejection, and successful execution, including owned-process cleanup on success.
+
+The original independent reproducer was also repeated in a disposable PowerShell session: after the expected attach failure on port 0, `VITE_BACKEND_URL` remained `http://127.0.0.1:18765`. No servers were started by that reproducer. This review did not rerun the full live-browser suite, frontend checks, or ML/provider checks; its acceptance applies to this wrapper fix.
