@@ -52,6 +52,7 @@ def stage_file_for_deletion(
     entity_type: str,
     paper_id: str,
     workspace_id: str | None = None,
+    user_id: str | None = None,
 ) -> tuple[Path, Path]:
     """
     Moves original_path into .trash with a unique quarantine ID and durable .meta.json ledger.
@@ -67,6 +68,7 @@ def stage_file_for_deletion(
         "entity_type": entity_type,
         "paper_id": paper_id,
         "workspace_id": workspace_id,
+        "user_id": user_id,
         "original_path": str(original_path.resolve()),
         "staged_path": str(staged_path.resolve()),
         "state": "staged",
@@ -143,7 +145,11 @@ def restore_quarantined_file(staged_path: Path, original_path: Path, meta_path: 
         return False
 
 
-def get_quarantine_fallback_path(trash_dir: Path, paper_id: str) -> Path | None:
+def get_quarantine_fallback_path(
+    trash_dir: Path,
+    paper_id: str,
+    user_id: str | None = None,
+) -> Path | None:
     """
     Searches quarantine ledger for any staged or rollback-failed file belonging to a live paper.
     Allows live records with recoverable staged bytes to serve downloads/views.
@@ -159,44 +165,126 @@ def get_quarantine_fallback_path(trash_dir: Path, paper_id: str) -> Path | None:
             "staged",
             "rollback_pending_restoration",
         ):
+            if user_id is not None:
+                meta_user = data.get("user_id")
+                if meta_user is not None and meta_user != user_id:
+                    continue
             staged_p = Path(data.get("staged_path", ""))
             if staged_p.exists():
                 return staged_p
     return None
 
 
-def find_pending_purges(trash_dir: Path, paper_id: str) -> list[tuple[Path, Path]]:
-    """Returns list of (staged_path, meta_path) for paper_id in committed_pending_purge state."""
-    results = []
+def find_adoptable_quarantine(
+    trash_dir: Path,
+    paper_id: str,
+    user_id: str,
+) -> tuple[Path, Path, Path] | None:
+    """
+    Finds an existing quarantined file belonging to a live paper owned by user_id
+    that is in 'staged' or 'rollback_pending_restoration' state where staged_path exists.
+    Returns (original_path, staged_path, meta_path) or None.
+    If metadata lacks user_id, updates metadata to persist user_id.
+    """
     if not trash_dir.exists():
-        return results
+        return None
 
     for meta_path in trash_dir.glob("*.meta.json"):
         data = _load_meta(meta_path)
         if not data:
             continue
         if data.get("paper_id") == paper_id and data.get("state") in (
-            "committed_deletion",
-            "committed_pending_purge",
+            "staged",
+            "rollback_pending_restoration",
         ):
+            meta_user = data.get("user_id")
+            # If metadata explicitly has a different user_id, do not adopt
+            if meta_user is not None and meta_user != user_id:
+                continue
+
             staged_p = Path(data.get("staged_path", ""))
-            results.append((staged_p, meta_path))
-    return results
+            original_p = Path(data.get("original_path", ""))
+            if staged_p.exists():
+                # Persist owner in metadata if it was missing or different
+                if meta_user != user_id:
+                    data["user_id"] = user_id
+                    _save_meta(meta_path, data)
+                return original_p, staged_p, meta_path
+    return None
 
 
-def find_pending_purges_by_workspace(trash_dir: Path, workspace_id: str) -> list[tuple[Path, Path]]:
-    """Returns list of (staged_path, meta_path) for workspace_id in committed_pending_purge state."""
+def update_ledger_ownership(
+    meta_path: Path,
+    user_id: str,
+    workspace_id: str | None = None,
+) -> None:
+    """Updates ledger metadata with verified user_id and optional workspace_id."""
+    data = _load_meta(meta_path)
+    if data:
+        data["user_id"] = user_id
+        if workspace_id:
+            data["workspace_id"] = workspace_id
+        _save_meta(meta_path, data)
+
+
+def find_pending_purges(
+    trash_dir: Path,
+    paper_id: str,
+    user_id: str | None = None,
+) -> list[tuple[Path, Path]]:
+    """
+    Returns list of (staged_path, meta_path) for paper_id in committed_pending_purge state.
+    Strictly verifies user ownership. Old ownerless ledgers without user_id are NOT returned
+    to prevent unauthorized purges merely from possession of a resource ID.
+    """
     results = []
-    if not trash_dir.exists():
+    if not trash_dir.exists() or not user_id:
         return results
 
     for meta_path in trash_dir.glob("*.meta.json"):
         data = _load_meta(meta_path)
         if not data:
             continue
-        if data.get("workspace_id") == workspace_id and data.get("state") in (
-            "committed_deletion",
-            "committed_pending_purge",
+        if (
+            data.get("paper_id") == paper_id
+            and data.get("user_id") == user_id
+            and data.get("state")
+            in (
+                "committed_deletion",
+                "committed_pending_purge",
+            )
+        ):
+            staged_p = Path(data.get("staged_path", ""))
+            results.append((staged_p, meta_path))
+    return results
+
+
+def find_pending_purges_by_workspace(
+    trash_dir: Path,
+    workspace_id: str,
+    user_id: str | None = None,
+) -> list[tuple[Path, Path]]:
+    """
+    Returns list of (staged_path, meta_path) for workspace_id in committed_pending_purge state.
+    Strictly verifies user ownership. Old ownerless ledgers without user_id are NOT returned
+    to prevent unauthorized purges merely from possession of a resource ID.
+    """
+    results = []
+    if not trash_dir.exists() or not user_id:
+        return results
+
+    for meta_path in trash_dir.glob("*.meta.json"):
+        data = _load_meta(meta_path)
+        if not data:
+            continue
+        if (
+            data.get("workspace_id") == workspace_id
+            and data.get("user_id") == user_id
+            and data.get("state")
+            in (
+                "committed_deletion",
+                "committed_pending_purge",
+            )
         ):
             staged_p = Path(data.get("staged_path", ""))
             results.append((staged_p, meta_path))

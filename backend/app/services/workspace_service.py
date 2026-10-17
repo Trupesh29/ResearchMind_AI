@@ -207,9 +207,9 @@ def delete_workspace(
     data_dir: Path,
 ) -> None:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id, Workspace.user_id == user_id).first()
+    trash_dir = data_dir / "pdfs" / ".trash"
     if not ws:
-        trash_dir = data_dir / "pdfs" / ".trash"
-        pending = quarantine_service.find_pending_purges_by_workspace(trash_dir, workspace_id)
+        pending = quarantine_service.find_pending_purges_by_workspace(trash_dir, workspace_id, user_id=user_id)
         if pending:
             all_purged = all(quarantine_service.purge_quarantined_file(stg, meta) for stg, meta in pending)
             if all_purged:
@@ -230,41 +230,60 @@ def delete_workspace(
     # Collect backing files
     papers = db.query(Paper).filter(Paper.workspace_id == ws.id).all()
 
-    # Identify unique files to stage that are NOT referenced by other workspaces
-    files_to_stage: dict[str, list[Paper]] = {}
-    for p in papers:
-        if p.storage_path:
-            p_file = Path(p.storage_path)
-            if p_file.exists():
-                other_ref = (
-                    db.query(Paper).filter(Paper.workspace_id != ws.id, Paper.storage_path == p.storage_path).first()
-                )
-                if not other_ref:
-                    files_to_stage.setdefault(p.storage_path, []).append(p)
-
     staged_entries: list[tuple[Path, Path, Path]] = []  # (original_path, staged_path, meta_path)
-    # Stage each file into quarantine
-    for path_str, associated_papers in files_to_stage.items():
-        p_file = Path(path_str)
-        try:
-            staged_p, meta_p = quarantine_service.stage_file_for_deletion(
-                original_path=p_file,
-                entity_type="workspace",
-                paper_id=associated_papers[0].id,
-                workspace_id=ws.id,
+    handled_storage_paths: set[str] = set()
+    handled_meta_paths: set[Path] = set()
+
+    for p in papers:
+        if not p.storage_path:
+            continue
+
+        # Check if another workspace references this storage_path
+        other_ref = db.query(Paper).filter(Paper.workspace_id != ws.id, Paper.storage_path == p.storage_path).first()
+        if other_ref:
+            continue
+
+        p_file = Path(p.storage_path)
+        if p_file.exists():
+            if p.storage_path in handled_storage_paths:
+                continue
+            handled_storage_paths.add(p.storage_path)
+            try:
+                staged_p, meta_p = quarantine_service.stage_file_for_deletion(
+                    original_path=p_file,
+                    entity_type="workspace",
+                    paper_id=p.id,
+                    workspace_id=ws.id,
+                    user_id=user_id,
+                )
+                staged_entries.append((p_file, staged_p, meta_p))
+            except OSError as exc:
+                logger.error(f"Error staging file {p.storage_path} during workspace deletion: {exc}")
+                for orig_p, stg_p, meta_p in staged_entries:
+                    quarantine_service.restore_quarantined_file(stg_p, orig_p, meta_p)
+                raise AppException(
+                    code=ErrorCode.DATABASE_ERROR,
+                    message="Failed to delete one or more backing files during workspace deletion. Workspace and papers preserved for retry.",
+                    status_code=500,
+                    details={"workspace_id": ws.id, "failed_paper_ids": [p.id]},
+                )
+        else:
+            # File is not at storage_path; check if already in quarantine (e.g. prior rollback restoration failure)
+            adopted = quarantine_service.find_adoptable_quarantine(
+                trash_dir=trash_dir,
+                paper_id=p.id,
+                user_id=user_id,
             )
-            staged_entries.append((p_file, staged_p, meta_p))
-        except OSError as exc:
-            logger.error(f"Error staging file {path_str} during workspace deletion: {exc}")
-            # Restore any files already staged so far
-            for orig_p, stg_p, meta_p in staged_entries:
-                quarantine_service.restore_quarantined_file(stg_p, orig_p, meta_p)
-            raise AppException(
-                code=ErrorCode.DATABASE_ERROR,
-                message="Failed to delete one or more backing files during workspace deletion. Workspace and papers preserved for retry.",
-                status_code=500,
-                details={"workspace_id": ws.id, "failed_paper_ids": [p.id for p in associated_papers]},
-            )
+            if adopted:
+                orig_p, stg_p, meta_p = adopted
+                if meta_p not in handled_meta_paths:
+                    handled_meta_paths.add(meta_p)
+                    quarantine_service.update_ledger_ownership(
+                        meta_path=meta_p,
+                        user_id=user_id,
+                        workspace_id=ws.id,
+                    )
+                    staged_entries.append((orig_p, stg_p, meta_p))
 
     # Delete workspace from DB (FK cascade removes paper records)
     try:

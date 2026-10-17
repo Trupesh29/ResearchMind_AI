@@ -73,12 +73,10 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
 ## Phase 2 Verification Status (2026-10-17)
-Latest independent review of 6354bc0: FAIL pending Q1/Q2 in `docs/PHASE_2_CURRENT_REVIEW.md`. Use that file's current corrective prompt; previous implementation-run results below are historical.
+Findings Q1 and Q2 from `docs/PHASE_2_CURRENT_REVIEW.md` resolved via architectural fixes and verified with fresh automated test and live Chrome browser evidence. Left unpushed for completion review per Phase 2 policy.
 
-Findings R1–R3 from `docs/PHASE_2_REVIEW_C7D6C8E.md` resolved via architectural fixes and verified with fresh automated test and live Chrome browser evidence. Left unpushed for completion review per Phase 2 policy.
-
-- Scope: Workspace Management & PDF Research Library (Phase 2 R1–R3 Corrective Repair)
-- Tests: 125 pytest passed (including `test_phase2_fixes.py` with 16 tests, `test_browser_runner.py` with 48 tests), 23 Vitest passed (including 14 in `library.test.tsx`), tsc typecheck passed, eslint passed, prettier passed, ruff passed (37 files), vite build passed.
+- Scope: Workspace Management & PDF Research Library (Phase 2 Q1/Q2 Corrective Repair)
+- Tests: 130 pytest passed (including `test_phase2_fixes.py` with 22 tests, `test_browser_runner.py` with 48 tests), 23 Vitest passed (including 14 in `library.test.tsx`), tsc typecheck passed, eslint passed, prettier passed, ruff passed (37 files), vite build passed.
 - Live Browser Suite: 8 of 8 criteria passed on disposable database/storage (`no_horizontal_overflow`, `routes_and_navigation`, `mobile_drawer_accessibility`, `reduced_motion_suppressed`, `contrast_ratios`, `api_states_and_recovery`, `clean_operation`, `phase2_library_lifecycle`).
 - `VERDICT: PASS`
 

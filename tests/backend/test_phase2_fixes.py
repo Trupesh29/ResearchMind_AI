@@ -577,3 +577,300 @@ def test_r1_workspace_delete_unlink_failure_pending_purge_and_retry(client: Test
     # Quarantined files are purged
     remaining = [m for m in trash_dir.glob("*.meta.json") if paper_id in m.name]
     assert len(remaining) == 0
+
+
+def test_q1_paper_pending_purge_foreign_and_ownerless_rejection(
+    client: TestClient, isolated_env: dict, db_session: Session
+):
+    """Q1: Pending-purge retries enforce resource ownership; foreign/ownerless requests receive 404 without file mutation."""
+    import json
+
+    from backend.app.api.deps import get_current_user
+    from backend.app.db.models import User
+    from backend.app.main import app
+
+    # Create foreign user
+    foreign_user = User(
+        id="user_foreign_q1_paper",
+        email="foreign_p@example.com",
+        password_hash="mock_hash",
+        display_name="Foreign Paper User",
+    )
+    db_session.add(foreign_user)
+    db_session.commit()
+
+    ws_res = client.post("/api/workspaces", json={"name": "Q1 Paper Owner WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("Q1 Paper Pending Purge Content")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("q1_paper.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    trash_dir = data_dir / "pdfs" / ".trash"
+
+    # 1. Trigger deletion with purge failure so row is deleted and ledger has committed_pending_purge
+    with patch("backend.app.services.quarantine_service.purge_quarantined_file", return_value=False):
+        del_res = client.delete(f"/api/papers/{paper_id}")
+        assert del_res.status_code == 500
+        assert del_res.json()["error"]["details"].get("status") == "pending_purge"
+
+    # Confirm paper row deleted
+    assert client.get(f"/api/papers/{paper_id}").status_code == 404
+
+    # Verify ledger file exists and has user_id set to genuine owner
+    matching_metas = [m for m in trash_dir.glob("*.meta.json") if paper_id in m.name]
+    assert len(matching_metas) == 1
+    meta_p = matching_metas[0]
+    meta_data = json.loads(meta_p.read_text(encoding="utf-8"))
+    staged_p = Path(meta_data["staged_path"])
+    assert staged_p.exists()
+    owner_id = meta_data["user_id"]
+    assert bool(owner_id)
+    assert owner_id != foreign_user.id
+
+    # 2. Foreign user tries to delete: MUST return 404 and leave file & ledger untouched
+    app.dependency_overrides[get_current_user] = lambda: foreign_user
+    try:
+        foreign_del = client.delete(f"/api/papers/{paper_id}")
+        assert foreign_del.status_code == 404
+        assert foreign_del.json()["error"]["code"] == ErrorCode.NOT_FOUND.value
+        # File and ledger strictly untouched
+        assert staged_p.exists()
+        assert meta_p.exists()
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    # 3. Ownerless/legacy record: simulate missing/None user_id in ledger
+    meta_data["user_id"] = None
+    meta_p.write_text(json.dumps(meta_data, indent=2), encoding="utf-8")
+
+    # Even owner call must be rejected conservatively (no unauthorized purge merely from ID)
+    owner_ownerless_del = client.delete(f"/api/papers/{paper_id}")
+    assert owner_ownerless_del.status_code == 404
+    assert staged_p.exists()
+    assert meta_p.exists()
+
+    # 4. Restore genuine owner ID on ledger: genuine owner retry succeeds with 204
+    meta_data["user_id"] = owner_id
+    meta_p.write_text(json.dumps(meta_data, indent=2), encoding="utf-8")
+
+    retry_del = client.delete(f"/api/papers/{paper_id}")
+    assert retry_del.status_code == 204
+    assert not staged_p.exists()
+    assert not meta_p.exists()
+
+
+def test_q1_workspace_pending_purge_foreign_and_ownerless_rejection(
+    client: TestClient, isolated_env: dict, db_session: Session
+):
+    """Q1: Workspace pending-purge retries enforce ownership; foreign users cannot purge retained files."""
+    import json
+
+    from backend.app.api.deps import get_current_user
+    from backend.app.db.models import User
+    from backend.app.main import app
+
+    # Create foreign user
+    foreign_user = User(
+        id="user_foreign_q1_ws",
+        email="foreign_ws@example.com",
+        password_hash="mock_hash",
+        display_name="Foreign WS User",
+    )
+    db_session.add(foreign_user)
+    db_session.commit()
+
+    ws_res = client.post("/api/workspaces", json={"name": "Q1 WS Owner WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("Q1 WS Pending Purge Content")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("q1_ws_paper.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    trash_dir = data_dir / "pdfs" / ".trash"
+
+    # 1. Trigger workspace deletion with purge failure
+    with patch("backend.app.services.quarantine_service.purge_quarantined_file", return_value=False):
+        del_res = client.delete(f"/api/workspaces/{ws_id}")
+        assert del_res.status_code == 500
+        assert del_res.json()["error"]["details"].get("status") == "pending_purge"
+
+    # Confirm workspace row deleted
+    assert client.get(f"/api/workspaces/{ws_id}").status_code == 404
+
+    # Ledger exists in trash
+    matching_metas = [m for m in trash_dir.glob("*.meta.json") if paper_id in m.name]
+    assert len(matching_metas) == 1
+    meta_p = matching_metas[0]
+    meta_data = json.loads(meta_p.read_text(encoding="utf-8"))
+    staged_p = Path(meta_data["staged_path"])
+    assert staged_p.exists()
+    owner_id = meta_data["user_id"]
+    assert bool(owner_id)
+    assert owner_id != foreign_user.id
+
+    # 2. Foreign user tries to delete workspace: 404, file and ledger untouched
+    app.dependency_overrides[get_current_user] = lambda: foreign_user
+    try:
+        foreign_del = client.delete(f"/api/workspaces/{ws_id}")
+        assert foreign_del.status_code == 404
+        assert staged_p.exists()
+        assert meta_p.exists()
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    # 3. Ownerless record test
+    meta_data["user_id"] = None
+    meta_p.write_text(json.dumps(meta_data, indent=2), encoding="utf-8")
+    owner_ownerless_del = client.delete(f"/api/workspaces/{ws_id}")
+    assert owner_ownerless_del.status_code == 404
+    assert staged_p.exists()
+
+    # 4. Genuine owner retry
+    meta_data["user_id"] = owner_id
+    meta_p.write_text(json.dumps(meta_data, indent=2), encoding="utf-8")
+    retry_del = client.delete(f"/api/workspaces/{ws_id}")
+    assert retry_del.status_code == 204
+    assert not staged_p.exists()
+    assert not meta_p.exists()
+
+
+def test_q2_paper_already_in_quarantine_adopted_and_purged(client: TestClient, isolated_env: dict):
+    """Q2: Live paper with file already staged in quarantine is adopted on DELETE, purged completely on commit."""
+    ws_res = client.post("/api/workspaces", json={"name": "Q2 Adopted Paper WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("Q2 Live Paper Quarantined Bytes")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("q2_paper.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    trash_dir = data_dir / "pdfs" / ".trash"
+
+    # 1. Force commit failure + restoration failure so paper remains alive in DB but bytes reside in .trash
+    with patch.object(Session, "commit", side_effect=RuntimeError("Simulated commit error")):
+        with patch("backend.app.services.quarantine_service.restore_quarantined_file", return_value=False):
+            del_res = client.delete(f"/api/papers/{paper_id}")
+            assert del_res.status_code == 500
+            assert del_res.json()["error"]["details"]["status"] == "quarantined_for_recovery"
+
+    # Paper is alive in DB and accessible via fallback route
+    assert client.get(f"/api/papers/{paper_id}").status_code == 200
+    file_res = client.get(f"/api/papers/{paper_id}/file")
+    assert file_res.status_code == 200
+    assert file_res.content == pdf_bytes
+
+    # Original storage_path file does not exist (bytes are in .trash)
+    pdf_path = data_dir / "pdfs" / f"{paper_id}.pdf"
+    assert not pdf_path.exists()
+
+    # 2. Retry DELETE /api/papers/{paper_id} without errors:
+    # Must adopt the quarantined file, commit deletion, and purge it!
+    retry_del = client.delete(f"/api/papers/{paper_id}")
+    assert retry_del.status_code == 204
+
+    # Paper row is deleted
+    assert client.get(f"/api/papers/{paper_id}").status_code == 404
+
+    # Quarantined file and metadata are completely purged from .trash!
+    remaining = [m for m in trash_dir.glob("*.meta.json") if paper_id in m.name]
+    assert len(remaining) == 0
+    remaining_tmp = [t for t in trash_dir.glob("*.tmp") if paper_id in t.name]
+    assert len(remaining_tmp) == 0
+
+    # Subsequent delete returns 404
+    subsequent_del = client.delete(f"/api/papers/{paper_id}")
+    assert subsequent_del.status_code == 404
+
+
+def test_q2_paper_already_in_quarantine_purge_failure_then_owner_retry(client: TestClient, isolated_env: dict):
+    """Q2: Live paper with file in quarantine adopted on DELETE; purge failure marks committed_pending_purge; retry succeeds."""
+    ws_res = client.post("/api/workspaces", json={"name": "Q2 Purge Fail WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("Q2 Purge Failure Retry Content")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("q2_purge_fail.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    trash_dir = data_dir / "pdfs" / ".trash"
+
+    # Incur commit failure + restoration failure
+    with patch.object(Session, "commit", side_effect=RuntimeError("Simulated commit error")):
+        with patch("backend.app.services.quarantine_service.restore_quarantined_file", return_value=False):
+            del_res = client.delete(f"/api/papers/{paper_id}")
+            assert del_res.status_code == 500
+
+    # Now retry DELETE, but purge_quarantined_file fails
+    with patch("backend.app.services.quarantine_service.purge_quarantined_file", return_value=False):
+        retry_fail = client.delete(f"/api/papers/{paper_id}")
+        assert retry_fail.status_code == 500
+        assert retry_fail.json()["error"]["details"]["status"] == "pending_purge"
+
+    # Paper row is gone from DB
+    assert client.get(f"/api/papers/{paper_id}").status_code == 404
+
+    # Subsequent owner retry: purge succeeds!
+    final_del = client.delete(f"/api/papers/{paper_id}")
+    assert final_del.status_code == 204
+    assert len(list(trash_dir.glob(f"*{paper_id}*"))) == 0
+
+
+def test_q2_workspace_cascade_mixed_normal_and_quarantined_files(client: TestClient, isolated_env: dict):
+    """Q2: Workspace deletion cascade correctly adopts already-quarantined files along with normal files."""
+    ws_res = client.post("/api/workspaces", json={"name": "Q2 Mixed WS"})
+    ws_id = ws_res.json()["id"]
+
+    # Upload Paper 1 (normal)
+    pdf1_bytes = create_minimal_pdf("Paper 1 Normal Content")
+    res1 = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("p1_normal.pdf", io.BytesIO(pdf1_bytes), "application/pdf"))],
+    )
+    p1_id = res1.json()["papers"][0]["id"]
+
+    # Upload Paper 2 (will be put into quarantine via failed restoration)
+    pdf2_bytes = create_minimal_pdf("Paper 2 Quarantined Content")
+    res2 = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("p2_quarantine.pdf", io.BytesIO(pdf2_bytes), "application/pdf"))],
+    )
+    p2_id = res2.json()["papers"][0]["id"]
+
+    data_dir = isolated_env["data_dir"]
+    trash_dir = data_dir / "pdfs" / ".trash"
+
+    # Put Paper 2 into quarantine
+    with patch.object(Session, "commit", side_effect=RuntimeError("Simulated commit error")):
+        with patch("backend.app.services.quarantine_service.restore_quarantined_file", return_value=False):
+            client.delete(f"/api/papers/{p2_id}")
+
+    # Verify state: Paper 1 has normal file, Paper 2 has quarantined file
+    p1_file = data_dir / "pdfs" / f"{p1_id}.pdf"
+    p2_file = data_dir / "pdfs" / f"{p2_id}.pdf"
+    assert p1_file.exists()
+    assert not p2_file.exists()
+
+    # Now delete workspace: cascade must stage Paper 1 and adopt Paper 2, then purge both!
+    del_ws = client.delete(f"/api/workspaces/{ws_id}")
+    assert del_ws.status_code == 204
+
+    # Both papers and workspace are gone from DB
+    assert client.get(f"/api/workspaces/{ws_id}").status_code == 404
+    assert client.get(f"/api/papers/{p1_id}").status_code == 404
+    assert client.get(f"/api/papers/{p2_id}").status_code == 404
+
+    # Both files are purged from disk and trash
+    assert not p1_file.exists()
+    assert len([m for m in trash_dir.glob("*.meta.json") if p1_id in m.name or p2_id in m.name]) == 0
+    assert len([t for t in trash_dir.glob("*.tmp") if p1_id in t.name or p2_id in t.name]) == 0

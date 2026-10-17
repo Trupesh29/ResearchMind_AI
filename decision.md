@@ -1,14 +1,12 @@
 # ResearchMind AI decisions
 
-Latest independent review (6354bc0): two remaining quarantine ownership/lifecycle findings Q1/Q2 are recorded in `docs/PHASE_2_CURRENT_REVIEW.md`, including the current corrective prompt. Keep Phase 2 local until accepted. Earlier completion claims remain historical evidence.
+Current independent review (Q1/Q2 Corrective Repair Checkpoint, 2026-10-17): Corrective prompt executed and findings Q1 and Q2 from `docs/PHASE_2_CURRENT_REVIEW.md` resolved via architectural fixes: pending-purge retries strictly enforce authenticated resource ownership with conservative rejection of foreign and ownerless callers (Q1), and delete operations adopt already-quarantined live records ensuring full purge on commit and fallback access on rollback, including mixed workspace cascades (Q2). Verified with fresh automated tests (130 pytest passed, 23 vitest passed, static checks passed) and live Chrome browser suite on disposable storage. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
 
-Current independent review (R1–R3 Corrective Repair Checkpoint, 2026-10-17): Corrective prompt executed and findings R1–R3 in `docs/PHASE_2_REVIEW_C7D6C8E.md` resolved via architectural fixes (durable quarantine ledger with crash recovery, decoupled pagination loading ownership, and validated top-level workspace creation ID in browser cleanup). Verified with fresh automated tests and live Chrome browser suite on disposable storage. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
-
-Updated: 2026-10-17. Scope: Week 1 Phase 2 R1–R3 corrective repair and publication gate.
+Updated: 2026-10-17. Scope: Week 1 Phase 2 Q1/Q2 corrective repair and publication gate.
 
 ## Current review and publication status
 
-Phase 2 R1–R3 corrective repair loop completed. All three findings from `docs/PHASE_2_REVIEW_C7D6C8E.md` have been resolved with regression tests, static checks, and live browser verification on disposable storage. Phase 1 remains published on remote main at `24eadea`. This repaired Phase 2 checkpoint is committed locally and left unpushed for completion review per user instructions.
+Phase 2 Q1/Q2 corrective repair loop completed. Both findings from `docs/PHASE_2_CURRENT_REVIEW.md` have been resolved with regression tests, static checks, and live browser verification on disposable storage. Phase 1 remains published on remote main at `24eadea`. This repaired Phase 2 checkpoint is committed locally and left unpushed for completion review per user instructions.
 
 
 ## D001 - Phase boundaries
@@ -74,6 +72,8 @@ Browser acceptance verification must not rely on passive logging or unconditiona
 12. [COMPLETED] Execute Phase 2 implementation, backend & frontend unit/integration tests, and live Chrome browser acceptance suite; all 8 acceptance criteria satisfied (100% PASS).
 13. [COMPLETED] Execute Phase 2 corrective repair loop resolving all 8 review findings: browser test mutation isolation on disposable storage/db, early request body limits (250MB) and batch limits (20 files), atomic/recoverable file and DB lifecycles, RFC 6266 / RFC 5987 Unicode Content-Disposition, RFC 9110 range clipping, UI cursor pagination and debounced search, and async workspace selection race protection; verified by 109 pytest, 17 vitest, static checks, and live Chrome browser suite.
 14. [COMPLETED] Execute Phase 2 R1–R3 corrective repair loop: durable quarantine ledger and startup reconciliation (`quarantine_service.py`), decoupled pagination loading ownership and query generation reset (`LibraryPage.tsx`), and top-level workspace ID capture with cleanup failure evaluation (`scripts/run_browser_verification.py`); verified by 125 pytest, 23 vitest, static checks, and live Chrome browser suite.
+15. [COMPLETED] Execute Phase 2 Q1/Q2 corrective repair loop: pending-purge retry resource ownership enforcement and conservative ownerless rejection (`quarantine_service.py`, `paper_service.py`, `workspace_service.py`), and adoption of already-quarantined live records ensuring full purge on commit and fallback access on rollback, including mixed workspace cascades; verified by 130 pytest, 23 vitest, static checks, and live Chrome browser suite.
+
 
 
 

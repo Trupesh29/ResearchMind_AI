@@ -394,7 +394,8 @@ def get_paper_file_path(paper: Paper) -> Path | None:
             return p_file
         # Check quarantine fallback
         trash_dir = p_file.parent / ".trash"
-        fallback = quarantine_service.get_quarantine_fallback_path(trash_dir, paper.id)
+        user_id = paper.workspace.user_id if paper.workspace else None
+        fallback = quarantine_service.get_quarantine_fallback_path(trash_dir, paper.id, user_id=user_id)
         if fallback and fallback.exists() and fallback.is_file():
             return fallback
     return None
@@ -409,11 +410,12 @@ def delete_paper(db: Session, user_id: str, paper_id: str, settings: Settings | 
         .first()
     )
 
+    cfg = settings or get_settings()
+    trash_dir = cfg.DATA_DIR / "pdfs" / ".trash"
+
     if not paper:
         # Check if there is a pending purge from a previously committed deletion that failed unlink
-        cfg = settings or get_settings()
-        trash_dir = cfg.DATA_DIR / "pdfs" / ".trash"
-        pending = quarantine_service.find_pending_purges(trash_dir, paper_id)
+        pending = quarantine_service.find_pending_purges(trash_dir, paper_id, user_id=user_id)
         if pending:
             all_purged = all(quarantine_service.purge_quarantined_file(stg, meta) for stg, meta in pending)
             if all_purged:
@@ -448,6 +450,7 @@ def delete_paper(db: Session, user_id: str, paper_id: str, settings: Settings | 
                         entity_type="paper",
                         paper_id=paper.id,
                         workspace_id=paper.workspace_id,
+                        user_id=user_id,
                     )
                 except OSError as exc:
                     logger.error(f"Failed to stage backing file {storage_path_str} for deletion: {exc}")
@@ -457,6 +460,15 @@ def delete_paper(db: Session, user_id: str, paper_id: str, settings: Settings | 
                         status_code=500,
                         details={"paper_id": paper_id},
                     )
+            else:
+                # File is not at storage_path; check if already staged in quarantine (e.g. prior rollback restoration failure)
+                adopted = quarantine_service.find_adoptable_quarantine(
+                    trash_dir=trash_dir,
+                    paper_id=paper.id,
+                    user_id=user_id,
+                )
+                if adopted:
+                    original_file, staged_path, meta_path = adopted
 
     try:
         db.delete(paper)
