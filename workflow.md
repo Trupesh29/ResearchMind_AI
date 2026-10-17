@@ -72,7 +72,20 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
-## Current independent Phase 2 status (2026-10-17)
+## Current Phase 3 Implementation Status (2026-10-17)
+
+Week 2 Phase 3 (Persistent Processing and PDF Extraction) is fully implemented and verified:
+- Persistent processing jobs (`ProcessingJob`), stage attempts, generation identity (`run_id`), worker heartbeat leases, and claim-token fencing.
+- Page text and block coordinate extraction (`Page`), 1-based page indices, bounding boxes `[x0, y0, x1, y1]` in points with top-left origin convention, visual rotation degrees.
+- Quality heuristics (`possible_scan`, `table_unreliable`, `equations_may_be_missing`), metadata provenance (`pdf`, `text`, `inferred`), and strict rejection of all-image documents (`UnsupportedTextError`).
+- Standalone CLI worker (`worker/main.py`, `worker/engine.py`) with short DB transactions, atomic claims, expired lease reclamation, and stale claim fencing.
+- Inspection & Reprocessing APIs (`GET /status`, `GET /pages`, `GET /pages/{page_number}/blocks`, `POST /reprocess` with 409 conflict detection).
+- Verified by 140 backend tests, 25 frontend tests, 0 Alembic schema drift, Ruff check/format clean, tsc and vite build clean.
+- Scope boundary strictly preserved: papers halt in `status = 'processing'` awaiting Phase 4 sectioning/chunking.
+
+VERDICT: PASS — Week 2 Phase 3.
+
+## Historical Phase 2 status (2026-10-17)
 
 Review of 42baf49 accepted Phase 2. Fresh 133 backend / 25 frontend tests and static/build checks passed. Normal and 750 ms delayed browser runs passed all 8 criteria. An independent injected unfiltered response failed the real browser search gate as expected. No corrective prompt is needed. Publish the accepted checkpoint to manav, verify the ref, then main under the existing user instruction.
 

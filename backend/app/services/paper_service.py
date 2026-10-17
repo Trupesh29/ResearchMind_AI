@@ -26,7 +26,7 @@ from backend.app.schemas.paper import (
     PaperUploadRejectedItem,
     PaperUploadSuccessItem,
 )
-from backend.app.services import quarantine_service
+from backend.app.services import processing_service, quarantine_service
 from backend.app.services.workspace_service import decode_cursor, encode_cursor, get_workspace_or_404
 
 logger = logging.getLogger("researchmind.paper_service")
@@ -259,6 +259,7 @@ async def process_paper_upload(
                 committed = False
                 try:
                     db.add(new_paper)
+                    processing_service.enqueue_validation_job(db, paper_id=paper_id)
                     db.commit()
                     committed = True
                 except IntegrityError:

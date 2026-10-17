@@ -10,12 +10,14 @@ from backend.app.core.errors import AppException, ErrorCode
 from backend.app.db.models import User
 from backend.app.db.session import get_db
 from backend.app.schemas.paper import (
+    PageBlocksResponse,
+    PagesListResponse,
     PaperListResponse,
     PaperResponse,
     PaperStatusResponse,
     PaperUploadBatchResponse,
 )
-from backend.app.services import paper_service
+from backend.app.services import paper_service, processing_service
 
 router = APIRouter(prefix="/papers", tags=["Papers"])
 
@@ -98,14 +100,35 @@ def get_paper_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> PaperStatusResponse:
-    paper = paper_service.get_paper_or_404(db, current_user.id, paper_id)
-    return PaperStatusResponse(
-        status=paper.status,
-        stage="validating" if paper.status == "uploaded" else "ready",
-        progress=1.0 if paper.status == "ready" else 0.0,
-        attempt=1,
-        error=None,
-    )
+    return processing_service.get_paper_status_details(db, current_user.id, paper_id)
+
+
+@router.get("/{paper_id}/pages", response_model=PagesListResponse)
+def get_paper_pages(
+    paper_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PagesListResponse:
+    return processing_service.get_paper_pages(db, current_user.id, paper_id)
+
+
+@router.get("/{paper_id}/pages/{page_number}/blocks", response_model=PageBlocksResponse)
+def get_paper_page_blocks(
+    paper_id: str,
+    page_number: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PageBlocksResponse:
+    return processing_service.get_paper_page_blocks(db, current_user.id, paper_id, page_number)
+
+
+@router.post("/{paper_id}/reprocess", response_model=PaperStatusResponse, status_code=status.HTTP_202_ACCEPTED)
+def reprocess_paper(
+    paper_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PaperStatusResponse:
+    return processing_service.request_reprocess(db, current_user.id, paper_id)
 
 
 @router.get("/{paper_id}/file")

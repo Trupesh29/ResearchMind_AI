@@ -85,9 +85,46 @@ class PaperListResponse(BaseModel):
     total_count: int = 0
 
 
+class PaperStageDetail(BaseModel):
+    stage: str
+    status: str
+    attempt: int = 1
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: str | None = None
+
+
 class PaperStatusResponse(BaseModel):
     status: str
     stage: str = "validating"
     progress: float = 0.0
     attempt: int = 1
     error: str | None = None
+    stages: list[PaperStageDetail] = Field(default_factory=list)
+
+
+class PageSummaryItem(BaseModel):
+    page_number: int
+    char_count: int
+    extraction_status: str
+    flags: list[str] = Field(default_factory=list)
+
+
+class PagesListResponse(BaseModel):
+    items: list[PageSummaryItem]
+    total_pages: int = 0
+
+
+class PageBlockItem(BaseModel):
+    id: str
+    bbox: list[float]  # [x0, y0, x1, y1]
+    text: str
+    text_hash: str
+
+
+class PageBlocksResponse(BaseModel):
+    page_number: int
+    width: float | None = None
+    height: float | None = None
+    rotation: int | None = None
+    blocks: list[PageBlockItem] = Field(default_factory=list)

@@ -189,15 +189,21 @@ For a single-user local MVP, create one default user row and skip the login flow
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
-| `id` | `TEXT` | `PRIMARY KEY` | |
-| `paper_id` | `TEXT` | `NOT NULL`, `FK` `CASCADE` | |
+| `id` | `TEXT` | `PRIMARY KEY` | UUID string |
+| `paper_id` | `TEXT` | `NOT NULL`, `FK → papers.id` `CASCADE` | Indexed |
 | `page_number` | `INTEGER` | `NOT NULL`, `>= 1` | 1-based, matches the PDF viewer |
 | `char_count` | `INTEGER` | `NOT NULL`, default 0 | Very low counts help detect scans |
+| `width` | `REAL` | nullable | Page width in PDF points |
+| `height` | `REAL` | nullable | Page height in PDF points |
+| `rotation` | `INTEGER` | nullable | Visual rotation in degrees (0, 90, 180, 270) |
 | `extraction_status` | `TEXT` | `ok` \| `partial` \| `failed` | Default `ok` |
 | `flags_json` | `TEXT` | `NOT NULL`, valid JSON, default `[]` | e.g. `possible_scan`, `table_unreliable`, `equations_may_be_missing` |
-| `blocks_json` | `TEXT` | valid JSON or NULL | Block coordinates for citation highlighting — see §5.2 |
+| `raw_text` | `TEXT` | nullable | Extracted textual content of the page |
+| `blocks_json` | `TEXT` | valid JSON or NULL | Block coordinates and bounding boxes for citation highlighting — see §5.2 |
+| `created_at` | `TEXT` | `NOT NULL`, default current UTC | |
 
-**Constraints:** `UNIQUE (paper_id, page_number)`.
+**Constraints:** `UNIQUE (paper_id, page_number)`, `CHECK (page_number >= 1)`, `CHECK (char_count >= 0)`, `CHECK (extraction_status IN ('ok', 'partial', 'failed'))`.
+**Index:** `ix_pages_paper_id(paper_id)`.
 
 This table is what makes the Quality Center honest: a flagged page is recorded rather than silently treated as understood.
 
@@ -245,18 +251,26 @@ This table is what makes the Quality Center honest: a flagged page is recorded r
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
-| `id` | `TEXT` | `PRIMARY KEY` | |
-| `paper_id` | `TEXT` | `NOT NULL`, `FK` `CASCADE` | |
-| `stage` | `TEXT` | `validating` \| `extracting` \| `sectioning` \| `chunking` \| `embedding` \| `indexing` \| `ready` | |
+| `id` | `TEXT` | `PRIMARY KEY` | UUID string |
+| `paper_id` | `TEXT` | `NOT NULL`, `FK → papers.id` `CASCADE` | Indexed |
+| `run_id` | `TEXT` | `NOT NULL` | Generation run UUID |
+| `stage` | `TEXT` | `validating` \| `extracting` \| `sectioning` \| `chunking` \| `embedding` \| `indexing` \| `ready` | Pipeline stage |
 | `status` | `TEXT` | `queued` \| `running` \| `succeeded` \| `failed` | Default `queued` |
 | `attempt` | `INTEGER` | `>= 1`, default 1 | Retries increment this |
+| `worker_id` | `TEXT` | nullable | Claiming worker process identifier |
+| `claim_token` | `TEXT` | nullable | Fencing token to prevent stale workers from publishing |
+| `claimed_at` | `TEXT` | nullable | ISO-8601 timestamp of worker claim |
+| `heartbeat_at` | `TEXT` | nullable | ISO-8601 timestamp for worker lease renewal |
 | `error_message` | `TEXT` | nullable | Shown in the Quality Center |
-| `started_at`, `finished_at` | `TEXT` | nullable | |
+| `started_at` | `TEXT` | nullable | ISO-8601 timestamp when job execution began |
+| `finished_at` | `TEXT` | nullable | ISO-8601 timestamp when job finished |
 | `versions_json` | `TEXT` | valid JSON or NULL | Extractor and model versions used — see §5.3 |
+| `created_at` | `TEXT` | `NOT NULL`, default current UTC | |
 
-**Indexes:** `idx_jobs_paper(paper_id, started_at)`, `idx_jobs_status(status)`.
+**Constraints:** `CHECK (status IN ('queued', 'running', 'succeeded', 'failed'))`, `CHECK (stage IN ('validating', 'extracting', 'sectioning', 'chunking', 'embedding', 'indexing', 'ready'))`, `CHECK (attempt >= 1)`.
+**Indexes:** `ix_processing_jobs_paper_id(paper_id)`, `ix_processing_jobs_run_id(run_id)`, `idx_jobs_paper_run(paper_id, run_id)`, `idx_jobs_status_stage(status, stage)`, `idx_jobs_heartbeat(status, heartbeat_at)`.
 
-One row per stage per attempt gives the processing history the Quality Center displays and lets a failed run resume from the failing stage.
+One row per stage per attempt gives the processing history the Quality Center displays and lets a failed run resume from the failing stage. Heartbeats and claim tokens ensure robust distributed lease fencing on SQLite.
 
 ### 3.8 `conversations`, `messages`, `message_papers` [P0]
 
@@ -461,9 +475,14 @@ The database only checks that these columns contain **valid JSON** (`json_valid`
 // flags_json
 ["table_unreliable", "equations_may_be_missing"]
 
-// blocks_json: coordinates in PDF points, used to highlight a cited passage
+// blocks_json: coordinates in PDF points (top-left origin), used to highlight cited passages
 [
-  { "id": "b12", "bbox": [72.0, 140.5, 523.2, 188.9], "text_hash": "c1a9…" }
+  {
+    "id": "p1_b0",
+    "bbox": [54.0, 72.0, 558.0, 114.5],
+    "text": "Deep Learning for Scientific Document Processing",
+    "block_type": "text"
+  }
 ]
 ```
 

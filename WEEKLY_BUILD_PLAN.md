@@ -66,6 +66,18 @@ Maintain a varied fixture set from Week 1: open-access text PDFs with different 
 
 **Outcome:** uploaded PDFs become inspectable, page-linked chunks ready for indexing, with honest quality indicators.
 
+### Implementation phases
+
+Continue Week 1's implementation numbering. These numbers are separate from the roadmap's feature phases.
+
+| Phase | Focus | Target |
+|---|---|---|
+| 3 | Persistent worker, recovery, page/block extraction, metadata provenance, quality flags, inspection/retry API | Monday–Tuesday |
+| 4 | Sectioning, tokenizer-safe chunks, Quality Center, reprocessing, source inspection | Wednesday–Thursday |
+| Acceptance | Integrated fixture demo, recovery/accessibility checks, SciCite preparation evidence, Week 3 handoff | Friday |
+
+See [Week 2 implementation phases](docs/WEEK_2_PHASES.md) for scope, integration points, schema reconciliation, and acceptance gates. SciCite preparation and the Week 5 labeled extraction sample remain required within this week. All phases are planned until their verification evidence is recorded.
+
 ### Build
 
 - Add persistent processing jobs and a local worker: validating → extracting → sectioning → chunking. Persist completed stages; keep the document `processing` until Week 3 completes embedding and indexing. Record failure and support retries without duplicate derived records.

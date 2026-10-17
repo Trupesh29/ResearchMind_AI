@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     CheckConstraint,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -114,6 +115,92 @@ class Paper(Base):
 
     # Relationships
     workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="papers")
+    jobs: Mapped[list["ProcessingJob"]] = relationship(
+        "ProcessingJob", back_populates="paper", cascade="all, delete-orphan"
+    )
+    pages: Mapped[list["Page"]] = relationship("Page", back_populates="paper", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Paper id={self.id} filename={self.original_filename} status={self.status}>"
+
+
+class ProcessingJob(Base):
+    __tablename__ = "processing_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    paper_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    run_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False, default=generate_uuid)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", server_default="queued", nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    claimed_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    heartbeat_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    versions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        Index("idx_jobs_paper_run", "paper_id", "run_id"),
+        Index("idx_jobs_status_stage", "status", "stage"),
+        Index("idx_jobs_heartbeat", "status", "heartbeat_at"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_jobs_status",
+        ),
+        CheckConstraint(
+            "stage IN ('validating', 'extracting', 'sectioning', 'chunking', 'embedding', 'indexing', 'ready')",
+            name="ck_jobs_stage",
+        ),
+        CheckConstraint("attempt >= 1", name="ck_jobs_attempt"),
+    )
+
+    paper: Mapped["Paper"] = relationship("Paper", back_populates="jobs")
+
+    def __repr__(self) -> str:
+        return f"<ProcessingJob id={self.id} paper_id={self.paper_id} stage={self.stage} status={self.status}>"
+
+
+class Page(Base):
+    __tablename__ = "pages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    paper_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    width: Mapped[float | None] = mapped_column(Float, nullable=True)
+    height: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rotation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extraction_status: Mapped[str] = mapped_column(String(16), default="ok", server_default="ok", nullable=False)
+    flags_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]", nullable=False)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blocks_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("paper_id", "page_number", name="uq_pages_paper_page_number"),
+        CheckConstraint("page_number >= 1", name="ck_pages_page_number"),
+        CheckConstraint("char_count >= 0", name="ck_pages_char_count"),
+        CheckConstraint(
+            "extraction_status IN ('ok', 'partial', 'failed')",
+            name="ck_pages_extraction_status",
+        ),
+    )
+
+    paper: Mapped["Paper"] = relationship("Paper", back_populates="pages")
+
+    def __repr__(self) -> str:
+        return f"<Page id={self.id} paper_id={self.paper_id} page={self.page_number} status={self.extraction_status}>"

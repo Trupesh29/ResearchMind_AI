@@ -283,7 +283,24 @@ Response `200`:
 ```
 
 ### `GET /papers/{paper_id}/pages/{page_number}/blocks`
-Returns `PageRef` with block coordinates for highlighting. `404` if the page does not exist.
+Returns page dimensions, rotation, and block coordinates for citation highlighting and inspection. `404` if the page does not exist.
+Response `200`:
+```json
+{
+  "page_number": 1,
+  "width": 612.0,
+  "height": 792.0,
+  "rotation": 0,
+  "blocks": [
+    {
+      "id": "p1_b0",
+      "bbox": [72.0, 140.5, 523.2, 188.9],
+      "text": "Deep Residual Learning for Image Recognition...",
+      "text_hash": "c1a9e8f2b740..."
+    }
+  ]
+}
+```
 
 ### `GET /papers/{paper_id}/file`
 Streams the original PDF (`application/pdf`) after the ownership check. Supports HTTP range requests so the viewer can load pages lazily.
