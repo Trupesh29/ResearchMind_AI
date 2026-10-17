@@ -73,6 +73,8 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
 ## Phase 2 Verification Status (2026-10-17)
+Latest independent review of c7d6c8e: FAIL pending R1–R3 in `docs/PHASE_2_REVIEW_C7D6C8E.md`. Use its corrective prompt; previous pass claims below are historical.
+
 All six findings from `docs/PHASE_2_FOLLOWUP_REVIEW.md` resolved via architectural fixes and verified with fresh evidence. Left unpushed for completion review.
 
 - Scope: Workspace Management & PDF Research Library (Phase 2 Follow-Up Corrective Repair)

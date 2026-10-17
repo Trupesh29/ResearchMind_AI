@@ -1,5 +1,7 @@
 # Independent review of 7a752aa
 
+> Latest independent review of c7d6c8e: three remaining findings are documented in `docs/PHASE_2_REVIEW_C7D6C8E.md`. Phase 2 is not accepted; previous repair claims below are historical.
+
 Date: 2026-10-17. Reviewed against b40dc18. Application code was not changed in this review.
 
 ## Findings

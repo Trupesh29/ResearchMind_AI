@@ -1,5 +1,7 @@
 # ResearchMind AI decisions
 
+Latest review checkpoint c7d6c8e: keep Phase 2 local while R1–R3 in `docs/PHASE_2_REVIEW_C7D6C8E.md` remain unresolved. That file contains the current corrective prompt; previous resolution claims are historical.
+
 Current independent review (Follow-Up Checkpoint, 2026-10-17): Phase 2 follow-up corrective repair completed. All six findings from `docs/PHASE_2_FOLLOWUP_REVIEW.md` resolved via architectural fixes and verified with fresh automated test and live Chrome browser evidence on disposable test storage. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
 
 Updated: 2026-10-17. Scope: Week 1 Phase 2 followup review and publication gate.

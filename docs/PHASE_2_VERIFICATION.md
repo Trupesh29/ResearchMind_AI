@@ -1,4 +1,6 @@
 # ResearchMind AI — Phase 2 Verification Report
+> Latest review of c7d6c8e: R1–R3 remain unresolved in `docs/PHASE_2_REVIEW_C7D6C8E.md` (quarantine cleanup, pagination loading state, and browser cleanup ID capture). Phase 2 is not accepted for publication.
+
 > Post-Review Corrective Update (2026-10-17): All six findings from [PHASE_2_FOLLOWUP_REVIEW.md](PHASE_2_FOLLOWUP_REVIEW.md) have been resolved via architectural fixes and verified against fresh regressions, static analysis, and isolated live browser testing. Phase 2 is complete and left unpushed for completion review.
 
 **Date:** 2026-10-17<br>
