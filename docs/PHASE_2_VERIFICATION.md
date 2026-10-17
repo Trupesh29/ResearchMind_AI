@@ -1,4 +1,6 @@
 # ResearchMind AI — Phase 2 Verification Report
+> Review update (2026-10-17): The implementation report below is historical evidence, not current Phase 2 acceptance. Independent review of e5367c9 found eight unresolved issues; see [PHASE_2_REVIEW.md](PHASE_2_REVIEW.md). Fresh standard checks pass, but Phase 2 remains incomplete and must not be pushed yet.
+
 **Date:** 2026-10-17  
 **Scope:** Workspace Management & PDF Research Library (Phase 2)  
 **Branch:** `manav`  

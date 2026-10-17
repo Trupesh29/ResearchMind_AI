@@ -1,6 +1,10 @@
 # ResearchMind AI decisions
 
-Updated: 2026-10-16. Scope: Week 1 Phase 2 handoff and agent workflow.
+Updated: 2026-10-17. Scope: Week 1 Phase 2 review and publication gate.
+
+## Current review and publication status
+
+Independent review of e5367c9 found unresolved defects; see `docs/PHASE_2_REVIEW.md` and apply `docs/PHASE_2_FIX_PROMPT.md`. Historical completion claims below do not supersede this review. Phase 1 was pushed to remote main at 24eadea on the user's explicit instruction. Phase 2 remains local until complete and accepted; local commits continue. Ralph Loop guidance is available through the shared debug workflow; a standalone Ralph Loop skill was not found, so no slash activation is claimed.
 
 ## D001 - Phase boundaries
 
