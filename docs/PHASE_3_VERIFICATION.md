@@ -1,5 +1,7 @@
 # PHASE_3_VERIFICATION.md — ResearchMind AI
 
+> Independent review update (2026-10-18): the implementation report below is historical and does not establish current acceptance. [PHASE_3_REVIEW.md](PHASE_3_REVIEW.md) reproduces concurrency, privacy, and geometry defects and identifies missing evidence. Current Phase 3 verdict: FAIL; use [PHASE_3_FIX_PROMPT.md](PHASE_3_FIX_PROMPT.md) for the corrective handoff.
+
 ## Week 2, Phase 3: Persistent Processing and PDF Extraction
 
 **Date:** 2026-10-17  

@@ -72,7 +72,13 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
-## Current Phase 3 Implementation Status (2026-10-17)
+## Current independent Phase 3 review (2026-10-18)
+
+Review of `fea8fce` found blocking claim/reprocess races, missing heartbeat renewal during extraction, public path leakage, rotated-coordinate inconsistency, and metadata/evidence gaps. See `docs/PHASE_3_REVIEW.md` and `docs/PHASE_3_FIX_PROMPT.md`. Phase 3 remains local pending repairs and independent acceptance. Live remote checks confirm Phase 2 checkpoint `4058b2d` already exists on both origin/manav and origin/main; no further Phase 2 push is needed.
+
+VERDICT: FAIL -- Phase 3 acceptance gates remain unmet.
+
+## Historical Phase 3 Implementation Status (2026-10-17)
 
 Week 2 Phase 3 (Persistent Processing and PDF Extraction) is fully implemented and verified:
 - Persistent processing jobs (`ProcessingJob`), stage attempts, generation identity (`run_id`), worker heartbeat leases, and claim-token fencing.
