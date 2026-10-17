@@ -56,6 +56,18 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_error = str(exc)
         logger.error(f"Error during local user bootstrap: {exc}")
 
+    # Reconcile quarantine storage surviving restarts
+    try:
+        trash_dir = effective_settings.DATA_DIR / "pdfs" / ".trash"
+        with session_factory() as db:
+            from backend.app.services.quarantine_service import reconcile_quarantine
+
+            stats = reconcile_quarantine(trash_dir, db)
+            if any(stats.values()):
+                logger.info(f"Quarantine ledger reconciled on startup: {stats}")
+    except Exception as exc:
+        logger.warning(f"Error during quarantine startup reconciliation: {exc}")
+
     yield
 
     logger.info(f"Shutting down {effective_settings.PROJECT_NAME}")

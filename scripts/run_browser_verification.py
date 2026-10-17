@@ -184,15 +184,18 @@ def evaluate_acceptance(results: dict, require_phase2: bool = False) -> tuple[bo
         failures.append("Clicking retry did not successfully recover the operational status")
     criteria["api_states_and_recovery"] = c6_passed
 
-    # 7. Clean Operation (Zero Unexpected Console Errors / Failed Requests)
+    # 7. Clean Operation (Zero Unexpected Console Errors / Failed Requests / Cleanup Errors)
     unexpected_errors = results.get("unexpected_console_errors", [])
     unexpected_reqs = results.get("unexpected_failed_requests", [])
+    cleanup_errors = results.get("cleanup_errors", [])
 
-    c7_passed = len(unexpected_errors) == 0 and len(unexpected_reqs) == 0
+    c7_passed = len(unexpected_errors) == 0 and len(unexpected_reqs) == 0 and len(cleanup_errors) == 0
     if len(unexpected_errors) > 0:
         failures.append(f"Unexpected console errors detected ({len(unexpected_errors)}): {unexpected_errors}")
     if len(unexpected_reqs) > 0:
         failures.append(f"Unexpected failed network requests detected ({len(unexpected_reqs)}): {unexpected_reqs}")
+    if len(cleanup_errors) > 0:
+        failures.append(f"Cleanup errors recorded ({len(cleanup_errors)}): {cleanup_errors}")
     criteria["clean_operation"] = c7_passed
 
     # 8. Phase 2 Library Lifecycle
@@ -823,11 +826,18 @@ def run_checks(
                     ) as ws_post_info:
                         page.locator("button:has-text('Create Workspace')").last.click()
                     ws_res = ws_post_info.value
-                    if ws_res.status in (200, 201):
-                        try:
-                            created_workspace_id = ws_res.json().get("data", {}).get("id")
-                        except Exception:
-                            pass
+                    if ws_res.status not in (200, 201):
+                        raise RuntimeError(
+                            f"Workspace creation request failed with HTTP {ws_res.status}: {ws_res.text()}"
+                        )
+                    try:
+                        res_json = ws_res.json()
+                        created_workspace_id = res_json.get("id") if isinstance(res_json, dict) else None
+                    except Exception as parse_err:
+                        raise RuntimeError(f"Failed to parse workspace creation response: {parse_err}")
+
+                    if not created_workspace_id or not isinstance(created_workspace_id, str):
+                        raise RuntimeError(f"Workspace creation response missing valid top-level 'id': {ws_res.text()}")
                     time.sleep(0.8)
 
                 ws_name_visible = page.locator(f"text='{e2e_ws_name}'").count() > 0
@@ -915,13 +925,14 @@ def run_checks(
                 confirm_ws_btn = page.locator("button:has-text('Delete Workspace')").first
                 with page.expect_response(
                     lambda r: "/api/workspaces/" in r.url and r.request.method == "DELETE", timeout=8000
-                ):
+                ) as ws_del_info:
                     confirm_ws_btn.click()
+                ws_del_res = ws_del_info.value
                 page.wait_for_load_state("networkidle")
                 time.sleep(0.5)
                 ws_removed = page.locator(f"text='{e2e_ws_name}'").count() == 0
-                p2_results["workspace_deleted"] = ws_removed
-                if ws_removed:
+                p2_results["workspace_deleted"] = ws_removed and ws_del_res.status in (200, 204)
+                if ws_del_res.status in (200, 204):
                     created_workspace_id = None
 
                 # Capture desktop Phase 2 library screenshot
@@ -939,9 +950,17 @@ def run_checks(
                 # If workspace deletion failed or was aborted midway, clean up via API
                 if created_workspace_id:
                     try:
-                        page.request.delete(f"{base_url}/api/workspaces/{created_workspace_id}")
-                    except Exception:
-                        pass
+                        del_resp = page.request.delete(f"{base_url}/api/workspaces/{created_workspace_id}")
+                        if del_resp.status in (200, 204, 404):
+                            created_workspace_id = None
+                        else:
+                            err_msg = f"Failed to clean up workspace {created_workspace_id}: HTTP {del_resp.status}"
+                            results.setdefault("cleanup_errors", []).append(err_msg)
+                            print(f"\n[CLEANUP ERROR] {err_msg}", file=sys.stderr)
+                    except Exception as cleanup_err:
+                        err_msg = f"Exception cleaning up workspace {created_workspace_id}: {cleanup_err}"
+                        results.setdefault("cleanup_errors", []).append(err_msg)
+                        print(f"\n[CLEANUP ERROR] {err_msg}", file=sys.stderr)
 
             browser.close()
 

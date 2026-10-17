@@ -15,7 +15,7 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.core.config import Settings
+from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import AppException, ErrorCode
 from backend.app.db.models import Paper, Workspace
 from backend.app.schemas.paper import (
@@ -26,6 +26,7 @@ from backend.app.schemas.paper import (
     PaperUploadRejectedItem,
     PaperUploadSuccessItem,
 )
+from backend.app.services import quarantine_service
 from backend.app.services.workspace_service import decode_cursor, encode_cursor, get_workspace_or_404
 
 logger = logging.getLogger("researchmind.paper_service")
@@ -381,24 +382,73 @@ def list_papers(
     return PaperListResponse(items=items, next_cursor=next_cursor, total_count=total_count)
 
 
-def delete_paper(db: Session, user_id: str, paper_id: str) -> None:
-    paper = get_paper_or_404(db, user_id, paper_id)
-    storage_path_str = paper.storage_path
+def get_paper_file_path(paper: Paper) -> Path | None:
+    """
+    Returns valid backing file path for a paper.
+    If original path is missing or inaccessible, checks quarantine fallback to ensure
+    live records with recoverable staged bytes retain a valid recovery route.
+    """
+    if paper.storage_path:
+        p_file = Path(paper.storage_path)
+        if p_file.exists() and p_file.is_file():
+            return p_file
+        # Check quarantine fallback
+        trash_dir = p_file.parent / ".trash"
+        fallback = quarantine_service.get_quarantine_fallback_path(trash_dir, paper.id)
+        if fallback and fallback.exists() and fallback.is_file():
+            return fallback
+    return None
 
-    # Safely stage physical file if not referenced by another record
+
+def delete_paper(db: Session, user_id: str, paper_id: str, settings: Settings | None = None) -> None:
+    # 1. Look up paper in DB
+    paper = (
+        db.query(Paper)
+        .join(Workspace, Paper.workspace_id == Workspace.id)
+        .filter(Paper.id == paper_id, Workspace.user_id == user_id)
+        .first()
+    )
+
+    if not paper:
+        # Check if there is a pending purge from a previously committed deletion that failed unlink
+        cfg = settings or get_settings()
+        trash_dir = cfg.DATA_DIR / "pdfs" / ".trash"
+        pending = quarantine_service.find_pending_purges(trash_dir, paper_id)
+        if pending:
+            all_purged = all(quarantine_service.purge_quarantined_file(stg, meta) for stg, meta in pending)
+            if all_purged:
+                return
+            raise AppException(
+                code=ErrorCode.DATABASE_ERROR,
+                message="Quarantined file purge failed. Deletion remains pending.",
+                status_code=500,
+                details={"paper_id": paper_id, "status": "pending_purge"},
+            )
+        raise AppException(
+            code=ErrorCode.NOT_FOUND,
+            message="Paper not found or access denied.",
+            status_code=404,
+            details={"paper_id": paper_id},
+        )
+
+    storage_path_str = paper.storage_path
     staged_path: Path | None = None
+    meta_path: Path | None = None
     original_file: Path | None = None
+
     if storage_path_str:
         other_ref = db.query(Paper).filter(Paper.id != paper.id, Paper.storage_path == storage_path_str).first()
         if not other_ref:
             p_file = Path(storage_path_str)
             if p_file.exists():
                 original_file = p_file
-                trash_dir = p_file.parent / ".trash"
                 try:
-                    trash_dir.mkdir(parents=True, exist_ok=True)
-                    staged_path = trash_dir / f"del_{paper.id}_{uuid.uuid4().hex[:8]}.tmp"
-                    p_file.rename(staged_path)
+                    staged_path, meta_path = quarantine_service.stage_file_for_deletion(
+                        original_path=p_file,
+                        entity_type="paper",
+                        paper_id=paper.id,
+                        workspace_id=paper.workspace_id,
+                    )
                 except OSError as exc:
                     logger.error(f"Failed to stage backing file {storage_path_str} for deletion: {exc}")
                     raise AppException(
@@ -414,22 +464,32 @@ def delete_paper(db: Session, user_id: str, paper_id: str) -> None:
     except Exception as exc:
         db.rollback()
         logger.error(f"Database error committing deletion for paper {paper_id}: {exc}")
-        # Recover: restore staged file back to original location
-        if staged_path and original_file and staged_path.exists():
-            try:
-                staged_path.rename(original_file)
-            except Exception as restore_exc:
-                logger.error(f"Failed to restore staged file {staged_path} back to {original_file}: {restore_exc}")
-        raise AppException(
-            code=ErrorCode.DATABASE_ERROR,
-            message="Database error during paper deletion. Deletion aborted and original file preserved.",
-            status_code=500,
-            details={"paper_id": paper_id},
-        )
+        restored = True
+        if staged_path and original_file and meta_path and staged_path.exists():
+            restored = quarantine_service.restore_quarantined_file(staged_path, original_file, meta_path)
+        if restored:
+            raise AppException(
+                code=ErrorCode.DATABASE_ERROR,
+                message="Database error during paper deletion. Deletion aborted and original file preserved.",
+                status_code=500,
+                details={"paper_id": paper_id},
+            )
+        else:
+            raise AppException(
+                code=ErrorCode.DATABASE_ERROR,
+                message="Database error during paper deletion and failed to restore file. File quarantined for recovery.",
+                status_code=500,
+                details={"paper_id": paper_id, "status": "quarantined_for_recovery"},
+            )
 
     # Database commit succeeded: permanently unlink quarantined file
-    if staged_path and staged_path.exists():
-        try:
-            staged_path.unlink()
-        except OSError as exc:
-            logger.warning(f"Failed to permanently remove staged file {staged_path}: {exc}")
+    if staged_path and meta_path and staged_path.exists():
+        quarantine_service.mark_committed_deletion(meta_path)
+        purged = quarantine_service.purge_quarantined_file(staged_path, meta_path, max_retries=3)
+        if not purged:
+            raise AppException(
+                code=ErrorCode.DATABASE_ERROR,
+                message="Paper record deleted from database, but quarantined file purge failed. Deletion remains pending.",
+                status_code=500,
+                details={"paper_id": paper_id, "status": "pending_purge"},
+            )

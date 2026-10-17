@@ -1,10 +1,8 @@
 # ResearchMind AI — Phase 2 Verification Report
-> Latest review of c7d6c8e: R1–R3 remain unresolved in `docs/PHASE_2_REVIEW_C7D6C8E.md` (quarantine cleanup, pagination loading state, and browser cleanup ID capture). Phase 2 is not accepted for publication.
-
-> Post-Review Corrective Update (2026-10-17): All six findings from [PHASE_2_FOLLOWUP_REVIEW.md](PHASE_2_FOLLOWUP_REVIEW.md) have been resolved via architectural fixes and verified against fresh regressions, static analysis, and isolated live browser testing. Phase 2 is complete and left unpushed for completion review.
+> Corrective Repair Update (2026-10-17): Findings R1–R3 from `docs/PHASE_2_REVIEW_C7D6C8E.md` (durable quarantine ledger, pagination loading ownership, and browser cleanup ID capture) have been resolved via architectural fixes and verified against fresh regressions, static analysis, and isolated live browser testing. Phase 2 is complete and committed locally for review; unpushed per Phase 2 policy.
 
 **Date:** 2026-10-17<br>
-**Scope:** Workspace Management & PDF Research Library (Phase 2 Follow-Up Corrective Repair)<br>
+**Scope:** Workspace Management & PDF Research Library (Phase 2 R1–R3 Corrective Repair)<br>
 **Branch:** `manav`<br>
 **Execution Environment:** Windows (PowerShell), Python 3.12 (.venv), Node 20.x, Google Chrome 124+
 
@@ -17,8 +15,9 @@ Phase 2 implements the full foundation for Workspace Management and the PDF Rese
 - **Backend Workspace Management:** Full CRUD operations under `/api/workspaces` with trim/validation, name uniqueness per user, ownership checks, and real document counts.
 - **Robust PDF Upload & Ingestion:** Multi-file multipart ingestion with early request body bounding (250 MB) via `RequestSizeLimitMiddleware` and batch limits (20 files), magic byte validation (`%PDF-`), streaming SHA-256 calculation, PyMuPDF page count and unencrypted verification, duplicate detection within workspace, and tripartite `202 Accepted` response (`papers`, `duplicates`, `rejected`). Backing files are safely isolated in `DATA_DIR/pdfs/{paper_id}.pdf` outside public web assets.
 - **Original PDF Streaming & Range Requests:** `/api/papers/{paper_id}/file` streaming original document bytes with full support for RFC 9110 HTTP Range requests (`200 OK`, `206 Partial Content`, `416 Range Not Satisfiable`), RFC 6266 / RFC 5987 Unicode content disposition (`filename="<safe_ascii>"; filename*=UTF-8''<url_encoded>`), and sanitized filenames.
-- **Atomic File & Database Lifecycle:** Compensating file unlink on DB commit failure, recoverable physical deletion (preserving DB row and returning 500 if physical unlink fails, allowing safe retries), and transactional workspace deletion cascade.
-- **Frontend Research Library UI:** Dedicated workspace switcher and modal (create/rename/delete), drag & drop upload dropzone with batch feedback cards, live search filtering by title/filename/authors with request debouncing (250ms), embedded accessible PDF modal viewer, cursor-based pagination, and dual-focus ARIA confirmation alertdialogs with focus trapping and restoration. Mutation callbacks preserve user workspace selection across async operations.
+- **Durable Quarantine Ledger & Crash Recovery (R1):** File staging via `.trash/<id>.tmp` with durable `.meta.json` records tracking operation state (`staged_pending_commit`, `committed_pending_purge`, `rollback_pending_restoration`). Unlink failures after commit report truthful pending purge; retries return 204 once purged. Rollback restoration failures preserve recovery state and fallback path access in `get_paper_file_path`. Application lifespan startup reconciles quarantine: restores live records, purges committed deletions, and preserves untracked files.
+- **Frontend Research Library UI & Pagination Ownership (R2):** Dedicated workspace switcher and modal, drag & drop upload dropzone with batch feedback cards, live search filtering by title/filename/authors with request debouncing (250ms), embedded accessible PDF modal viewer, cursor-based pagination with distinct query and pagination request generation ownership (superseded requests cannot lock or prematurely reset newer pagination loading states), and dual-focus ARIA confirmation alertdialogs with focus trapping and restoration.
+- **Browser Runner Contract & Cleanup Reporting (R3):** Captures and validates top-level workspace ID from `POST /api/workspaces`, retains ID across test lifecycle, validates deletion response status in cleanup, and reports cleanup errors to fail the `clean_operation` acceptance criterion.
 - **Verification:** Automated unit, integration, typecheck, lint, formatting, production build, and isolated Chrome end-to-end browser acceptance checks on disposable migrated test storage have passed.
 
 ---
@@ -32,7 +31,9 @@ Phase 2 implements the full foundation for Workspace Management and the PDF Rese
 | **Real Document Counts** | `WorkspaceItem` schema returns live `paper_count` and `ready_paper_count` | **PASS** — Verified in API tests and dynamic dashboard cards |
 | **Safe PDF Streaming & Ingestion** | `backend/app/services/paper_service.py`<br>`backend/app/api/papers.py` | **PASS** — Incremental hash, PyMuPDF validation, path traversal defense, and 202 Accepted batch response |
 | **Range Requests (200/206/416)** | `GET /api/papers/{id}/file` with RFC 9110 clipping | **PASS** — Unit tested in `test_papers_api.py` and `test_phase2_fixes.py` (full, partial start-end, suffix, clipping past EOF, 416) |
-| **Permanent Deletion Cascade** | `DELETE /api/papers/{id}` (204) and `DELETE /api/workspaces/{id}` (204) | **PASS** — Recoverable physical deletion; verified in API, regression tests & browser tests |
+| **Durable Quarantine Ledger (R1)** | `backend/app/services/quarantine_service.py`<br>`backend/app/main.py` | **PASS** — Staging failure abort, rollback failure fallback path access, pending purge retry (204), and startup reconciliation verified in `test_phase2_fixes.py` |
+| **Pagination Loading Ownership (R2)** | `frontend/src/pages/LibraryPage.tsx` | **PASS** — Stale generation change resets ownership; stale completion cannot clear newer loading state; verified in `frontend/src/test/library.test.tsx` |
+| **Browser Cleanup ID Validation (R3)** | `scripts/run_browser_verification.py` | **PASS** — Top-level ID validated, cleanup errors reported and fail `clean_operation`; verified in `test_browser_runner.py` and live browser suite |
 | **Frontend Typed Client & 204 Handling** | `frontend/src/api/client.ts`<br>`frontend/src/api/types.ts` | **PASS** — Safe handling of 204 No Content without `res.json()`, multipart `FormData` |
 | **Drag & Drop Upload Dropzone** | `frontend/src/components/library/UploadDropzone.tsx` | **PASS** — Visual active drop state, tripartite result badges, keyboard file selection |
 | **Original PDF Viewer Modal** | `frontend/src/components/library/PdfViewerModal.tsx` | **PASS** — Embedded PDF iframe with HTTP 200 verification, download fallback actions and ESC handler |
@@ -49,10 +50,10 @@ All tests and validation scripts were executed directly against the codebase.
 ```powershell
 .venv\Scripts\python -m pytest -q
 ```
-**Result:** **117 passed, 71 warnings in 52.49s (Exit Code: 0)**
+**Result:** **125 passed, 77 warnings in 51.87s (Exit Code: 0)**
 Covers:
-- `tests/backend/test_phase2_fixes.py` (12 passed): Quarantine staging and recoverable deletion, DB commit failure rollback, lock failure 500 retry preservation, streaming body limit 413 response contract with request ID, public error sanitization, Unicode Content-Disposition, and RFC 9110 range clipping.
-- `tests/backend/test_browser_runner.py` (44 passed): Strict acceptance criteria enforcement without fallback defaults, attach mode disposable target check, caller `DISPOSABLE_TEST_ENV` environment restoration, process tree lifecycle termination.
+- `tests/backend/test_phase2_fixes.py` (16 passed): Durable quarantine ledger (staging failure, rollback restoration failure with live fallback path, final unlink failure returning 500 and retry succeeding with 204, restart reconciliation restoring live records while purging dead records and preserving unrelated files), DB commit failure rollback, streaming body limit 413 response contract, public error sanitization, Unicode Content-Disposition, and RFC 9110 range clipping.
+- `tests/backend/test_browser_runner.py` (48 passed): Top-level workspace creation response contract validation, cleanup error reporting and failure in `evaluate_acceptance`, browser failure cleanup targeting created ID while preserving sentinel workspace, attach mode disposable target check, caller `DISPOSABLE_TEST_ENV` environment restoration, process tree lifecycle termination.
 - `test_workspaces_api.py`: Creation, validation, conflicts, pagination, ownership, detail counts, update, deletion cascade.
 - `test_papers_api.py`: Single & batch upload, corrupt rejection, duplicate detection, cross-workspace duplicate tolerance, path traversal defense, HTTP Range streaming (200/206/416), search filtering, deletion.
 - `test_system_api.py`, `test_database.py`, `test_bootstrap.py`, `test_dependency_injection.py`.
@@ -62,18 +63,18 @@ Covers:
 .venv\Scripts\ruff check backend tests scripts
 .venv\Scripts\ruff format --check backend tests scripts
 ```
-**Result:** **All checks passed! 36 files already formatted. (Exit Code: 0)**
+**Result:** **All checks passed! 37 files already formatted. (Exit Code: 0)**
 
 ### 3.3 Frontend Component & Integration Tests (Vitest)
 ```powershell
 npm test
 ```
-**Result:** **20 passed in 4 test files (Exit Code: 0)**
+**Result:** **23 passed in 4 test files (Exit Code: 0)**
 
 - `mobile-nav.test.tsx` (3 tests passed)
 - `navigation.test.tsx` (3 tests passed)
 - `api-status.test.tsx` (3 tests passed)
-- `library.test.tsx` (11 tests passed): Renders selector & list, opens PDF viewer modal, delete confirmation flow with focus handling, cursor pagination, and async generation guards (query generation change during pagination, workspace switch during pagination, workspace switch during paper deletion, workspace switch during upload).
+- `library.test.tsx` (14 tests passed): Renders selector & list, opens PDF viewer modal, delete confirmation flow with focus handling, cursor pagination, async generation guards (query generation change during pagination, workspace switch during pagination, workspace switch during paper deletion, workspace switch during upload), superseded pagination leaving replacement "Load more" button enabled, stale rejected pagination ignoring errors, and stale pagination completion preserving concurrent newer pagination loading state.
 
 ### 3.4 Frontend Static Checks & Production Build
 ```powershell

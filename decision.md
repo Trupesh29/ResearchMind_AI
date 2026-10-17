@@ -1,14 +1,12 @@
 # ResearchMind AI decisions
 
-Latest review checkpoint c7d6c8e: keep Phase 2 local while R1–R3 in `docs/PHASE_2_REVIEW_C7D6C8E.md` remain unresolved. That file contains the current corrective prompt; previous resolution claims are historical.
+Current independent review (R1–R3 Corrective Repair Checkpoint, 2026-10-17): Corrective prompt executed and findings R1–R3 in `docs/PHASE_2_REVIEW_C7D6C8E.md` resolved via architectural fixes (durable quarantine ledger with crash recovery, decoupled pagination loading ownership, and validated top-level workspace creation ID in browser cleanup). Verified with fresh automated tests and live Chrome browser suite on disposable storage. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
 
-Current independent review (Follow-Up Checkpoint, 2026-10-17): Phase 2 follow-up corrective repair completed. All six findings from `docs/PHASE_2_FOLLOWUP_REVIEW.md` resolved via architectural fixes and verified with fresh automated test and live Chrome browser evidence on disposable test storage. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
-
-Updated: 2026-10-17. Scope: Week 1 Phase 2 followup review and publication gate.
+Updated: 2026-10-17. Scope: Week 1 Phase 2 R1–R3 corrective repair and publication gate.
 
 ## Current review and publication status
 
-Phase 2 follow-up corrective repair loop completed. All six findings from `docs/PHASE_2_FOLLOWUP_REVIEW.md` have been resolved with regression tests, static checks, and live browser verification on disposable storage. Phase 1 remains published on remote main at `24eadea`. This repaired Phase 2 checkpoint is committed locally and left unpushed for completion review per user instructions.
+Phase 2 R1–R3 corrective repair loop completed. All three findings from `docs/PHASE_2_REVIEW_C7D6C8E.md` have been resolved with regression tests, static checks, and live browser verification on disposable storage. Phase 1 remains published on remote main at `24eadea`. This repaired Phase 2 checkpoint is committed locally and left unpushed for completion review per user instructions.
 
 
 ## D001 - Phase boundaries
@@ -73,6 +71,8 @@ Browser acceptance verification must not rely on passive logging or unconditiona
 11. [COMPLETED] Strengthen process lifecycle tests with identifiable disposable PIDs and descendant trees, asserting termination of owned processes on startup failure, runner failure, and suite success, and verifying survival of attached servers and unrelated background processes.
 12. [COMPLETED] Execute Phase 2 implementation, backend & frontend unit/integration tests, and live Chrome browser acceptance suite; all 8 acceptance criteria satisfied (100% PASS).
 13. [COMPLETED] Execute Phase 2 corrective repair loop resolving all 8 review findings: browser test mutation isolation on disposable storage/db, early request body limits (250MB) and batch limits (20 files), atomic/recoverable file and DB lifecycles, RFC 6266 / RFC 5987 Unicode Content-Disposition, RFC 9110 range clipping, UI cursor pagination and debounced search, and async workspace selection race protection; verified by 109 pytest, 17 vitest, static checks, and live Chrome browser suite.
+14. [COMPLETED] Execute Phase 2 R1–R3 corrective repair loop: durable quarantine ledger and startup reconciliation (`quarantine_service.py`), decoupled pagination loading ownership and query generation reset (`LibraryPage.tsx`), and top-level workspace ID capture with cleanup failure evaluation (`scripts/run_browser_verification.py`); verified by 125 pytest, 23 vitest, static checks, and live Chrome browser suite.
+
 
 
 ## D007 - Phase 2: Workspace Management, PDF Ingestion, Streaming & Deletion Cascade

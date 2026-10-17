@@ -1,5 +1,4 @@
 import re
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
@@ -119,8 +118,8 @@ def get_paper_file(
 ) -> Response:
     paper = paper_service.get_paper_or_404(db, current_user.id, paper_id)
 
-    file_path = Path(paper.storage_path)
-    if not file_path.exists() or not file_path.is_file():
+    file_path = paper_service.get_paper_file_path(paper)
+    if not file_path or not file_path.exists() or not file_path.is_file():
         raise AppException(
             code=ErrorCode.NOT_FOUND,
             message="Backing document file not found on server.",
@@ -244,6 +243,7 @@ def delete_paper(
     paper_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> Response:
-    paper_service.delete_paper(db, current_user.id, paper_id)
+    paper_service.delete_paper(db, current_user.id, paper_id, settings=settings)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

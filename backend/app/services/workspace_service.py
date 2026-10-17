@@ -1,6 +1,5 @@
 import base64
 import logging
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.app.core.errors import AppException, ErrorCode
 from backend.app.db.models import Paper, Workspace
 from backend.app.schemas.workspace import WorkspaceCreate, WorkspaceUpdate
+from backend.app.services import quarantine_service
 
 logger = logging.getLogger("researchmind.workspace_service")
 
@@ -206,7 +206,26 @@ def delete_workspace(
     workspace_id: str,
     data_dir: Path,
 ) -> None:
-    ws = get_workspace_or_404(db, user_id, workspace_id)
+    ws = db.query(Workspace).filter(Workspace.id == workspace_id, Workspace.user_id == user_id).first()
+    if not ws:
+        trash_dir = data_dir / "pdfs" / ".trash"
+        pending = quarantine_service.find_pending_purges_by_workspace(trash_dir, workspace_id)
+        if pending:
+            all_purged = all(quarantine_service.purge_quarantined_file(stg, meta) for stg, meta in pending)
+            if all_purged:
+                return
+            raise AppException(
+                code=ErrorCode.DATABASE_ERROR,
+                message="Quarantined files purge failed during workspace deletion. Cleanup remains pending.",
+                status_code=500,
+                details={"workspace_id": workspace_id, "status": "pending_purge"},
+            )
+        raise AppException(
+            code=ErrorCode.NOT_FOUND,
+            message="Workspace not found.",
+            status_code=404,
+            details={"workspace_id": workspace_id},
+        )
 
     # Collect backing files
     papers = db.query(Paper).filter(Paper.workspace_id == ws.id).all()
@@ -223,25 +242,23 @@ def delete_workspace(
                 if not other_ref:
                     files_to_stage.setdefault(p.storage_path, []).append(p)
 
-    staged_files: list[tuple[Path, Path]] = []  # (original_path, staged_path)
+    staged_entries: list[tuple[Path, Path, Path]] = []  # (original_path, staged_path, meta_path)
     # Stage each file into quarantine
     for path_str, associated_papers in files_to_stage.items():
         p_file = Path(path_str)
-        trash_dir = p_file.parent / ".trash"
         try:
-            trash_dir.mkdir(parents=True, exist_ok=True)
-            staged_path = trash_dir / f"del_ws_{ws.id}_{associated_papers[0].id}_{uuid.uuid4().hex[:8]}.tmp"
-            p_file.rename(staged_path)
-            staged_files.append((p_file, staged_path))
+            staged_p, meta_p = quarantine_service.stage_file_for_deletion(
+                original_path=p_file,
+                entity_type="workspace",
+                paper_id=associated_papers[0].id,
+                workspace_id=ws.id,
+            )
+            staged_entries.append((p_file, staged_p, meta_p))
         except OSError as exc:
             logger.error(f"Error staging file {path_str} during workspace deletion: {exc}")
             # Restore any files already staged so far
-            for orig_p, stg_p in staged_files:
-                try:
-                    if stg_p.exists():
-                        stg_p.rename(orig_p)
-                except Exception as restore_err:
-                    logger.error(f"Failed to restore staged file {stg_p}: {restore_err}")
+            for orig_p, stg_p, meta_p in staged_entries:
+                quarantine_service.restore_quarantined_file(stg_p, orig_p, meta_p)
             raise AppException(
                 code=ErrorCode.DATABASE_ERROR,
                 message="Failed to delete one or more backing files during workspace deletion. Workspace and papers preserved for retry.",
@@ -256,24 +273,36 @@ def delete_workspace(
     except Exception as exc:
         db.rollback()
         logger.error(f"Database error committing deletion for workspace {ws.id}: {exc}")
-        # Restore all staged files back to their original paths
-        for orig_p, stg_p in staged_files:
-            try:
-                if stg_p.exists():
-                    stg_p.rename(orig_p)
-            except Exception as restore_err:
-                logger.error(f"Failed to restore staged file {stg_p}: {restore_err}")
-        raise AppException(
-            code=ErrorCode.DATABASE_ERROR,
-            message="Database error during workspace deletion. Workspace and backing files preserved for retry.",
-            status_code=500,
-            details={"workspace_id": ws.id},
-        )
+        all_restored = True
+        for orig_p, stg_p, meta_p in staged_entries:
+            if not quarantine_service.restore_quarantined_file(stg_p, orig_p, meta_p):
+                all_restored = False
+        if all_restored:
+            raise AppException(
+                code=ErrorCode.DATABASE_ERROR,
+                message="Database error during workspace deletion. Workspace and backing files preserved for retry.",
+                status_code=500,
+                details={"workspace_id": ws.id},
+            )
+        else:
+            raise AppException(
+                code=ErrorCode.DATABASE_ERROR,
+                message="Database error during workspace deletion and failed to restore one or more backing files. Files quarantined for recovery.",
+                status_code=500,
+                details={"workspace_id": ws.id, "status": "quarantined_for_recovery"},
+            )
 
     # Database commit succeeded: permanently unlink all quarantined files
-    for _, stg_p in staged_files:
-        try:
-            if stg_p.exists():
-                stg_p.unlink()
-        except OSError as exc:
-            logger.warning(f"Failed to unlink staged file {stg_p}: {exc}")
+    all_purged = True
+    for _, stg_p, meta_p in staged_entries:
+        quarantine_service.mark_committed_deletion(meta_p)
+        if not quarantine_service.purge_quarantined_file(stg_p, meta_p, max_retries=3):
+            all_purged = False
+
+    if not all_purged:
+        raise AppException(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Workspace deleted from database, but one or more quarantined files failed to purge. Cleanup remains pending.",
+            status_code=500,
+            details={"workspace_id": ws.id, "status": "pending_purge"},
+        )

@@ -522,4 +522,315 @@ describe("LibraryPage Integration and Component Suite", () => {
       expect(selectorBtn).toHaveTextContent("Neural Networks");
     });
   });
+
+  // ============================================================================
+  // R2 Tests: Pagination Loading Ownership & Superseded Request Handling
+  // ============================================================================
+
+  it("R2: superseded pagination resolution leaves replacement Load more button enabled and appends correct page", async () => {
+    let resolveStalePage2: (val: any) => void = () => {};
+    const deferredStalePage2 = new Promise((resolve) => {
+      resolveStalePage2 = resolve;
+    });
+
+    let resolvePhysicsPage2: (val: any) => void = () => {};
+    const deferredPhysicsPage2 = new Promise((resolve) => {
+      resolvePhysicsPage2 = resolve;
+    });
+
+    const listPapersSpy = vi.spyOn(client.api, "listPapers");
+
+    listPapersSpy.mockImplementation((_wsId, params) => {
+      // Initial load: 1 paper with next_cursor
+      if (params?.q === "" && !params?.cursor) {
+        return Promise.resolve({
+          items: [mockPapers[0]],
+          next_cursor: "cursor-initial-page1",
+          total_count: 2,
+        });
+      }
+      // Initial query pagination (deferred)
+      if (params?.q === "" && params?.cursor === "cursor-initial-page1") {
+        return deferredStalePage2 as any;
+      }
+      // New search query "physics": page 1 with next_cursor
+      if (params?.q === "physics" && !params?.cursor) {
+        return Promise.resolve({
+          items: [
+            {
+              ...mockPapers[0],
+              id: "physics-1",
+              title: "Physics Paper 1",
+            },
+          ],
+          next_cursor: "physics-cursor-1",
+          total_count: 2,
+        });
+      }
+      // New search query "physics": page 2 (deferred)
+      if (params?.q === "physics" && params?.cursor === "physics-cursor-1") {
+        return deferredPhysicsPage2 as any;
+      }
+      return Promise.resolve({ items: [], next_cursor: null, total_count: 0 });
+    });
+
+    render(<LibraryPage />);
+
+    // 1. Initial page 1 loads with next_cursor
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /load more documents/i }),
+      ).toBeEnabled();
+    });
+
+    // 2. Start page 2 pagination for initial query
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load more documents" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toHaveTextContent(/loading more/i);
+
+    // 3. User changes search to "physics" while pagination is in flight
+    const searchInput = screen.getByPlaceholderText(/search papers/i);
+    fireEvent.change(searchInput, { target: { value: "physics" } });
+
+    // 4. Wait for replacement query page 1 to load
+    await waitFor(() => {
+      expect(screen.getByText("Physics Paper 1")).toBeInTheDocument();
+      // Load more button must be ENABLED for the replacement query!
+      expect(
+        screen.getByRole("button", { name: "Load more documents" }),
+      ).toBeEnabled();
+    });
+
+    // 5. Resolve the stale page 2 request with old document
+    resolveStalePage2({
+      items: [
+        {
+          ...mockPapers[1],
+          id: "stale-paper-2",
+          title: "Stale Quantum Error Paper",
+        },
+      ],
+      next_cursor: "stale-next-cursor",
+      total_count: 2,
+    });
+
+    // Give microtasks time to run
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Stale row must NOT be rendered, no error, and button remains enabled
+    expect(
+      screen.queryByText("Stale Quantum Error Paper"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toBeEnabled();
+
+    // 6. Click Load more for the current "physics" query!
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load more documents" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toHaveTextContent(/loading more/i);
+
+    // Resolve current query's page 2
+    resolvePhysicsPage2({
+      items: [
+        {
+          ...mockPapers[1],
+          id: "physics-2",
+          title: "Physics Paper 2 Appended",
+        },
+      ],
+      next_cursor: null,
+      total_count: 2,
+    });
+
+    // 7. Verify correct next page was appended
+    await waitFor(() => {
+      expect(screen.getByText("Physics Paper 2 Appended")).toBeInTheDocument();
+    });
+  });
+
+  it("R2: stale rejected pagination does not display error and leaves replacement query enabled", async () => {
+    let rejectStalePage2: (err: any) => void = () => {};
+    const deferredStalePage2 = new Promise((_, reject) => {
+      rejectStalePage2 = reject;
+    });
+
+    const listPapersSpy = vi.spyOn(client.api, "listPapers");
+
+    listPapersSpy.mockImplementation((_wsId, params) => {
+      if (params?.q === "" && !params?.cursor) {
+        return Promise.resolve({
+          items: [mockPapers[0]],
+          next_cursor: "cur-1",
+          total_count: 2,
+        });
+      }
+      if (params?.q === "" && params?.cursor === "cur-1") {
+        return deferredStalePage2 as any;
+      }
+      if (params?.q === "ai") {
+        return Promise.resolve({
+          items: [{ ...mockPapers[0], id: "ai-1", title: "AI Research" }],
+          next_cursor: "ai-cur-2",
+          total_count: 2,
+        });
+      }
+      return Promise.resolve({ items: [], next_cursor: null, total_count: 0 });
+    });
+
+    render(<LibraryPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /load more documents/i }),
+      ).toBeEnabled();
+    });
+
+    // Start pagination
+    fireEvent.click(
+      screen.getByRole("button", { name: /load more documents/i }),
+    );
+
+    // Switch query to "ai"
+    const searchInput = screen.getByPlaceholderText(/search papers/i);
+    fireEvent.change(searchInput, { target: { value: "ai" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("AI Research")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /load more documents/i }),
+      ).toBeEnabled();
+    });
+
+    // Reject stale request
+    rejectStalePage2(new Error("Stale network timeout"));
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Stale error must NOT be shown
+    expect(
+      screen.queryByText(/stale network timeout/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /load more documents/i }),
+    ).toBeEnabled();
+  });
+
+  it("R2: stale completion does not clear loading state of a concurrent new pagination request", async () => {
+    let resolveStalePage: (val: any) => void = () => {};
+    const deferredStale = new Promise((resolve) => {
+      resolveStalePage = resolve;
+    });
+
+    let resolveNewPage: (val: any) => void = () => {};
+    const deferredNew = new Promise((resolve) => {
+      resolveNewPage = resolve;
+    });
+
+    const listPapersSpy = vi.spyOn(client.api, "listPapers");
+
+    listPapersSpy.mockImplementation((_wsId, params) => {
+      if (params?.q === "" && !params?.cursor) {
+        return Promise.resolve({
+          items: [mockPapers[0]],
+          next_cursor: "cur-1",
+          total_count: 2,
+        });
+      }
+      if (params?.q === "" && params?.cursor === "cur-1") {
+        return deferredStale as any;
+      }
+      if (params?.q === "deep" && !params?.cursor) {
+        return Promise.resolve({
+          items: [{ ...mockPapers[0], id: "deep-1", title: "Deep Learning" }],
+          next_cursor: "deep-cur-2",
+          total_count: 2,
+        });
+      }
+      if (params?.q === "deep" && params?.cursor === "deep-cur-2") {
+        return deferredNew as any;
+      }
+      return Promise.resolve({ items: [], next_cursor: null, total_count: 0 });
+    });
+
+    render(<LibraryPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /load more documents/i }),
+      ).toBeEnabled();
+    });
+
+    // Start pagination for query A
+    fireEvent.click(
+      screen.getByRole("button", { name: /load more documents/i }),
+    );
+
+    // Switch to query "deep"
+    const searchInput = screen.getByPlaceholderText(/search papers/i);
+    fireEvent.change(searchInput, { target: { value: "deep" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Deep Learning")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Load more documents" }),
+      ).toBeEnabled();
+    });
+
+    // Start pagination for query B
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load more documents" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toHaveTextContent(/loading more/i);
+
+    // Now resolve the stale request from query A
+    resolveStalePage({
+      items: [mockPapers[1]],
+      next_cursor: null,
+      total_count: 2,
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Button must STILL be loading query B (stale request completion must not clear its loading state!)
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Load more documents" }),
+    ).toHaveTextContent(/loading more/i);
+
+    // Resolve query B pagination
+    resolveNewPage({
+      items: [
+        { ...mockPapers[1], id: "deep-2", title: "Deep Learning Part 2" },
+      ],
+      next_cursor: null,
+      total_count: 2,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Deep Learning Part 2")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Load more documents" }),
+      ).not.toBeInTheDocument();
+    });
+  });
 });

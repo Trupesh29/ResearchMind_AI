@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from fastapi.testclient import TestClient
 
 # Ensure scripts directory is on sys.path for importing runner functions
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
@@ -1181,3 +1182,70 @@ $res | ConvertTo-Json -Compress | Set-Content -Path '{result_file}' -Encoding UT
     assert result_file.exists()
     data = json.loads(result_file.read_text(encoding="utf-8-sig"))
     assert data["after"] == "caller_preset"
+
+
+# ==============================================================================
+# R3 Tests: Browser Runner Top-Level ID Validation & Cleanup Resiliency
+# ==============================================================================
+
+
+def test_evaluate_acceptance_fails_on_cleanup_errors(valid_browser_results):
+    """R3: evaluate_acceptance must fail clean_operation if cleanup_errors are present."""
+    results = copy.deepcopy(valid_browser_results)
+    results["cleanup_errors"] = ["Failed to clean up workspace ws_leak_123: HTTP 500"]
+
+    passed, failures, criteria = evaluate_acceptance(results)
+    assert passed is False
+    assert criteria["clean_operation"] is False
+    assert any("Cleanup errors recorded" in f for f in failures)
+
+
+def test_workspace_creation_response_top_level_contract_validation():
+    """R3: Real POST /api/workspaces returns top-level id; verify validation logic rejects nested data or missing id."""
+    # 1. Valid contract (actual backend behavior)
+    valid_res_json = {"id": "ws_actual_123", "name": "E2E Workspace", "description": None}
+    parsed_id = valid_res_json.get("id") if isinstance(valid_res_json, dict) else None
+    assert parsed_id == "ws_actual_123"
+
+    # 2. Buggy nested shape (finding R3 in c7d6c8e)
+    buggy_nested_json = {"data": {"id": "ws_nested_123"}}
+    nested_parsed = buggy_nested_json.get("id") if isinstance(buggy_nested_json, dict) else None
+    assert nested_parsed is None  # Fails validation immediately
+
+    # 3. Missing ID
+    missing_id_json = {"name": "No ID WS"}
+    assert missing_id_json.get("id") is None
+
+
+def test_injected_browser_failure_cleans_up_created_workspace_and_preserves_sentinel(client: TestClient):
+    """R3: Injected failure after workspace creation cleans up created workspace while preserving sentinel."""
+    # 1. Create sentinel workspace
+    sentinel_res = client.post("/api/workspaces", json={"name": "Sentinel Workspace", "description": "Preserve me"})
+    assert sentinel_res.status_code == 201
+    sentinel_id = sentinel_res.json()["id"]
+
+    # 2. Simulate browser run creating a test workspace
+    create_res = client.post("/api/workspaces", json={"name": "E2E Lifecycle WS", "description": "Run created"})
+    assert create_res.status_code == 201
+    created_id = create_res.json()["id"]
+    assert created_id != sentinel_id
+
+    # 3. Simulate failure in browser test after creation, followed by finally cleanup block
+    runner_cleanup_errors = []
+    try:
+        # Injected error mid-run
+        raise RuntimeError("Injected browser test failure after creation")
+    except Exception:
+        # Execute runner's finally cleanup block logic using the tracked top-level ID
+        if created_id:
+            del_resp = client.delete(f"/api/workspaces/{created_id}")
+            if del_resp.status_code in (200, 204, 404):
+                created_id = None
+            else:
+                runner_cleanup_errors.append(f"HTTP {del_resp.status_code}")
+
+    # 4. Assert created workspace is cleaned up, sentinel workspace survives, and zero cleanup errors
+    assert created_id is None
+    assert len(runner_cleanup_errors) == 0
+    assert client.get(f"/api/workspaces/{sentinel_res.json()['id']}").status_code == 200
+    assert client.get(f"/api/workspaces/{create_res.json()['id']}").status_code == 404

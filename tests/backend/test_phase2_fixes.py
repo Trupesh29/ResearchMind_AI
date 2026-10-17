@@ -380,3 +380,200 @@ def test_range_request_clipping_past_eof(client: TestClient):
     assert open_res.status_code == 206
     assert open_res.headers["Content-Range"] == f"bytes 10-{file_size - 1}/{file_size}"
     assert range_res.content[10:] == open_res.content
+
+
+# ==============================================================================
+# R1 Tests: Durable Quarantine Ledger, Truthful Semantics, & Reconciliation
+# ==============================================================================
+
+
+def test_r1_staging_failure_aborts_deletion_preserves_row_and_file(client: TestClient, isolated_env: dict):
+    """R1: If staging file into .trash fails with OSError, paper deletion is aborted, row and file preserved."""
+    ws_res = client.post("/api/workspaces", json={"name": "R1 Staging Fail WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("R1 Staging Content")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("staging_test.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    pdf_path = data_dir / "pdfs" / f"{paper_id}.pdf"
+    assert pdf_path.exists()
+
+    with patch(
+        "backend.app.services.quarantine_service.stage_file_for_deletion", side_effect=OSError("Disk write lock")
+    ):
+        del_res = client.delete(f"/api/papers/{paper_id}")
+        assert del_res.status_code == 500
+        data = del_res.json()
+        assert data["error"]["code"] == ErrorCode.DATABASE_ERROR.value
+        assert "Failed to delete paper file from storage" in data["error"]["message"]
+
+    # Original file and database record remain intact
+    assert pdf_path.exists()
+    assert client.get(f"/api/papers/{paper_id}").status_code == 200
+
+
+def test_r1_rollback_restoration_failure_truthful_semantics_and_recovery_route(client: TestClient, isolated_env: dict):
+    """R1: If commit fails AND rollback rename fails, reports truthful 500 and provides live recovery route."""
+    ws_res = client.post("/api/workspaces", json={"name": "R1 Truthful Semantics WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("R1 Recovery Route Content")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("recovery_route.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    pdf_path = data_dir / "pdfs" / f"{paper_id}.pdf"
+
+    with patch.object(Session, "commit", side_effect=RuntimeError("Simulated DB failure")):
+        with patch("backend.app.services.quarantine_service.restore_quarantined_file", return_value=False):
+            del_res = client.delete(f"/api/papers/{paper_id}")
+            assert del_res.status_code == 500
+            data = del_res.json()
+            assert data["error"]["code"] == ErrorCode.DATABASE_ERROR.value
+            # Truthful semantics: does NOT promise file was restored
+            assert "failed to restore file. File quarantined for recovery." in data["error"]["message"]
+            assert data["error"]["details"].get("status") == "quarantined_for_recovery"
+
+    # Row is still live in DB
+    paper_res = client.get(f"/api/papers/{paper_id}")
+    assert paper_res.status_code == 200
+
+    # Original file is NOT at pdf_path because rollback rename failed
+    assert not pdf_path.exists()
+
+    # BUT live paper document CAN STILL BE ACCESSED via quarantine fallback!
+    file_res = client.get(f"/api/papers/{paper_id}/file")
+    assert file_res.status_code == 200
+    assert file_res.content == pdf_bytes
+
+
+def test_r1_final_unlink_failure_truthful_pending_purge_and_retry_204(client: TestClient, isolated_env: dict):
+    """R1: If final unlink fails, returns 500 pending_purge; retry purges quarantined file and returns 204."""
+    ws_res = client.post("/api/workspaces", json={"name": "R1 Unlink Fail WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("R1 Unlink Failure Content")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("unlink_fail.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    trash_dir = data_dir / "pdfs" / ".trash"
+
+    # Simulate PermissionError on purge_quarantined_file
+    with patch("backend.app.services.quarantine_service.purge_quarantined_file", return_value=False):
+        del_res = client.delete(f"/api/papers/{paper_id}")
+        assert del_res.status_code == 500
+        data = del_res.json()
+        assert data["error"]["code"] == ErrorCode.DATABASE_ERROR.value
+        assert "quarantined file purge failed. Deletion remains pending." in data["error"]["message"]
+        assert data["error"]["details"].get("status") == "pending_purge"
+
+    # Paper row is deleted from DB
+    assert client.get(f"/api/papers/{paper_id}").status_code == 404
+
+    # File and ledger still exist in .trash in committed_pending_purge state
+    meta_files = list(trash_dir.glob("*.meta.json"))
+    assert len(meta_files) >= 1
+
+    # Retry DELETE /api/papers/{paper_id}: purge succeeds now, returning 204!
+    retry_del = client.delete(f"/api/papers/{paper_id}")
+    assert retry_del.status_code == 204
+
+    # Now quarantine files for this paper are gone
+    remaining = [m for m in trash_dir.glob("*.meta.json") if paper_id in m.name]
+    assert len(remaining) == 0
+
+
+def test_r1_reconciliation_surviving_restart_preserves_unrelated_files(client: TestClient, isolated_env: dict):
+    """R1: Quarantine reconciliation restores live records, purges committed deletions, preserves foreign files."""
+    from backend.app.services.quarantine_service import (
+        mark_committed_deletion,
+        reconcile_quarantine,
+        stage_file_for_deletion,
+    )
+
+    data_dir = isolated_env["data_dir"]
+    pdf_dir = data_dir / "pdfs"
+    trash_dir = pdf_dir / ".trash"
+    trash_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Foreign / unrelated file without .meta.json: MUST BE PRESERVED
+    foreign_file = trash_dir / "unrelated_foreign_backup.dat"
+    foreign_file.write_text("critical external data", encoding="utf-8")
+
+    # 2. Live paper: create paper in DB, move its file to trash with staged state
+    ws_res = client.post("/api/workspaces", json={"name": "Reconciliation Live WS"})
+    ws_id = ws_res.json()["id"]
+    pdf_bytes = create_minimal_pdf("Live paper needing restart restoration")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("live_reconcile.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    live_paper_id = res.json()["papers"][0]["id"]
+    live_path = pdf_dir / f"{live_paper_id}.pdf"
+    assert live_path.exists()
+    staged_live, live_meta = stage_file_for_deletion(live_path, "paper", live_paper_id, ws_id)
+    assert not live_path.exists()
+
+    # 3. Committed deletion (paper id not in DB)
+    dead_paper_id = "00000000-0000-0000-0000-000000000099"
+    dead_dummy = pdf_dir / f"{dead_paper_id}.pdf"
+    dead_dummy.write_text("dead paper content", encoding="utf-8")
+    staged_dead, dead_meta = stage_file_for_deletion(dead_dummy, "paper", dead_paper_id, ws_id)
+    mark_committed_deletion(dead_meta)
+
+    # Run reconciliation
+    with isolated_env["session_factory"]() as db:
+        stats = reconcile_quarantine(trash_dir, db)
+
+    # Assert outcomes
+    assert stats["restored"] == 1
+    assert stats["purged"] == 1
+    assert foreign_file.exists()  # Foreign file strictly preserved!
+    assert foreign_file.read_text(encoding="utf-8") == "critical external data"
+    assert live_path.exists()  # Live paper restored to original path!
+    assert not staged_dead.exists()  # Committed deletion purged!
+    assert not dead_meta.exists()
+
+
+def test_r1_workspace_delete_unlink_failure_pending_purge_and_retry(client: TestClient, isolated_env: dict):
+    """R1: If workspace deletion commits but unlinking staged files fails, returns 500 pending_purge; retry purges and returns 204."""
+    ws_res = client.post("/api/workspaces", json={"name": "WS Unlink Fail WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("Workspace Unlink Fail Paper")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("ws_unlink.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    trash_dir = data_dir / "pdfs" / ".trash"
+
+    # Simulate PermissionError on purge_quarantined_file during workspace deletion
+    with patch("backend.app.services.quarantine_service.purge_quarantined_file", return_value=False):
+        del_res = client.delete(f"/api/workspaces/{ws_id}")
+        assert del_res.status_code == 500
+        data = del_res.json()
+        assert data["error"]["code"] == ErrorCode.DATABASE_ERROR.value
+        assert "quarantined files failed to purge. Cleanup remains pending." in data["error"]["message"]
+        assert data["error"]["details"].get("status") == "pending_purge"
+
+    # Workspace is deleted from DB
+    assert client.get(f"/api/workspaces/{ws_id}").status_code == 404
+
+    # Retry DELETE /api/workspaces/{ws_id}: purge succeeds now, returning 204!
+    retry_del = client.delete(f"/api/workspaces/{ws_id}")
+    assert retry_del.status_code == 204
+
+    # Quarantined files are purged
+    remaining = [m for m in trash_dir.glob("*.meta.json") if paper_id in m.name]
+    assert len(remaining) == 0

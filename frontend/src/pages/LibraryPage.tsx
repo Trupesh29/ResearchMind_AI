@@ -51,6 +51,7 @@ export const LibraryPage: React.FC = () => {
 
   // Track active request ID, selected workspace ref, and search query ref to prevent race conditions
   const activePaperReqRef = useRef<number>(0);
+  const activePaginationReqRef = useRef<number>(0);
   const selectedWorkspaceRef = useRef<WorkspaceItem | null>(null);
   const searchQueryRef = useRef<string>("");
 
@@ -104,6 +105,9 @@ export const LibraryPage: React.FC = () => {
   const loadPapers = useCallback(
     async (workspaceId: string, query: string = "") => {
       const reqId = ++activePaperReqRef.current;
+      // Reset pagination loading ownership when generation changes
+      activePaginationReqRef.current = 0;
+      setIsLoadingMore(false);
       setIsLoadingPapers(true);
       setPageError(null);
       try {
@@ -140,7 +144,8 @@ export const LibraryPage: React.FC = () => {
     const currentWsId = selectedWorkspaceRef.current.id;
     const currentQuery = searchQueryRef.current;
     const currentCursor = nextCursor;
-    const reqId = ++activePaperReqRef.current;
+    const currentPaperGen = activePaperReqRef.current;
+    const paginationReqId = ++activePaginationReqRef.current;
     setIsLoadingMore(true);
     try {
       const res = await api.listPapers(currentWsId, {
@@ -149,7 +154,8 @@ export const LibraryPage: React.FC = () => {
         limit: 25,
       });
       if (
-        reqId === activePaperReqRef.current &&
+        currentPaperGen === activePaperReqRef.current &&
+        paginationReqId === activePaginationReqRef.current &&
         selectedWorkspaceRef.current?.id === currentWsId &&
         searchQueryRef.current === currentQuery
       ) {
@@ -159,14 +165,19 @@ export const LibraryPage: React.FC = () => {
       }
     } catch (err: any) {
       if (
-        reqId === activePaperReqRef.current &&
+        currentPaperGen === activePaperReqRef.current &&
+        paginationReqId === activePaginationReqRef.current &&
         selectedWorkspaceRef.current?.id === currentWsId &&
         searchQueryRef.current === currentQuery
       ) {
         setPageError(err?.message || "Failed to load additional documents.");
       }
     } finally {
-      if (reqId === activePaperReqRef.current) {
+      // Stale completion must not clear a newer pagination request's loading state
+      if (
+        currentPaperGen === activePaperReqRef.current &&
+        paginationReqId === activePaginationReqRef.current
+      ) {
         setIsLoadingMore(false);
       }
     }
@@ -176,6 +187,8 @@ export const LibraryPage: React.FC = () => {
     if (selectedWorkspace) {
       loadPapers(selectedWorkspace.id, searchQuery);
     } else {
+      activePaginationReqRef.current = 0;
+      setIsLoadingMore(false);
       setPapers([]);
       setNextCursor(null);
       setTotalPaperCount(0);
@@ -184,6 +197,8 @@ export const LibraryPage: React.FC = () => {
 
   // Workspace Actions
   const handleSelectWorkspace = (ws: WorkspaceItem) => {
+    activePaginationReqRef.current = 0;
+    setIsLoadingMore(false);
     setSelectedWorkspace(ws);
     selectedWorkspaceRef.current = ws;
     localStorage.setItem(STORAGE_KEY_SELECTED_WS, ws.id);
