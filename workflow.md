@@ -6,7 +6,7 @@ Guide implementation and review with less redundant agent context, while preserv
 
 ## 1. Establish scope
 
-Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 1 Phase 2: workspace CRUD, safe PDF upload/storage, library search/list/delete, original PDF viewing, related tests, and documentation. Preserve Phase 1 behavior and defer ingestion, retrieval, and analysis to their scheduled weeks. Do not push changes.
+Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 1 Phase 2: workspace CRUD, safe PDF upload/storage, library search/list/delete, original PDF viewing, related tests, and documentation. Preserve Phase 1 behavior and defer ingestion, retrieval, and analysis to their scheduled weeks. Keep incomplete changes local. After independent completion acceptance, follow the authorized publication order in section 5.
 
 Gravitas policy equivalent:
 
@@ -64,7 +64,7 @@ Inspect each exit code separately. Browser checks cover 1440, 768, and 375 pixel
 
 ## 5. Record and hand off
 
-Publication order (user instruction, 2026-10-17): push an accepted release checkpoint to `manav` first, verify the remote ref, then push the same checkpoint to `main`. Both remote branches now contain the completed Phase 1 checkpoint `24eadea`. Keep incomplete Phase 2 work local.
+Publication order (user instruction, 2026-10-17): push an accepted release checkpoint to `manav` first, verify the remote ref, then push the same checkpoint to `main`. Before this completion review, both remote branches contained the Phase 1 checkpoint `24eadea`; verify current refs when publishing. Keep incomplete Phase 2 work local.
 
 Commit/publication policy (user instruction updated 2026-10-17): after reviewing and checking task changes, create a local Git commit. Phase 1 has been explicitly published to remote main at 24eadea. Do not push Phase 2 until it is complete and accepted; the current corrective handoff ends with a local commit for independent review. A commit records a checkpoint, not proof of acceptance. Review staged files and exclude secrets, runtime data, and unrelated changes. Do not create empty commits.
 
@@ -72,7 +72,13 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
-## Current Phase 2 status (2026-10-17)
+## Current independent Phase 2 status (2026-10-17)
+
+Review of 42baf49 accepted Phase 2. Fresh 133 backend / 25 frontend tests and static/build checks passed. Normal and 750 ms delayed browser runs passed all 8 criteria. An independent injected unfiltered response failed the real browser search gate as expected. No corrective prompt is needed. Publish the accepted checkpoint to manav, verify the ref, then main under the existing user instruction.
+
+VERDICT: PASS — Week 1 Phase 2.
+
+## Historical implementation status (2026-10-17)
 
 Finding S1 (search acceptance race and filtering assertions) has been resolved and verified. Search verification utilizes pre-registered response waits with URL/query/workspace matching predicates, dual distinct PDF fixtures, scoped row locators, and negative/empty/cleared verification. Verified with 133 backend pytest, 25 frontend vitest, static checks, and live isolated Chrome browser acceptance runs under normal execution and 750 ms deliberate network latency. All 8 browser acceptance criteria passed. Phase 2 remains committed locally for independent completion review; unpushed per Phase 2 policy.
 

@@ -1,4 +1,22 @@
-# Current Phase 2 review — 306bd9e
+# Current Phase 2 review — 42baf49
+
+## Independent completion review — 2026-10-17
+
+No new actionable findings in the changes from efcda37 to 42baf49. S1 is closed: search waits match the request query/workspace and rendered assertions verify inclusion, exclusion, empty results, and clearing. Q1/Q2 fixes remain unchanged. No further corrective prompt is needed; earlier prompts below are historical.
+
+Fresh verification:
+- Backend: 133 passed, 82 dependency/deprecation warnings, 105.85 seconds.
+- Frontend: 25 passed across 4 files; existing JSDOM scrollTo warnings. ESLint, Prettier, TypeScript, and Vite production build passed.
+- Python: Ruff lint and format checks passed (37 files).
+- Isolated Chrome: 8/8 acceptance criteria passed normally and with 750 ms injected search delay, using scripts/run_browser_suite.ps1 with -RequirePhase2 -BackendPort 8008 -FrontendPort 5178 (second run added -SearchDelayMs 750). Latest tracked JSON records the delayed run.
+- Independent negative control: a temporary review harness intercepted the alpha search response and supplied the real unfiltered list from the same disposable workspace. The actual browser runner rejected it with expected count 1 / actual 2, set search_success=false, and failed phase2_library_lifecycle. All other criteria passed. The harness asserted this expected rejection and exited 0. Local diagnostics are in artifacts/review_search_negative; this was an intentional fault, not a product failure.
+- Test wrappers cleaned their owned processes and disposable storage. No application code changed during this review.
+
+Acceptance is scoped to Week 1 Phase 2 workspace/PDF library behavior. Synthetic fixtures do not establish broad document compatibility. Clean dependency installation, ML inference, and generator connectivity were not rerun.
+
+VERDICT: PASS — Week 1 Phase 2 accepted. The user's existing publication instruction applies: commit the review, push the accepted checkpoint to manav, verify it, then push the same checkpoint to main. Remote publication results are reported after execution, not inferred from this document.
+
+## Historical S1 implementation report
 
 Independent review, 2026-10-17: Q1 and Q2 were resolved in 306bd9e. Finding S1 (search acceptance race and filtering proof) has now been resolved and verified with fresh automated regression tests and live browser execution across normal and deliberate network latency scenarios. Phase 2 acceptance criteria are 100% satisfied. Phase 2 remains committed locally for final completion review; publication follows independent completion review, with manav first and main second.
 
