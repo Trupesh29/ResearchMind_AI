@@ -1,5 +1,7 @@
 # Review of c7d6c8e and corrective prompt
 
+> Latest review of repair 6354bc0 is in `docs/PHASE_2_CURRENT_REVIEW.md`, which contains the current Q1/Q2 findings and corrective prompt. Historical R1–R3 resolution evidence below does not establish current Phase 2 acceptance.
+
 Date: 2026-10-17. The fixes improve ordinary commit-failure restoration, disposable-target guarding, streaming 413 responses, error sanitization, and strict viewer criteria. Three actionable issues remain. No application code was changed during this review.
 
 ## Findings

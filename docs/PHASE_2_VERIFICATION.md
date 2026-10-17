@@ -1,4 +1,6 @@
 # ResearchMind AI — Phase 2 Verification Report
+> Latest independent review of 6354bc0: two ledger lifecycle/ownership findings remain in `docs/PHASE_2_CURRENT_REVIEW.md`. Prior implementation pass claims below do not close Q1/Q2; Phase 2 is not accepted for publication.
+
 > Corrective Repair Update (2026-10-17): Findings R1–R3 from `docs/PHASE_2_REVIEW_C7D6C8E.md` (durable quarantine ledger, pagination loading ownership, and browser cleanup ID capture) have been resolved via architectural fixes and verified against fresh regressions, static analysis, and isolated live browser testing. Phase 2 is complete and committed locally for review; unpushed per Phase 2 policy.
 
 **Date:** 2026-10-17<br>

@@ -1,5 +1,7 @@
 # ResearchMind AI decisions
 
+Latest independent review (6354bc0): two remaining quarantine ownership/lifecycle findings Q1/Q2 are recorded in `docs/PHASE_2_CURRENT_REVIEW.md`, including the current corrective prompt. Keep Phase 2 local until accepted. Earlier completion claims remain historical evidence.
+
 Current independent review (R1–R3 Corrective Repair Checkpoint, 2026-10-17): Corrective prompt executed and findings R1–R3 in `docs/PHASE_2_REVIEW_C7D6C8E.md` resolved via architectural fixes (durable quarantine ledger with crash recovery, decoupled pagination loading ownership, and validated top-level workspace creation ID in browser cleanup). Verified with fresh automated tests and live Chrome browser suite on disposable storage. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
 
 Updated: 2026-10-17. Scope: Week 1 Phase 2 R1–R3 corrective repair and publication gate.
