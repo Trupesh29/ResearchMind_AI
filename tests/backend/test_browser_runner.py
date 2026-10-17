@@ -33,7 +33,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from run_browser_verification import evaluate_acceptance, main  # noqa: E402
+from run_browser_verification import evaluate_acceptance, main, make_search_predicate  # noqa: E402
 
 
 @pytest.fixture
@@ -1249,3 +1249,108 @@ def test_injected_browser_failure_cleans_up_created_workspace_and_preserves_sent
     assert len(runner_cleanup_errors) == 0
     assert client.get(f"/api/workspaces/{sentinel_res.json()['id']}").status_code == 200
     assert client.get(f"/api/workspaces/{create_res.json()['id']}").status_code == 404
+
+
+# ==============================================================================
+# S1 Tests: Search Acceptance Evaluation, Response Predicate, and Latency Gate
+# ==============================================================================
+
+
+def test_evaluate_acceptance_strictly_fails_when_search_success_missing_or_false(valid_browser_results):
+    """S1: evaluate_acceptance with require_phase2 must strictly fail if search_success is missing or False."""
+    results = copy.deepcopy(valid_browser_results)
+    results["phase2_lifecycle"] = {
+        "workspace_created": True,
+        "pdf_uploaded": True,
+        "duplicate_identified": True,
+        "corrupt_rejected": True,
+        # search_success missing
+        "viewer_opened": True,
+        "viewer_pdf_loaded": True,
+        "viewer_escape_closed": True,
+        "cancel_deletion_kept_paper": True,
+        "confirm_deletion_removed_paper": True,
+        "workspace_deleted": True,
+    }
+
+    passed, failures, criteria = evaluate_acceptance(results, require_phase2=True)
+    assert passed is False
+    assert criteria["phase2_library_lifecycle"] is False
+    assert any("Phase 2 Library Lifecycle criteria failed" in f for f in failures)
+
+    # Also test explicit False
+    results["phase2_lifecycle"]["search_success"] = False
+    passed2, failures2, criteria2 = evaluate_acceptance(results, require_phase2=True)
+    assert passed2 is False
+    assert criteria2["phase2_library_lifecycle"] is False
+
+
+def test_make_search_predicate_matching_contracts():
+    """S1: make_search_predicate accurately matches query string, decoded values, workspace ID, and HTTP 200."""
+
+    class MockRequest:
+        def __init__(self, method="GET"):
+            self.method = method
+
+    class MockResponse:
+        def __init__(self, url, status=200, method="GET"):
+            self.url = url
+            self.status = status
+            self.request = MockRequest(method)
+
+    pred_alpha = make_search_predicate("alpha", "ws_123")
+
+    # 1. Exact match returns True
+    res_valid = MockResponse("http://127.0.0.1:5178/api/papers?workspace_id=ws_123&q=alpha&limit=25", 200)
+    assert pred_alpha(res_valid) is True
+
+    # 2. Foreign workspace returns False
+    res_foreign_ws = MockResponse("http://127.0.0.1:5178/api/papers?workspace_id=ws_foreign&q=alpha&limit=25", 200)
+    assert pred_alpha(res_foreign_ws) is False
+
+    # 3. Nonmatching query returns False
+    res_wrong_q = MockResponse("http://127.0.0.1:5178/api/papers?workspace_id=ws_123&q=beta&limit=25", 200)
+    assert pred_alpha(res_wrong_q) is False
+
+    # 4. HTTP non-200 returns False
+    res_500 = MockResponse("http://127.0.0.1:5178/api/papers?workspace_id=ws_123&q=alpha&limit=25", 500)
+    assert pred_alpha(res_500) is False
+
+    # 5. Method not GET returns False
+    res_post = MockResponse("http://127.0.0.1:5178/api/papers?workspace_id=ws_123&q=alpha&limit=25", 200, method="POST")
+    assert pred_alpha(res_post) is False
+
+    # 6. Cleared query (no q parameter in URL) returns True for expected_q=""
+    pred_cleared = make_search_predicate("", "ws_123")
+    res_cleared_no_q = MockResponse("http://127.0.0.1:5178/api/papers?workspace_id=ws_123&limit=25", 200)
+    assert pred_cleared(res_cleared_no_q) is True
+
+    # 7. Cleared query (empty q parameter) returns True for expected_q=""
+    res_cleared_empty_q = MockResponse("http://127.0.0.1:5178/api/papers?workspace_id=ws_123&q=&limit=25", 200)
+    assert pred_cleared(res_cleared_empty_q) is True
+
+
+def test_cli_passes_search_delay_argument(tmp_path):
+    """S1: run_browser_verification.py CLI passes --search-delay-ms to run_checks."""
+    summary_path = tmp_path / "summary.json"
+    output_dir = tmp_path / "artifacts"
+
+    with patch("run_browser_verification.run_checks", return_value=({}, True)) as mock_run:
+        with patch(
+            "sys.argv",
+            [
+                "run_browser_verification.py",
+                "--output-dir",
+                str(output_dir),
+                "--summary-path",
+                str(summary_path),
+                "--search-delay-ms",
+                "750",
+            ],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+            mock_run.assert_called_once()
+            _, kwargs = mock_run.call_args
+            assert kwargs.get("search_delay_ms") == 750

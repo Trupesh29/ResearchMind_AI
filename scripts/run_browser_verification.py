@@ -22,6 +22,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 
 def evaluate_acceptance(results: dict, require_phase2: bool = False) -> tuple[bool, list[str], dict[str, bool]]:
@@ -225,6 +226,31 @@ def evaluate_acceptance(results: dict, require_phase2: bool = False) -> tuple[bo
     return overall_passed, failures, criteria
 
 
+def make_search_predicate(expected_q: str, expected_ws_id: str | None = None):
+    """
+    Returns a response predicate for Playwright expect_response that matches
+    a GET request to /api/papers with the expected workspace ID and decoded query string.
+    """
+
+    def _pred(res):
+        if not getattr(res, "url", None):
+            return False
+        parsed = urlparse(res.url)
+        if not parsed.path.endswith("/api/papers"):
+            return False
+        req = getattr(res, "request", None)
+        method = getattr(req, "method", "GET")
+        if method != "GET":
+            return False
+        qs = parse_qs(parsed.query)
+        if expected_ws_id and qs.get("workspace_id", [None])[0] != expected_ws_id:
+            return False
+        actual_q = qs.get("q", [""])[0]
+        return actual_q == expected_q and res.status == 200
+
+    return _pred
+
+
 def run_checks(
     chrome_path: str,
     base_url: str,
@@ -232,6 +258,7 @@ def run_checks(
     summary_path: Path,
     headless: bool = True,
     require_phase2: bool = False,
+    search_delay_ms: int = 0,
 ) -> tuple[dict, bool]:
     """
     Executes live browser acceptance checks and returns (results_dict, passed).
@@ -248,6 +275,7 @@ def run_checks(
             "summary_path": str(summary_path),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "headless": headless,
+            "search_delay_ms": search_delay_ms,
         },
         "viewports": {},
         "routes": {},
@@ -268,7 +296,7 @@ def run_checks(
 
     try:
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.sync_api import expect, sync_playwright
         except ImportError as e:
             raise RuntimeError(
                 f"Playwright Python package is not installed in the active environment: {e}. "
@@ -784,8 +812,16 @@ def run_checks(
                 raise
 
             # Generate synthetic test PDFs using standard minimal PDF structure
-            valid_pdf_path = temp_fixtures_dir / "valid_test_paper.pdf"
-            minimal_valid_pdf_bytes = (
+            # At least two distinct PDF fixtures whose filenames differ for search and whose bytes differ to avoid deduplication
+            valid_pdf_a_name = "alpha_search_paper.pdf"
+            valid_pdf_b_name = "beta_target_paper.pdf"
+            corrupt_pdf_name = "corrupt_test_paper.pdf"
+
+            valid_pdf_a_path = temp_fixtures_dir / valid_pdf_a_name
+            valid_pdf_b_path = temp_fixtures_dir / valid_pdf_b_name
+            corrupt_pdf_path = temp_fixtures_dir / corrupt_pdf_name
+
+            minimal_valid_pdf_a_bytes = (
                 b"%PDF-1.4\n"
                 b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
                 b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
@@ -793,12 +829,23 @@ def run_checks(
                 b"xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n"
                 b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n187\n%%EOF\n"
             )
-            valid_pdf_path.write_bytes(minimal_valid_pdf_bytes)
+            valid_pdf_a_path.write_bytes(minimal_valid_pdf_a_bytes)
 
-            corrupt_pdf_path = temp_fixtures_dir / "corrupt_test_paper.pdf"
+            minimal_valid_pdf_b_bytes = (
+                b"%PDF-1.4\n"
+                b"% Distinct Beta Document Bytes for Search Verification\n"
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
+                b"xref\n0 4\n0000000000 65535 f \n0000000065 00000 n \n0000000114 00000 n \n0000000171 00000 n \n"
+                b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n243\n%%EOF\n"
+            )
+            valid_pdf_b_path.write_bytes(minimal_valid_pdf_b_bytes)
+
             corrupt_pdf_path.write_bytes(b"%PDF-corrupted-binary-header-test")
 
             created_workspace_id = None
+            results["phase2_lifecycle"] = p2_results
             try:
                 page.set_viewport_size({"width": 1440, "height": 900})
                 page.goto(f"{base_url}/library", wait_until="networkidle")
@@ -809,6 +856,7 @@ def run_checks(
                 e2e_ws_name = f"E2E Workspace {run_id}"
 
                 # 10a. Create workspace
+                print("[10a] Creating workspace...")
                 create_btn = page.locator("button:has-text('Create Workspace'), button#new-workspace-btn")
                 if create_btn.count() == 0:
                     sel_btn = page.locator("#workspace-selector-btn")
@@ -843,37 +891,146 @@ def run_checks(
                 ws_name_visible = page.locator(f"text='{e2e_ws_name}'").count() > 0
                 p2_results["workspace_created"] = ws_name_visible
 
-                # 10b. Upload valid PDF
+                # 10b. Upload valid PDF A
+                print("[10b] Uploading valid PDF A...")
                 file_input = page.locator("#pdf-upload-input")
-                file_input.set_input_files(str(valid_pdf_path))
-                time.sleep(1.2)
+                with page.expect_response(
+                    lambda r: "/api/papers" in r.url and r.request.method == "POST" and r.status in (200, 201, 202),
+                    timeout=10000,
+                ):
+                    file_input.set_input_files(str(valid_pdf_a_path))
+                time.sleep(0.5)
                 accepted_badge = page.locator("text='1 Accepted'")
                 p2_results["pdf_uploaded"] = accepted_badge.count() > 0
 
-                # 10c. Upload duplicate PDF (identical bytes)
-                file_input.set_input_files(str(valid_pdf_path))
-                time.sleep(1.2)
+                # 10c. Upload duplicate PDF (identical bytes to PDF A)
+                print("[10c] Uploading duplicate PDF...")
+                with page.expect_response(
+                    lambda r: "/api/papers" in r.url and r.request.method == "POST" and r.status in (200, 201, 202),
+                    timeout=10000,
+                ):
+                    file_input.set_input_files(str(valid_pdf_a_path))
+                time.sleep(0.5)
                 dup_badge = page.locator("text='1 Duplicate'")
                 p2_results["duplicate_identified"] = dup_badge.count() > 0
 
                 # 10d. Upload corrupt PDF
-                file_input.set_input_files(str(corrupt_pdf_path))
-                time.sleep(1.2)
+                print("[10d] Uploading corrupt PDF...")
+                with page.expect_response(
+                    lambda r: "/api/papers" in r.url and r.request.method == "POST" and r.status in (200, 201, 202),
+                    timeout=10000,
+                ):
+                    file_input.set_input_files(str(corrupt_pdf_path))
+                time.sleep(0.5)
                 rej_badge = page.locator("text='1 Rejected'")
                 p2_results["corrupt_rejected"] = rej_badge.count() > 0
 
-                # 10e. Search
-                search_input = page.locator("#paper-search-input")
-                search_input.fill("valid_test")
+                # Upload distinct second valid PDF B for search filtering assertions
+                print("[10d-2] Uploading valid PDF B...")
+                with page.expect_response(
+                    lambda r: "/api/papers" in r.url and r.request.method == "POST" and r.status in (200, 201, 202),
+                    timeout=10000,
+                ):
+                    file_input.set_input_files(str(valid_pdf_b_path))
+                page.wait_for_load_state("networkidle")
                 time.sleep(0.5)
-                paper_found = page.locator("text='valid_test_paper.pdf'").count() > 0
-                search_input.fill("")
-                time.sleep(0.4)
-                p2_results["search_success"] = paper_found
+
+                # Scope locators strictly to .paper-row to ensure upload badges/banners cannot satisfy checks
+                row_a = page.locator(".paper-row").filter(has_text=valid_pdf_a_name)
+                row_b = page.locator(".paper-row").filter(has_text=valid_pdf_b_name)
+                expect(page.locator(".paper-row")).to_have_count(2, timeout=5000)
+                expect(row_a).to_be_visible(timeout=5000)
+                expect(row_b).to_be_visible(timeout=5000)
+
+                # 10e. Search
+                print("[10e] Starting search verification...")
+                # Set up deterministic route latency if search_delay_ms > 0
+                if search_delay_ms > 0:
+
+                    def delayed_search_handler(route):
+                        if (
+                            "/api/papers" in route.request.url
+                            and route.request.method == "GET"
+                            and "workspace_id=" in route.request.url
+                        ):
+                            time.sleep(search_delay_ms / 1000.0)
+                        route.continue_()
+
+                    page.route("**/api/papers*", delayed_search_handler)
+
+                try:
+                    search_input = page.locator("#paper-search-input")
+
+                    # 1. Search for matching paper "alpha" (register wait before typing)
+                    print("[10e-1] Searching for 'alpha'...")
+                    with page.expect_response(
+                        make_search_predicate("alpha", created_workspace_id), timeout=10000
+                    ) as alpha_resp_info:
+                        search_input.fill("alpha")
+                    alpha_resp = alpha_resp_info.value
+                    if alpha_resp.status != 200:
+                        raise RuntimeError(f"Search 'alpha' failed with HTTP {alpha_resp.status}")
+
+                    # Rendered state assertions: matching paper visible, nonmatching paper absent, row count == 1
+                    expect(page.locator(".paper-row")).to_have_count(1, timeout=5000)
+                    expect(row_a).to_be_visible(timeout=5000)
+                    expect(row_b).to_have_count(0, timeout=5000)
+
+                    # 2. Search for no-match query "nonexistent_query_xyz"
+                    print("[10e-2] Searching for 'nonexistent_query_xyz'...")
+                    with page.expect_response(
+                        make_search_predicate("nonexistent_query_xyz", created_workspace_id), timeout=10000
+                    ) as no_match_resp_info:
+                        search_input.fill("nonexistent_query_xyz")
+                    no_match_resp = no_match_resp_info.value
+                    if no_match_resp.status != 200:
+                        raise RuntimeError(f"Search 'nonexistent_query_xyz' failed with HTTP {no_match_resp.status}")
+
+                    # Rendered state assertions: 0 paper rows, empty state text visible
+                    expect(page.locator(".paper-row")).to_have_count(0, timeout=5000)
+                    empty_heading = page.locator("text='No matching documents found'")
+                    expect(empty_heading).to_be_visible(timeout=5000)
+                    empty_detail = page.locator("text='No papers match the search term \"nonexistent_query_xyz\".'")
+                    expect(empty_detail).to_be_visible(timeout=5000)
+
+                    # 3. Clear search query ""
+                    print("[10e-3] Clearing search...")
+                    with page.expect_response(
+                        make_search_predicate("", created_workspace_id), timeout=10000
+                    ) as clear_resp_info:
+                        search_input.fill("")
+                    clear_resp = clear_resp_info.value
+                    if clear_resp.status != 200:
+                        raise RuntimeError(f"Search clear failed with HTTP {clear_resp.status}")
+
+                    # Rendered state assertions: both papers restored, empty state gone
+                    expect(page.locator(".paper-row")).to_have_count(2, timeout=5000)
+                    expect(row_a).to_be_visible(timeout=5000)
+                    expect(row_b).to_be_visible(timeout=5000)
+                    expect(empty_heading).to_have_count(0, timeout=5000)
+
+                    p2_results["search_success"] = True
+                    print("[10e] Search verification successfully passed.")
+                except Exception as search_err:
+                    print(f"Phase 2 search verification failed: {search_err}")
+                    p2_results["search_success"] = False
+                    p2_results["search_error"] = str(search_err)
+                finally:
+                    if search_delay_ms > 0:
+                        try:
+                            page.unroute("**/api/papers*")
+                        except Exception:
+                            pass
 
                 # 10f. View Original PDF (Strict Positive Evidence: HTTP 200/206 from /api/papers/{id}/file)
+                print("[10f] Viewing PDF modal...")
                 pdf_response_status = None
-                view_btn = page.locator("button:has-text('View')").first
+                view_btn = (
+                    page.locator(".paper-row")
+                    .filter(has_text=valid_pdf_a_name)
+                    .locator("button:has-text('View')")
+                    .first
+                )
                 with page.expect_response(
                     lambda r: "/api/papers/" in r.url and "/file" in r.url and r.status in (200, 206),
                     timeout=10000,
@@ -896,13 +1053,13 @@ def run_checks(
                 p2_results["viewer_escape_closed"] = viewer_closed
 
                 # 10g. Cancel Paper Deletion
-                del_paper_btn = page.locator("button[aria-label^='Delete valid_test_paper']").first
+                del_paper_btn = page.locator(f"button[aria-label^='Delete {valid_pdf_a_name}']").first
                 del_paper_btn.click()
                 time.sleep(0.4)
                 cancel_btn = page.locator("button:has-text('Cancel')").first
                 cancel_btn.click()
                 time.sleep(0.4)
-                paper_still_present = page.locator("text='valid_test_paper.pdf'").count() > 0
+                paper_still_present = row_a.count() > 0
                 p2_results["cancel_deletion_kept_paper"] = paper_still_present
 
                 # 10h. Confirm Paper Deletion
@@ -915,7 +1072,7 @@ def run_checks(
                     confirm_del_btn.click()
                 page.wait_for_load_state("networkidle")
                 time.sleep(0.5)
-                paper_removed = page.locator("text='valid_test_paper.pdf'").count() == 0
+                paper_removed = row_a.count() == 0
                 p2_results["confirm_deletion_removed_paper"] = paper_removed
 
                 # 10i. Delete Workspace (deleting only the workspace created in this run)
@@ -942,7 +1099,8 @@ def run_checks(
             finally:
                 # Clean temporary test fixtures
                 try:
-                    valid_pdf_path.unlink(missing_ok=True)
+                    valid_pdf_a_path.unlink(missing_ok=True)
+                    valid_pdf_b_path.unlink(missing_ok=True)
                     corrupt_pdf_path.unlink(missing_ok=True)
                 except Exception:
                     pass
@@ -1037,6 +1195,12 @@ def main():
         default=False,
         help="Require Phase 2 Library Lifecycle acceptance criteria to pass",
     )
+    parser.add_argument(
+        "--search-delay-ms",
+        type=int,
+        default=int(os.environ.get("SEARCH_DELAY_MS", "0")),
+        help="Simulate deterministic network latency (ms) for paper search requests",
+    )
 
     args = parser.parse_args()
 
@@ -1050,6 +1214,7 @@ def main():
         summary_path=summary_path,
         headless=not args.no_headless,
         require_phase2=args.require_phase2,
+        search_delay_ms=args.search_delay_ms,
     )
 
     sys.exit(0 if passed else 1)

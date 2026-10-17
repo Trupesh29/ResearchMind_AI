@@ -72,19 +72,17 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
-## Current independent Phase 2 status (2026-10-17)
+## Current Phase 2 status (2026-10-17)
 
-Review of 306bd9e: Q1/Q2 resolved; 130 backend and 23 frontend tests plus static/build checks passed. Fresh isolated browser acceptance failed search_success (7/8 criteria passed). Resolve S1 using docs/PHASE_2_SEARCH_VERIFICATION_PROMPT.md. Keep Phase 2 unpushed until independent acceptance.
+Finding S1 (search acceptance race and filtering assertions) has been resolved and verified. Search verification utilizes pre-registered response waits with URL/query/workspace matching predicates, dual distinct PDF fixtures, scoped row locators, and negative/empty/cleared verification. Verified with 133 backend pytest, 25 frontend vitest, static checks, and live isolated Chrome browser acceptance runs under normal execution and 750 ms deliberate network latency. All 8 browser acceptance criteria passed. Phase 2 remains committed locally for independent completion review; unpushed per Phase 2 policy.
 
-VERDICT: FAIL -- search browser acceptance unresolved.
-
-## Historical implementation verification status (2026-10-17)
-Findings Q1 and Q2 from `docs/PHASE_2_CURRENT_REVIEW.md` resolved via architectural fixes and verified with fresh automated test and live Chrome browser evidence. Left unpushed for completion review per Phase 2 policy.
-
-- Scope: Workspace Management & PDF Research Library (Phase 2 Q1/Q2 Corrective Repair)
-- Tests: 130 pytest passed (including `test_phase2_fixes.py` with 22 tests, `test_browser_runner.py` with 48 tests), 23 Vitest passed (including 14 in `library.test.tsx`), tsc typecheck passed, eslint passed, prettier passed, ruff passed (37 files), vite build passed.
-- Live Browser Suite: 8 of 8 criteria passed on disposable database/storage (`no_horizontal_overflow`, `routes_and_navigation`, `mobile_drawer_accessibility`, `reduced_motion_suppressed`, `contrast_ratios`, `api_states_and_recovery`, `clean_operation`, `phase2_library_lifecycle`).
+- Scope: Workspace Management & PDF Research Library (Phase 2 S1 Corrective Repair)
+- Tests: 133 pytest passed (including `test_phase2_fixes.py` with 22 tests, `test_browser_runner.py` with 50 tests), 25 Vitest passed (including 16 in `library.test.tsx`), tsc typecheck passed, eslint passed, prettier passed, ruff check/format passed (37 files), vite build passed.
+- Live Browser Suite: 8 of 8 criteria passed on disposable database/storage across both standard run and 750 ms latency run (`no_horizontal_overflow`, `routes_and_navigation`, `mobile_drawer_accessibility`, `reduced_motion_suppressed`, `contrast_ratios`, `api_states_and_recovery`, `clean_operation`, `phase2_library_lifecycle`).
 - `VERDICT: PASS`
+
+## Historical review status (306bd9e)
+Review of 306bd9e: Q1/Q2 resolved; 130 backend and 23 frontend tests passed; browser acceptance failed `search_success` (7/8 passed). S1 resolved via `docs/PHASE_2_SEARCH_VERIFICATION_PROMPT.md`.
 
 
 ## Ralph Loop guidance for corrective work

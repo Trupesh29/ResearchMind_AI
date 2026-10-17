@@ -1,14 +1,14 @@
 # ResearchMind AI decisions
 
-Current independent review (2026-10-17, implementation 306bd9e): Q1/Q2 passed independent code review and regressions. Automated tests and static checks passed, but the fresh isolated browser run failed search acceptance (S1). Completion and publication remain blocked pending deterministic search verification. See docs/PHASE_2_CURRENT_REVIEW.md and docs/PHASE_2_SEARCH_VERIFICATION_PROMPT.md. Both remotes remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local; accepted publication order is manav, verify, then main.
+Current status (2026-10-17): Finding S1 (search acceptance race and filtering assertions) has been resolved and verified with fresh automated regressions (133 backend pytest, 25 frontend vitest) and live isolated Chrome browser acceptance suites under both normal execution and 750 ms injected route latency. All 8 browser acceptance criteria passed (search_success: true). Findings Q1, Q2, and S1 are fully resolved. Phase 2 is complete, committed locally for independent completion review, and unpushed per Phase 2 policy. Publication order for accepted releases remains manav first, verify, then main.
 
-Historical implementation report:  Corrective prompt executed and findings Q1 and Q2 from `docs/PHASE_2_CURRENT_REVIEW.md` resolved via architectural fixes: pending-purge retries strictly enforce authenticated resource ownership with conservative rejection of foreign and ownerless callers (Q1), and delete operations adopt already-quarantined live records ensuring full purge on commit and fallback access on rollback, including mixed workspace cascades (Q2). Verified with fresh automated tests (130 pytest passed, 23 vitest passed, static checks passed) and live Chrome browser suite on disposable storage. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
+Historical review (306bd9e): Q1/Q2 passed independent code review and regressions; isolated browser run failed search acceptance (S1). S1 resolution closed the acceptance timing gap with pre-registered response waits, dual PDF fixtures, and positive/negative/empty/cleared verification.
 
-Updated: 2026-10-17. Scope: Week 1 Phase 2 Q1/Q2 corrective repair and publication gate.
+Updated: 2026-10-17. Scope: Week 1 Phase 2 S1 search verification repair and publication gate.
 
 ## Historical corrective-checkpoint status
 
-Phase 2 Q1/Q2 corrective repair loop completed. Both findings from `docs/PHASE_2_CURRENT_REVIEW.md` have been resolved with regression tests, static checks, and live browser verification on disposable storage. Phase 1 remains published on remote main at `24eadea`. This repaired Phase 2 checkpoint is committed locally and left unpushed for completion review per user instructions.
+Phase 2 S1 corrective repair loop completed. All findings from `docs/PHASE_2_CURRENT_REVIEW.md` (Q1, Q2, S1) have been resolved with regression tests, static checks, and live browser verification on disposable storage. Phase 1 remains published on remote main at `24eadea`. This complete Phase 2 checkpoint is committed locally and left unpushed for completion review per user instructions.
 
 
 ## D001 - Phase boundaries

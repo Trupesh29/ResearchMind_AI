@@ -110,6 +110,66 @@ describe("LibraryPage Integration and Component Suite", () => {
     });
   });
 
+  it("displays empty results state when search query matches no documents", async () => {
+    vi.spyOn(client.api, "listPapers").mockResolvedValue({
+      items: [],
+      next_cursor: null,
+      total_count: 0,
+    });
+
+    render(<LibraryPage />);
+
+    const searchInput = screen.getByPlaceholderText(/Search papers/i);
+    fireEvent.change(searchInput, {
+      target: { value: "nonexistent_query_xyz" },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("No matching documents found"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /No papers match the search term "nonexistent_query_xyz"/i,
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("restores all documents when search query is cleared", async () => {
+    render(<LibraryPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Quantum Supremacy Experiment"),
+      ).toBeInTheDocument();
+    });
+
+    const searchInput = screen.getByPlaceholderText(/Search papers/i);
+    fireEvent.change(searchInput, { target: { value: "error" } });
+
+    await waitFor(() => {
+      expect(client.api.listPapers).toHaveBeenCalledWith(
+        "ws-1",
+        expect.objectContaining({ q: "error" }),
+      );
+    });
+
+    // Clear search query
+    fireEvent.change(searchInput, { target: { value: "" } });
+
+    await waitFor(() => {
+      expect(client.api.listPapers).toHaveBeenCalledWith(
+        "ws-1",
+        expect.objectContaining({ q: "" }),
+      );
+      expect(
+        screen.getByText("Quantum Supremacy Experiment"),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Quantum Error Mitigation")).toBeInTheDocument();
+    });
+  });
+
   it("opens PDF viewer modal when View button is clicked", async () => {
     render(<LibraryPage />);
 

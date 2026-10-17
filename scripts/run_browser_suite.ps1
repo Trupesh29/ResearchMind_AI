@@ -12,7 +12,8 @@ param(
     [int]$BackendPort = 8000,
     [int]$FrontendPort = 5173,
     [int]$TimeoutSeconds = 15,
-    [string]$ChromePath = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+    [string]$ChromePath = "C:\Program Files\Google\Chrome\Application\chrome.exe",
+    [int]$SearchDelayMs = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -200,6 +201,10 @@ try {
         $p2Args = @()
         if ($RequirePhase2 -or (-not $Attach)) {
             $p2Args += "--require-phase2"
+        }
+        if ($SearchDelayMs -gt 0) {
+            $p2Args += "--search-delay-ms"
+            $p2Args += $SearchDelayMs.ToString()
         }
         & $ScraplingPython "$ProjectRoot\scripts\run_browser_verification.py" `
             --chrome-path $ChromePath `
