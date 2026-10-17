@@ -1,5 +1,7 @@
 # Phase 2 review — e5367c9 (Repaired in subsequent commit)
 
+> Latest independent review (2026-10-17, commit 7a752aa): **NOT ACCEPTED**. The historical repair claims below are superseded by the follow-up findings in `docs/PHASE_2_FOLLOWUP_REVIEW.md`. Phase 2 remains local. Both remote main and manav were verified at Phase 1 checkpoint 24eadea.
+
 Reviewed 2026-10-17. Phase 2 corrective repair loop completed. All eight findings from review e5367c9 have been resolved and verified with fresh regressions and live-browser evidence.
 
 ## Findings & Resolutions

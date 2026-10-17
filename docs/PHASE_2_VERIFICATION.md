@@ -1,4 +1,6 @@
 # ResearchMind AI — Phase 2 Verification Report
+> Latest review of 7a752aa: Phase 2 is not accepted. See `docs/PHASE_2_FOLLOWUP_REVIEW.md` for six remaining findings. Historical pass claims below do not close these findings.
+
 > Post-Review Repair Update (2026-10-17): All eight findings from [PHASE_2_REVIEW.md](PHASE_2_REVIEW.md) have been resolved via the Ralph-style repair loop and verified against fresh regressions, static analysis, and isolated live browser testing. Phase 2 is complete and left unpushed for completion review.
 
 **Date:** 2026-10-17<br>

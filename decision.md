@@ -1,5 +1,7 @@
 # ResearchMind AI decisions
 
+Current independent review (7a752aa, 2026-10-17): Phase 2 remains incomplete; six findings are documented in `docs/PHASE_2_FOLLOWUP_REVIEW.md`. Apply `docs/PHASE_2_FOLLOWUP_PROMPT.md`. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
+
 Updated: 2026-10-17. Scope: Week 1 Phase 2 review and publication gate.
 
 ## Current review and publication status
