@@ -72,7 +72,13 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
-## Phase 2 Verification Status (2026-10-17)
+## Current independent Phase 2 status (2026-10-17)
+
+Review of 306bd9e: Q1/Q2 resolved; 130 backend and 23 frontend tests plus static/build checks passed. Fresh isolated browser acceptance failed search_success (7/8 criteria passed). Resolve S1 using docs/PHASE_2_SEARCH_VERIFICATION_PROMPT.md. Keep Phase 2 unpushed until independent acceptance.
+
+VERDICT: FAIL -- search browser acceptance unresolved.
+
+## Historical implementation verification status (2026-10-17)
 Findings Q1 and Q2 from `docs/PHASE_2_CURRENT_REVIEW.md` resolved via architectural fixes and verified with fresh automated test and live Chrome browser evidence. Left unpushed for completion review per Phase 2 policy.
 
 - Scope: Workspace Management & PDF Research Library (Phase 2 Q1/Q2 Corrective Repair)

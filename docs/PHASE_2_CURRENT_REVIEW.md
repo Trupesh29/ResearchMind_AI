@@ -1,4 +1,18 @@
-# Current Phase 2 review — 6354bc0
+# Current Phase 2 review — 306bd9e
+
+Independent review, 2026-10-17: Q1 and Q2 are resolved in the reviewed diff and regression suite. One acceptance-runner finding remains; Phase 2 is not accepted for publication. Use `docs/PHASE_2_SEARCH_VERIFICATION_PROMPT.md`; the Q1/Q2 prompt below is historical and superseded.
+
+## S1 — P2: Search acceptance races loading and does not prove filtering
+
+At `scripts/run_browser_verification.py:866-872`, the runner fills the query, sleeps 500 ms, and immediately samples a title locator with `count()`. The UI debounces for 250 ms before issuing the request. The remaining fixed delay does not establish response completion or rendered results. An existing matching title can also satisfy this check even if filtering never runs; there is no nonmatching fixture or empty-result assertion.
+
+Fresh isolated Chrome run exited 1: seven criteria passed, but `phase2_library_lifecycle` failed solely because `search_success` was false. Upload, duplicate detection, corrupt rejection, PDF response/viewer, cancel/confirm deletion, workspace deletion, and clean operation passed. This demonstrates an unresolved acceptance gate, not a proven application search defect. Capture the matching request/response and await rendered query-specific results with a bounded timeout; test nonmatching exclusion, empty results, and clearing the query. Do not merely increase sleeps or rerun until green.
+
+Fresh independent checks: 130 backend tests passed (82 warnings, 69.58 s); 23 frontend tests passed; Ruff lint/format, ESLint, Prettier, TypeScript, and Vite build passed. Browser command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_browser_suite.ps1 -RequirePhase2 -BackendPort 8008 -FrontendPort 5178`. Disposable database migrated successfully; wrapper reported owned-process and temporary-storage cleanup. Current JSON evidence is `docs/browser_verification_summary.json`. Clean installation, ML inference, and provider connectivity were not rerun.
+
+VERDICT: FAIL -- search browser acceptance remains unresolved. Keep Phase 2 local; eventual accepted publication remains manav first, verify, then main.
+
+## Historical review and implementation report — 6354bc0
 
 Reviewed 2026-10-17 against 0a9295b. Application code was not changed during review. Pagination loading ownership and top-level browser cleanup ID handling are improved, with dedicated regressions. The new quarantine ledger introduces two remaining lifecycle/ownership gaps.
 

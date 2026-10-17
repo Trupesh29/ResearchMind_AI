@@ -4,7 +4,7 @@
     "base_url": "http://127.0.0.1:5178",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-10-17T09:48:41Z",
+    "timestamp": "2026-10-17T09:57:10Z",
     "headless": true
   },
   "viewports": {},
@@ -135,7 +135,7 @@
     "pdf_uploaded": true,
     "duplicate_identified": true,
     "corrupt_rejected": true,
-    "search_success": true,
+    "search_success": false,
     "viewer_opened": true,
     "viewer_pdf_loaded": true,
     "viewer_escape_closed": true,
@@ -144,8 +144,10 @@
     "workspace_deleted": true
   },
   "acceptance_evaluation": {
-    "passed": true,
-    "failure_reasons": [],
+    "passed": false,
+    "failure_reasons": [
+      "Phase 2 Library Lifecycle criteria failed: {'target_disposable_verified': True, 'workspace_created': True, 'pdf_uploaded': True, 'duplicate_identified': True, 'corrupt_rejected': True, 'search_success': False, 'viewer_opened': True, 'viewer_pdf_loaded': True, 'viewer_escape_closed': True, 'cancel_deletion_kept_paper': True, 'confirm_deletion_removed_paper': True, 'workspace_deleted': True}"
+    ],
     "criteria": {
       "no_horizontal_overflow": true,
       "routes_and_navigation": true,
@@ -154,7 +156,7 @@
       "contrast_ratios": true,
       "api_states_and_recovery": true,
       "clean_operation": true,
-      "phase2_library_lifecycle": true
+      "phase2_library_lifecycle": false
     }
   }
 }
