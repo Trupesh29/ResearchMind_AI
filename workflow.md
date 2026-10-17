@@ -64,6 +64,8 @@ Inspect each exit code separately. Browser checks cover 1440, 768, and 375 pixel
 
 ## 5. Record and hand off
 
+Publication order (user instruction, 2026-10-17): push an accepted release checkpoint to `manav` first, verify the remote ref, then push the same checkpoint to `main`. Both remote branches now contain the completed Phase 1 checkpoint `24eadea`. Keep incomplete Phase 2 work local.
+
 Commit/publication policy (user instruction updated 2026-10-17): after reviewing and checking task changes, create a local Git commit. Phase 1 has been explicitly published to remote main at 24eadea. Do not push Phase 2 until it is complete and accepted; the current corrective handoff ends with a local commit for independent review. A commit records a checkpoint, not proof of acceptance. Review staged files and exclude secrets, runtime data, and unrelated changes. Do not create empty commits.
 
 Update `decision.md` only for actual decisions or changed evidence. Record Phase 2 commands, outcomes, warnings, and unresolved gates in `docs/PHASE_2_VERIFICATION.md`; retain Phase 1 reports as historical evidence. Distinguish static checks, tests, live application, browser, clean setup, ML, and generator results. Do not copy old timings or outputs as new evidence.
