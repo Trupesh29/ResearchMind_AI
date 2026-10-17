@@ -1,12 +1,12 @@
 # ResearchMind AI decisions
 
-Current independent review (7a752aa, 2026-10-17): Phase 2 remains incomplete; six findings are documented in `docs/PHASE_2_FOLLOWUP_REVIEW.md`. Apply `docs/PHASE_2_FOLLOWUP_PROMPT.md`. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
+Current independent review (Follow-Up Checkpoint, 2026-10-17): Phase 2 follow-up corrective repair completed. All six findings from `docs/PHASE_2_FOLLOWUP_REVIEW.md` resolved via architectural fixes and verified with fresh automated test and live Chrome browser evidence on disposable test storage. Both remote branches remain at Phase 1 checkpoint 24eadea. Keep Phase 2 local until completion; publish accepted releases to manav before main.
 
-Updated: 2026-10-17. Scope: Week 1 Phase 2 review and publication gate.
+Updated: 2026-10-17. Scope: Week 1 Phase 2 followup review and publication gate.
 
 ## Current review and publication status
 
-Phase 2 corrective repair loop completed. All eight findings from `docs/PHASE_2_REVIEW.md` (e5367c9) have been resolved with regression tests, static checks, and live browser verification on disposable storage. Phase 1 remains published on remote main at `24eadea`. This repaired Phase 2 checkpoint is committed locally and left unpushed for completion review per user instructions.
+Phase 2 follow-up corrective repair loop completed. All six findings from `docs/PHASE_2_FOLLOWUP_REVIEW.md` have been resolved with regression tests, static checks, and live browser verification on disposable storage. Phase 1 remains published on remote main at `24eadea`. This repaired Phase 2 checkpoint is committed locally and left unpushed for completion review per user instructions.
 
 
 ## D001 - Phase boundaries

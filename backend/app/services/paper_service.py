@@ -297,7 +297,7 @@ async def process_paper_upload(
                         PaperUploadRejectedItem(
                             original_filename=display_name,
                             code=ErrorCode.DATABASE_ERROR.value,
-                            message=f"Database error during persistence: {exc}",
+                            message="Database error during document persistence. Please try again.",
                         )
                     )
                     continue
@@ -385,22 +385,51 @@ def delete_paper(db: Session, user_id: str, paper_id: str) -> None:
     paper = get_paper_or_404(db, user_id, paper_id)
     storage_path_str = paper.storage_path
 
-    # Safely remove physical file if not referenced by another record
+    # Safely stage physical file if not referenced by another record
+    staged_path: Path | None = None
+    original_file: Path | None = None
     if storage_path_str:
         other_ref = db.query(Paper).filter(Paper.id != paper.id, Paper.storage_path == storage_path_str).first()
         if not other_ref:
             p_file = Path(storage_path_str)
             if p_file.exists():
+                original_file = p_file
+                trash_dir = p_file.parent / ".trash"
                 try:
-                    p_file.unlink()
+                    trash_dir.mkdir(parents=True, exist_ok=True)
+                    staged_path = trash_dir / f"del_{paper.id}_{uuid.uuid4().hex[:8]}.tmp"
+                    p_file.rename(staged_path)
                 except OSError as exc:
-                    logger.error(f"Failed to remove backing file {storage_path_str}: {exc}")
+                    logger.error(f"Failed to stage backing file {storage_path_str} for deletion: {exc}")
                     raise AppException(
                         code=ErrorCode.DATABASE_ERROR,
-                        message=f"Failed to delete paper file from storage: {exc}. Deletion aborted to preserve retryable state.",
+                        message="Failed to delete paper file from storage. Deletion aborted to preserve retryable state.",
                         status_code=500,
-                        details={"paper_id": paper_id, "storage_path": storage_path_str},
+                        details={"paper_id": paper_id},
                     )
 
-    db.delete(paper)
-    db.commit()
+    try:
+        db.delete(paper)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"Database error committing deletion for paper {paper_id}: {exc}")
+        # Recover: restore staged file back to original location
+        if staged_path and original_file and staged_path.exists():
+            try:
+                staged_path.rename(original_file)
+            except Exception as restore_exc:
+                logger.error(f"Failed to restore staged file {staged_path} back to {original_file}: {restore_exc}")
+        raise AppException(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Database error during paper deletion. Deletion aborted and original file preserved.",
+            status_code=500,
+            details={"paper_id": paper_id},
+        )
+
+    # Database commit succeeded: permanently unlink quarantined file
+    if staged_path and staged_path.exists():
+        try:
+            staged_path.unlink()
+        except OSError as exc:
+            logger.warning(f"Failed to permanently remove staged file {staged_path}: {exc}")

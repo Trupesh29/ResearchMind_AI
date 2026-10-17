@@ -49,14 +49,19 @@ export const LibraryPage: React.FC = () => {
   // Error banners
   const [pageError, setPageError] = useState<string | null>(null);
 
-  // Track active request ID and selected workspace ref to prevent race conditions
+  // Track active request ID, selected workspace ref, and search query ref to prevent race conditions
   const activePaperReqRef = useRef<number>(0);
   const selectedWorkspaceRef = useRef<WorkspaceItem | null>(null);
+  const searchQueryRef = useRef<string>("");
 
-  // Sync ref with selectedWorkspace state
+  // Sync refs with state
   useEffect(() => {
     selectedWorkspaceRef.current = selectedWorkspace;
   }, [selectedWorkspace]);
+
+  useEffect(() => {
+    searchQueryRef.current = searchQuery;
+  }, [searchQuery]);
 
   // 1. Fetch Workspaces
   const loadWorkspaces = useCallback(async (selectIdAfter?: string) => {
@@ -73,7 +78,7 @@ export const LibraryPage: React.FC = () => {
         return;
       }
 
-      // Determine active workspace: priority is selectIdAfter, then current selection ref, then storage, then first item
+      // Determine active workspace: priority is selectIdAfter (explicit switch), then current selection ref, then storage, then first item
       const currentSelectedId = selectedWorkspaceRef.current?.id;
       const targetId =
         selectIdAfter ||
@@ -105,7 +110,8 @@ export const LibraryPage: React.FC = () => {
         const res = await api.listPapers(workspaceId, { q: query, limit: 25 });
         if (
           reqId === activePaperReqRef.current &&
-          selectedWorkspaceRef.current?.id === workspaceId
+          selectedWorkspaceRef.current?.id === workspaceId &&
+          searchQueryRef.current === query
         ) {
           setPapers(res.items);
           setNextCursor(res.next_cursor);
@@ -114,7 +120,8 @@ export const LibraryPage: React.FC = () => {
       } catch (err: any) {
         if (
           reqId === activePaperReqRef.current &&
-          selectedWorkspaceRef.current?.id === workspaceId
+          selectedWorkspaceRef.current?.id === workspaceId &&
+          searchQueryRef.current === query
         ) {
           setPageError(err?.message || "Failed to load workspace documents.");
         }
@@ -131,24 +138,39 @@ export const LibraryPage: React.FC = () => {
   const loadMorePapers = useCallback(async () => {
     if (!selectedWorkspaceRef.current || !nextCursor || isLoadingMore) return;
     const currentWsId = selectedWorkspaceRef.current.id;
+    const currentQuery = searchQueryRef.current;
+    const currentCursor = nextCursor;
+    const reqId = ++activePaperReqRef.current;
     setIsLoadingMore(true);
     try {
       const res = await api.listPapers(currentWsId, {
-        q: searchQuery,
-        cursor: nextCursor,
+        q: currentQuery,
+        cursor: currentCursor,
         limit: 25,
       });
-      if (selectedWorkspaceRef.current?.id === currentWsId) {
+      if (
+        reqId === activePaperReqRef.current &&
+        selectedWorkspaceRef.current?.id === currentWsId &&
+        searchQueryRef.current === currentQuery
+      ) {
         setPapers((prev) => [...prev, ...res.items]);
         setNextCursor(res.next_cursor);
         setTotalPaperCount(res.total_count);
       }
     } catch (err: any) {
-      setPageError(err?.message || "Failed to load additional documents.");
+      if (
+        reqId === activePaperReqRef.current &&
+        selectedWorkspaceRef.current?.id === currentWsId &&
+        searchQueryRef.current === currentQuery
+      ) {
+        setPageError(err?.message || "Failed to load additional documents.");
+      }
     } finally {
-      setIsLoadingMore(false);
+      if (reqId === activePaperReqRef.current) {
+        setIsLoadingMore(false);
+      }
     }
-  }, [nextCursor, isLoadingMore, searchQuery]);
+  }, [nextCursor, isLoadingMore]);
 
   useEffect(() => {
     if (selectedWorkspace) {
@@ -211,10 +233,10 @@ export const LibraryPage: React.FC = () => {
       // Only refresh papers if user is still on the target workspace
       if (selectedWorkspaceRef.current?.id === targetWsId) {
         setLastBatchResult(batchResult);
-        await loadPapers(targetWsId, searchQuery);
+        await loadPapers(targetWsId, searchQueryRef.current);
       }
-      // Refresh workspace counts without changing user's latest selection
-      await loadWorkspaces(selectedWorkspaceRef.current?.id);
+      // Refresh workspace counts preserving the active workspace at resolution time
+      await loadWorkspaces();
     } catch (err: any) {
       if (err instanceof ApiClientError) {
         setPageError(`${err.code}: ${err.message}`);
@@ -236,9 +258,9 @@ export const LibraryPage: React.FC = () => {
       await api.deletePaper(paperToDeleteId);
       setDeletingPaper(null);
       if (selectedWorkspaceRef.current?.id === targetWsId) {
-        await loadPapers(targetWsId, searchQuery);
+        await loadPapers(targetWsId, searchQueryRef.current);
       }
-      await loadWorkspaces(selectedWorkspaceRef.current?.id);
+      await loadWorkspaces();
     } catch (err: any) {
       setPageError(err?.message || "Failed to delete paper.");
     } finally {

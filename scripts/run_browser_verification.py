@@ -205,8 +205,8 @@ def evaluate_acceptance(results: dict, require_phase2: bool = False) -> tuple[bo
             and p2.get("corrupt_rejected") is True
             and p2.get("search_success") is True
             and p2.get("viewer_opened") is True
-            and p2.get("viewer_pdf_loaded", True) is True
-            and p2.get("viewer_escape_closed", True) is True
+            and p2.get("viewer_pdf_loaded") is True
+            and p2.get("viewer_escape_closed") is True
             and p2.get("cancel_deletion_kept_paper") is True
             and p2.get("confirm_deletion_removed_paper") is True
             and p2.get("workspace_deleted") is True
@@ -761,6 +761,25 @@ def run_checks(
             temp_fixtures_dir = output_dir / "temp_fixtures"
             temp_fixtures_dir.mkdir(parents=True, exist_ok=True)
 
+            # Finding 2: Guard mutating workflow by verifying disposable test target
+            try:
+                public_cfg_res = page.request.get(f"{base_url}/api/config/public")
+                if public_cfg_res.status != 200:
+                    raise RuntimeError(
+                        f"Failed to query public configuration from {base_url}/api/config/public: HTTP {public_cfg_res.status}"
+                    )
+                public_cfg = public_cfg_res.json()
+                if not public_cfg.get("disposable_test_env"):
+                    raise RuntimeError(
+                        "Phase 2 lifecycle aborted: Target backend is not running in a disposable test environment (disposable_test_env is False)"
+                    )
+                p2_results["target_disposable_verified"] = True
+            except Exception as exc:
+                p2_results["target_disposable_verified"] = False
+                p2_results["abort_reason"] = str(exc)
+                results["phase2_lifecycle"] = p2_results
+                raise
+
             # Generate synthetic test PDFs using standard minimal PDF structure
             valid_pdf_path = temp_fixtures_dir / "valid_test_paper.pdf"
             minimal_valid_pdf_bytes = (
@@ -776,134 +795,153 @@ def run_checks(
             corrupt_pdf_path = temp_fixtures_dir / "corrupt_test_paper.pdf"
             corrupt_pdf_path.write_bytes(b"%PDF-corrupted-binary-header-test")
 
-            page.set_viewport_size({"width": 1440, "height": 900})
-            page.goto(f"{base_url}/library", wait_until="networkidle")
-            time.sleep(0.5)
+            created_workspace_id = None
+            try:
+                page.set_viewport_size({"width": 1440, "height": 900})
+                page.goto(f"{base_url}/library", wait_until="networkidle")
+                time.sleep(0.5)
 
-            # Generate unique workspace name for this run to isolate data and prevent name collisions
-            run_id = uuid.uuid4().hex[:8]
-            e2e_ws_name = f"E2E Workspace {run_id}"
+                # Generate unique workspace name for this run to isolate data and prevent name collisions
+                run_id = uuid.uuid4().hex[:8]
+                e2e_ws_name = f"E2E Workspace {run_id}"
 
-            # 10a. Create workspace
-            create_btn = page.locator("button:has-text('Create Workspace'), button#new-workspace-btn")
-            if create_btn.count() == 0:
-                sel_btn = page.locator("#workspace-selector-btn")
-                if sel_btn.count() > 0:
-                    sel_btn.click()
-                    time.sleep(0.3)
-                    create_btn = page.locator("#new-workspace-btn")
+                # 10a. Create workspace
+                create_btn = page.locator("button:has-text('Create Workspace'), button#new-workspace-btn")
+                if create_btn.count() == 0:
+                    sel_btn = page.locator("#workspace-selector-btn")
+                    if sel_btn.count() > 0:
+                        sel_btn.click()
+                        time.sleep(0.3)
+                        create_btn = page.locator("#new-workspace-btn")
 
-            if create_btn.count() > 0:
-                create_btn.first.click()
+                if create_btn.count() > 0:
+                    create_btn.first.click()
+                    time.sleep(0.4)
+                    page.locator("#workspace-name-input").fill(e2e_ws_name)
+                    with page.expect_response(
+                        lambda r: "/api/workspaces" in r.url and r.request.method == "POST", timeout=8000
+                    ) as ws_post_info:
+                        page.locator("button:has-text('Create Workspace')").last.click()
+                    ws_res = ws_post_info.value
+                    if ws_res.status in (200, 201):
+                        try:
+                            created_workspace_id = ws_res.json().get("data", {}).get("id")
+                        except Exception:
+                            pass
+                    time.sleep(0.8)
+
+                ws_name_visible = page.locator(f"text='{e2e_ws_name}'").count() > 0
+                p2_results["workspace_created"] = ws_name_visible
+
+                # 10b. Upload valid PDF
+                file_input = page.locator("#pdf-upload-input")
+                file_input.set_input_files(str(valid_pdf_path))
+                time.sleep(1.2)
+                accepted_badge = page.locator("text='1 Accepted'")
+                p2_results["pdf_uploaded"] = accepted_badge.count() > 0
+
+                # 10c. Upload duplicate PDF (identical bytes)
+                file_input.set_input_files(str(valid_pdf_path))
+                time.sleep(1.2)
+                dup_badge = page.locator("text='1 Duplicate'")
+                p2_results["duplicate_identified"] = dup_badge.count() > 0
+
+                # 10d. Upload corrupt PDF
+                file_input.set_input_files(str(corrupt_pdf_path))
+                time.sleep(1.2)
+                rej_badge = page.locator("text='1 Rejected'")
+                p2_results["corrupt_rejected"] = rej_badge.count() > 0
+
+                # 10e. Search
+                search_input = page.locator("#paper-search-input")
+                search_input.fill("valid_test")
+                time.sleep(0.5)
+                paper_found = page.locator("text='valid_test_paper.pdf'").count() > 0
+                search_input.fill("")
                 time.sleep(0.4)
-                page.locator("#workspace-name-input").fill(e2e_ws_name)
-                page.locator("button:has-text('Create Workspace')").last.click()
+                p2_results["search_success"] = paper_found
+
+                # 10f. View Original PDF (Strict Positive Evidence: HTTP 200/206 from /api/papers/{id}/file)
+                pdf_response_status = None
+                view_btn = page.locator("button:has-text('View')").first
+                with page.expect_response(
+                    lambda r: "/api/papers/" in r.url and "/file" in r.url and r.status in (200, 206),
+                    timeout=10000,
+                ) as pdf_resp_info:
+                    view_btn.click()
+                pdf_resp = pdf_resp_info.value
+                pdf_response_status = pdf_resp.status
                 time.sleep(0.8)
 
-            ws_name_visible = page.locator(f"text='{e2e_ws_name}'").count() > 0
-            p2_results["workspace_created"] = ws_name_visible
+                viewer_dialog = page.locator("[role='dialog']")
+                viewer_opened = viewer_dialog.count() > 0 and viewer_dialog.is_visible()
 
-            # 10b. Upload valid PDF
-            file_input = page.locator("#pdf-upload-input")
-            file_input.set_input_files(str(valid_pdf_path))
-            time.sleep(1.2)
-            accepted_badge = page.locator("text='1 Accepted'")
-            p2_results["pdf_uploaded"] = accepted_badge.count() > 0
+                page.screenshot(path=str(screenshots_dir / "desktop_pdf_viewer_modal.png"))
+                page.keyboard.press("Escape")
+                time.sleep(0.4)
+                viewer_closed = not viewer_dialog.is_visible()
 
-            # 10c. Upload duplicate PDF (identical bytes)
-            file_input.set_input_files(str(valid_pdf_path))
-            time.sleep(1.2)
-            dup_badge = page.locator("text='1 Duplicate'")
-            p2_results["duplicate_identified"] = dup_badge.count() > 0
+                p2_results["viewer_opened"] = viewer_opened
+                p2_results["viewer_pdf_loaded"] = pdf_response_status in (200, 206)
+                p2_results["viewer_escape_closed"] = viewer_closed
 
-            # 10d. Upload corrupt PDF
-            file_input.set_input_files(str(corrupt_pdf_path))
-            time.sleep(1.2)
-            rej_badge = page.locator("text='1 Rejected'")
-            p2_results["corrupt_rejected"] = rej_badge.count() > 0
+                # 10g. Cancel Paper Deletion
+                del_paper_btn = page.locator("button[aria-label^='Delete valid_test_paper']").first
+                del_paper_btn.click()
+                time.sleep(0.4)
+                cancel_btn = page.locator("button:has-text('Cancel')").first
+                cancel_btn.click()
+                time.sleep(0.4)
+                paper_still_present = page.locator("text='valid_test_paper.pdf'").count() > 0
+                p2_results["cancel_deletion_kept_paper"] = paper_still_present
 
-            # 10e. Search
-            search_input = page.locator("#paper-search-input")
-            search_input.fill("valid_test")
-            time.sleep(0.5)
-            paper_found = page.locator("text='valid_test_paper.pdf'").count() > 0
-            search_input.fill("")
-            time.sleep(0.4)
-            p2_results["search_success"] = paper_found
+                # 10h. Confirm Paper Deletion
+                del_paper_btn.click()
+                time.sleep(0.4)
+                confirm_del_btn = page.locator("button:has-text('Delete Paper')").first
+                with page.expect_response(
+                    lambda r: "/api/papers/" in r.url and r.request.method == "DELETE", timeout=8000
+                ):
+                    confirm_del_btn.click()
+                page.wait_for_load_state("networkidle")
+                time.sleep(0.5)
+                paper_removed = page.locator("text='valid_test_paper.pdf'").count() == 0
+                p2_results["confirm_deletion_removed_paper"] = paper_removed
 
-            # 10f. View Original PDF
-            pdf_response_status = None
+                # 10i. Delete Workspace (deleting only the workspace created in this run)
+                del_ws_btn = page.locator("button[aria-label='Delete workspace']").first
+                del_ws_btn.click()
+                time.sleep(0.4)
+                confirm_ws_btn = page.locator("button:has-text('Delete Workspace')").first
+                with page.expect_response(
+                    lambda r: "/api/workspaces/" in r.url and r.request.method == "DELETE", timeout=8000
+                ):
+                    confirm_ws_btn.click()
+                page.wait_for_load_state("networkidle")
+                time.sleep(0.5)
+                ws_removed = page.locator(f"text='{e2e_ws_name}'").count() == 0
+                p2_results["workspace_deleted"] = ws_removed
+                if ws_removed:
+                    created_workspace_id = None
 
-            def on_pdf_response(resp):
-                nonlocal pdf_response_status
-                if "/api/papers/" in resp.url and "/file" in resp.url:
-                    pdf_response_status = resp.status
+                # Capture desktop Phase 2 library screenshot
+                page.screenshot(path=str(screenshots_dir / "desktop_library_phase2.png"))
 
-            page.on("response", on_pdf_response)
+                results["phase2_lifecycle"] = p2_results
+            finally:
+                # Clean temporary test fixtures
+                try:
+                    valid_pdf_path.unlink(missing_ok=True)
+                    corrupt_pdf_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
-            view_btn = page.locator("button:has-text('View')").first
-            view_btn.click()
-            time.sleep(0.8)
-            viewer_dialog = page.locator("[role='dialog']")
-            viewer_opened = viewer_dialog.count() > 0 and viewer_dialog.is_visible()
-            iframe = viewer_dialog.locator("iframe")
-            iframe_has_src = iframe.count() > 0 and "/api/papers/" in (iframe.get_attribute("src") or "")
-
-            page.screenshot(path=str(screenshots_dir / "desktop_pdf_viewer_modal.png"))
-            page.keyboard.press("Escape")
-            time.sleep(0.4)
-            viewer_closed = not viewer_dialog.is_visible()
-
-            p2_results["viewer_opened"] = viewer_opened
-            p2_results["viewer_pdf_loaded"] = pdf_response_status == 200 or iframe_has_src
-            p2_results["viewer_escape_closed"] = viewer_closed
-
-            # 10g. Cancel Paper Deletion
-            del_paper_btn = page.locator("button[aria-label^='Delete valid_test_paper']").first
-            del_paper_btn.click()
-            time.sleep(0.4)
-            cancel_btn = page.locator("button:has-text('Cancel')").first
-            cancel_btn.click()
-            time.sleep(0.4)
-            paper_still_present = page.locator("text='valid_test_paper.pdf'").count() > 0
-            p2_results["cancel_deletion_kept_paper"] = paper_still_present
-
-            # 10h. Confirm Paper Deletion
-            del_paper_btn.click()
-            time.sleep(0.4)
-            confirm_del_btn = page.locator("button:has-text('Delete Paper')").first
-            with page.expect_response(lambda r: "/api/papers/" in r.url and r.request.method == "DELETE", timeout=8000):
-                confirm_del_btn.click()
-            page.wait_for_load_state("networkidle")
-            time.sleep(0.5)
-            paper_removed = page.locator("text='valid_test_paper.pdf'").count() == 0
-            p2_results["confirm_deletion_removed_paper"] = paper_removed
-
-            # 10i. Delete Workspace (deleting only the workspace created in this run)
-            del_ws_btn = page.locator("button[aria-label='Delete workspace']").first
-            del_ws_btn.click()
-            time.sleep(0.4)
-            confirm_ws_btn = page.locator("button:has-text('Delete Workspace')").first
-            with page.expect_response(
-                lambda r: "/api/workspaces/" in r.url and r.request.method == "DELETE", timeout=8000
-            ):
-                confirm_ws_btn.click()
-            page.wait_for_load_state("networkidle")
-            time.sleep(0.5)
-            ws_removed = page.locator(f"text='{e2e_ws_name}'").count() == 0
-            p2_results["workspace_deleted"] = ws_removed
-
-            # Clean temporary test fixtures
-            try:
-                valid_pdf_path.unlink(missing_ok=True)
-                corrupt_pdf_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-            # Capture desktop Phase 2 library screenshot
-            page.screenshot(path=str(screenshots_dir / "desktop_library_phase2.png"))
-
-            results["phase2_lifecycle"] = p2_results
+                # If workspace deletion failed or was aborted midway, clean up via API
+                if created_workspace_id:
+                    try:
+                        page.request.delete(f"{base_url}/api/workspaces/{created_workspace_id}")
+                    except Exception:
+                        pass
 
             browser.close()
 

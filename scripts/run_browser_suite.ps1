@@ -5,6 +5,7 @@
 [CmdletBinding()]
 param(
     [switch]$Attach,
+    [switch]$RequirePhase2,
     [string]$BackendCommand = "",
     [string]$FrontendCommand = "",
     [string]$RunnerCommand = "",
@@ -71,6 +72,7 @@ $envModified = $false
 $prevBackendUrl = [Environment]::GetEnvironmentVariable("VITE_BACKEND_URL", "Process")
 $prevDataDir = [Environment]::GetEnvironmentVariable("DATA_DIR", "Process")
 $prevDatabaseUrl = [Environment]::GetEnvironmentVariable("DATABASE_URL", "Process")
+$prevDisposable = [Environment]::GetEnvironmentVariable("DISPOSABLE_TEST_ENV", "Process")
 $tempDataDir = $null
 $exitCode = 1
 
@@ -82,6 +84,16 @@ try {
         }
         if (-not (Test-PortListening $FrontendPort)) {
             throw "Attach mode failed: No process is listening on port $FrontendPort."
+        }
+        if ($RequirePhase2) {
+            try {
+                $publicConfig = Invoke-RestMethod -Uri "http://127.0.0.1:$BackendPort/api/config/public" -TimeoutSec 3 -ErrorAction Stop
+                if ($publicConfig.disposable_test_env -ne $true) {
+                    throw "Target backend on port $BackendPort does not have disposable_test_env enabled. Refusing to run mutating Phase 2 tests against non-disposable target."
+                }
+            } catch {
+                throw "Attach mode rejected for Phase 2 verification: backend at port $BackendPort is not running in a verified disposable test environment ($($_.Exception.Message))."
+            }
         }
     } else {
         # Strict port protection: ensure ports are free before starting anything
@@ -185,12 +197,16 @@ try {
         Invoke-Expression $RunnerCommand
         $exitCode = $LASTEXITCODE
     } else {
+        $p2Args = @()
+        if ($RequirePhase2 -or (-not $Attach)) {
+            $p2Args += "--require-phase2"
+        }
         & $ScraplingPython "$ProjectRoot\scripts\run_browser_verification.py" `
             --chrome-path $ChromePath `
             --base-url "http://127.0.0.1:$FrontendPort" `
             --output-dir "$ProjectRoot\artifacts\browser_verification" `
             --summary-path "$ProjectRoot\docs\browser_verification_summary.json" `
-            --require-phase2
+            @p2Args
         $exitCode = $LASTEXITCODE
     }
 } catch {
@@ -222,7 +238,11 @@ try {
         } else {
             [Environment]::SetEnvironmentVariable("DATABASE_URL", $null, "Process")
         }
-        [Environment]::SetEnvironmentVariable("DISPOSABLE_TEST_ENV", $null, "Process")
+        if ($null -ne $prevDisposable) {
+            $env:DISPOSABLE_TEST_ENV = $prevDisposable
+        } else {
+            [Environment]::SetEnvironmentVariable("DISPOSABLE_TEST_ENV", $null, "Process")
+        }
     }
 
     if ($tempDataDir -and (Test-Path $tempDataDir)) {

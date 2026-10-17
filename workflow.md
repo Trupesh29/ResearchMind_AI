@@ -73,12 +73,10 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
 ## Phase 2 Verification Status (2026-10-17)
-Latest independent review of 7a752aa: FAIL; six findings remain in `docs/PHASE_2_FOLLOWUP_REVIEW.md`. Use `docs/PHASE_2_FOLLOWUP_PROMPT.md` for the next repair. The following implementation-run claims are historical.
+All six findings from `docs/PHASE_2_FOLLOWUP_REVIEW.md` resolved via architectural fixes and verified with fresh evidence. Left unpushed for completion review.
 
-All eight findings from `docs/PHASE_2_REVIEW.md` resolved via Ralph repair loop with fresh evidence. Left unpushed for completion review.
-
-- Scope: Workspace Management & PDF Research Library (Phase 2 Corrective Repair)
-- Tests: 109 pytest passed (including `test_phase2_fixes.py`), 17 Vitest passed (including deferred-promise async race test), tsc typecheck passed, eslint passed, prettier passed, ruff passed (36 files), vite build passed.
+- Scope: Workspace Management & PDF Research Library (Phase 2 Follow-Up Corrective Repair)
+- Tests: 117 pytest passed (including `test_phase2_fixes.py` with 12 tests, `test_browser_runner.py` with 44 tests), 20 Vitest passed (including 11 in `library.test.tsx`), tsc typecheck passed, eslint passed, prettier passed, ruff passed (36 files), vite build passed.
 - Live Browser Suite: 8 of 8 criteria passed on disposable database/storage (`no_horizontal_overflow`, `routes_and_navigation`, `mobile_drawer_accessibility`, `reduced_motion_suppressed`, `contrast_ratios`, `api_states_and_recovery`, `clean_operation`, `phase2_library_lifecycle`).
 - `VERDICT: PASS`
 

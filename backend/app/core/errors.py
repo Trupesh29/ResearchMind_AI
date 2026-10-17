@@ -32,7 +32,7 @@ class ErrorCode(str, Enum):
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
 
 
-class AppException(Exception):
+class AppException(StarletteHTTPException):
     def __init__(
         self,
         code: ErrorCode,
@@ -44,7 +44,7 @@ class AppException(Exception):
         self.message = message
         self.status_code = status_code
         self.details = details or {}
-        super().__init__(message)
+        super().__init__(status_code=status_code, detail=message)
 
 
 def build_error_envelope(

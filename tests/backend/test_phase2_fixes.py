@@ -27,6 +27,47 @@ def test_request_size_limit_middleware_bounds_content_length(client: TestClient)
     assert "exceeds maximum allowed size" in data["error"]["message"]
 
 
+def test_streaming_request_size_limit_chunked_no_content_length(client: TestClient):
+    """Finding 3: Multi-chunk streaming request without Content-Length exceeding limit returns 413 FILE_TOO_LARGE with request_id."""
+    from backend.app.core.config import get_settings
+
+    ws_res = client.post("/api/workspaces", json={"name": "Stream WS"})
+    ws_id = ws_res.json()["id"]
+
+    settings = get_settings()
+    orig_limit = settings.MAX_REQUEST_BODY_BYTES
+    settings.MAX_REQUEST_BODY_BYTES = 256
+    if hasattr(client.app.state, "settings") and client.app.state.settings:
+        client.app.state.settings.MAX_REQUEST_BODY_BYTES = 256
+
+    try:
+
+        def chunk_gen():
+            yield b'------WebKitFormBoundaryABC123\r\nContent-Disposition: form-data; name="files"; filename="test.pdf"\r\nContent-Type: application/pdf\r\n\r\n'
+            yield b"A" * 150
+            yield b"B" * 200
+            yield b"\r\n------WebKitFormBoundaryABC123--\r\n"
+
+        res = client.post(
+            f"/api/papers?workspace_id={ws_id}",
+            content=chunk_gen(),
+            headers={
+                "Content-Type": "multipart/form-data; boundary=----WebKitFormBoundaryABC123",
+                "X-Request-ID": "custom-req-id-123",
+            },
+        )
+        print("DEBUG RESULT:", res.status_code, res.text)
+        assert res.status_code == 413
+
+        assert res.headers.get("x-request-id") == "custom-req-id-123"
+        data = res.json()
+        assert data["error"]["code"] == ErrorCode.FILE_TOO_LARGE.value
+        assert data["error"]["request_id"] == "custom-req-id-123"
+        assert "Streamed request body exceeds maximum allowed size" in data["error"]["message"]
+    finally:
+        settings.MAX_REQUEST_BODY_BYTES = orig_limit
+
+
 def test_upload_batch_file_count_limit(client: TestClient):
     """Finding 2: Batches exceeding MAX_BATCH_FILES are rejected with 400 before parsing all files."""
     ws_res = client.post("/api/workspaces", json={"name": "Batch Limit WS"})
@@ -96,7 +137,7 @@ def test_commit_success_refresh_failure_preserves_row_and_file(client: TestClien
 
 
 def test_delete_paper_lock_failure_preserves_row_for_retry(client: TestClient, isolated_env: dict):
-    """Finding 4: When physical file cannot be deleted (e.g. locked), DB row is preserved and 500 is returned."""
+    """Finding 1 & 4: When physical file cannot be staged (e.g. locked), DB row is preserved and 500 is returned."""
     ws_res = client.post("/api/workspaces", json={"name": "Lock Paper WS"})
     ws_id = ws_res.json()["id"]
 
@@ -110,15 +151,18 @@ def test_delete_paper_lock_failure_preserves_row_for_retry(client: TestClient, i
     pdf_path = data_dir / "pdfs" / f"{paper_id}.pdf"
     assert pdf_path.exists()
 
-    # Simulate locked file during unlink
+    # Simulate locked file during rename/staging
     with patch.object(
-        Path, "unlink", side_effect=OSError("The process cannot access the file because it is being used")
+        Path, "rename", side_effect=OSError("The process cannot access the file because it is being used")
     ):
         del_res = client.delete(f"/api/papers/{paper_id}")
         assert del_res.status_code == 500
         err = del_res.json()
         assert err["error"]["code"] == ErrorCode.DATABASE_ERROR.value
         assert "Failed to delete paper file from storage" in err["error"]["message"]
+        # Sanitation check: no internal paths or raw OS error text exposed
+        assert str(pdf_path) not in err["error"]["message"]
+        assert "storage_path" not in err["error"]["details"]
 
     # Crucial assertion: Paper still exists in database and on disk!
     assert client.get(f"/api/papers/{paper_id}").status_code == 200
@@ -131,8 +175,46 @@ def test_delete_paper_lock_failure_preserves_row_for_retry(client: TestClient, i
     assert client.get(f"/api/papers/{paper_id}").status_code == 404
 
 
+def test_delete_paper_db_commit_failure_preserves_file_and_row(client: TestClient, isolated_env: dict):
+    """Finding 1: If database commit fails during paper deletion, staged file is restored and row is preserved."""
+    ws_res = client.post("/api/workspaces", json={"name": "Commit Fail Paper WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("Commit fail paper test")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("commit_fail.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+    )
+    paper_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    pdf_path = data_dir / "pdfs" / f"{paper_id}.pdf"
+    assert pdf_path.exists()
+
+    # Force Session.commit to fail during deletion
+    with patch.object(Session, "commit", side_effect=RuntimeError("Simulated DB commit error on delete")):
+        del_res = client.delete(f"/api/papers/{paper_id}")
+        assert del_res.status_code == 500
+        err = del_res.json()
+        assert err["error"]["code"] == ErrorCode.DATABASE_ERROR.value
+        assert "Database error during paper deletion" in err["error"]["message"]
+        assert "original file preserved" in err["error"]["message"]
+
+    # Both DB row and original file must be preserved and downloadable
+    assert client.get(f"/api/papers/{paper_id}").status_code == 200
+    assert pdf_path.exists()
+    file_res = client.get(f"/api/papers/{paper_id}/file")
+    assert file_res.status_code == 200
+    assert file_res.content == pdf_bytes
+
+    # Retry without DB error: succeeds cleanly
+    retry_res = client.delete(f"/api/papers/{paper_id}")
+    assert retry_res.status_code == 204
+    assert not pdf_path.exists()
+    assert client.get(f"/api/papers/{paper_id}").status_code == 404
+
+
 def test_delete_workspace_partial_lock_failure_preserves_state(client: TestClient, isolated_env: dict):
-    """Finding 4: If a file fails to delete during workspace deletion, the workspace and failed file's row are preserved for retry."""
+    """Finding 1 & 4: If a file fails to stage during workspace deletion, all files and workspace are preserved."""
     ws_res = client.post("/api/workspaces", json={"name": "Partial Lock WS"})
     ws_id = ws_res.json()["id"]
 
@@ -152,33 +234,92 @@ def test_delete_workspace_partial_lock_failure_preserves_state(client: TestClien
     p1_path = data_dir / "pdfs" / f"{p1_id}.pdf"
     p2_path = data_dir / "pdfs" / f"{p2_id}.pdf"
 
-    original_unlink = Path.unlink
+    original_rename = Path.rename
 
-    def selective_unlink(self, *args, **kwargs):
+    def selective_rename(self, target, *args, **kwargs):
         if self.name == f"{p2_id}.pdf":
             raise OSError("Simulated Windows file lock on paper 2")
-        return original_unlink(self, *args, **kwargs)
+        return original_rename(self, target, *args, **kwargs)
 
-    with patch.object(Path, "unlink", selective_unlink):
+    with patch.object(Path, "rename", selective_rename):
         del_res = client.delete(f"/api/workspaces/{ws_id}")
         assert del_res.status_code == 500
         err = del_res.json()
         assert err["error"]["code"] == ErrorCode.DATABASE_ERROR.value
+        # Verify sanitized error (no raw paths)
+        assert str(p2_path) not in str(err)
 
-    # Paper 1 file was deleted and row removed
-    assert not p1_path.exists()
-    # Paper 2 file was locked so it and workspace are preserved in DB!
+    # Both files must still exist on disk (p1 was restored after p2 failed staging)
+    assert p1_path.exists()
     assert p2_path.exists()
     ws_get = client.get(f"/api/workspaces/{ws_id}")
     assert ws_get.status_code == 200
+    p1_get = client.get(f"/api/papers/{p1_id}")
+    assert p1_get.status_code == 200
     p2_get = client.get(f"/api/papers/{p2_id}")
     assert p2_get.status_code == 200
 
     # Retry deleting workspace now that lock is removed
     del_retry = client.delete(f"/api/workspaces/{ws_id}")
     assert del_retry.status_code == 204
+    assert not p1_path.exists()
     assert not p2_path.exists()
     assert client.get(f"/api/workspaces/{ws_id}").status_code == 404
+
+
+def test_delete_workspace_db_commit_failure_preserves_files_and_workspace(client: TestClient, isolated_env: dict):
+    """Finding 1: If database commit fails during workspace deletion, all files and workspace are restored."""
+    ws_res = client.post("/api/workspaces", json={"name": "WS Commit Fail"})
+    ws_id = ws_res.json()["id"]
+
+    pdf1 = create_minimal_pdf("WS Paper 1")
+    res = client.post(
+        f"/api/papers?workspace_id={ws_id}",
+        files=[("files", ("wsp1.pdf", io.BytesIO(pdf1), "application/pdf"))],
+    )
+    p1_id = res.json()["papers"][0]["id"]
+    data_dir = isolated_env["data_dir"]
+    p1_path = data_dir / "pdfs" / f"{p1_id}.pdf"
+    assert p1_path.exists()
+
+    with patch.object(Session, "commit", side_effect=RuntimeError("Simulated DB commit error on workspace delete")):
+        del_res = client.delete(f"/api/workspaces/{ws_id}")
+        assert del_res.status_code == 500
+        err = del_res.json()
+        assert err["error"]["code"] == ErrorCode.DATABASE_ERROR.value
+
+    # File and workspace preserved
+    assert p1_path.exists()
+    assert client.get(f"/api/workspaces/{ws_id}").status_code == 200
+    assert client.get(f"/api/papers/{p1_id}").status_code == 200
+
+    # Retry succeeds
+    del_retry = client.delete(f"/api/workspaces/{ws_id}")
+    assert del_retry.status_code == 204
+    assert not p1_path.exists()
+    assert client.get(f"/api/workspaces/{ws_id}").status_code == 404
+
+
+def test_public_error_sanitization_no_private_paths_or_sql_exposed(client: TestClient, isolated_env: dict):
+    """Finding 4: Error responses never expose storage paths or raw SQL exceptions."""
+    ws_res = client.post("/api/workspaces", json={"name": "Sanitize WS"})
+    ws_id = ws_res.json()["id"]
+
+    pdf_bytes = create_minimal_pdf("Sanitize test")
+    data_dir = isolated_env["data_dir"]
+
+    # 1. Upload DB error: no raw SQL trace or private path
+    sentinel_error = "SELECT * FROM secret_table WHERE private_data = 'leak'"
+    with patch.object(Session, "commit", side_effect=RuntimeError(sentinel_error)):
+        res = client.post(
+            f"/api/papers?workspace_id={ws_id}",
+            files=[("files", ("leak_test.pdf", io.BytesIO(pdf_bytes), "application/pdf"))],
+        )
+        assert res.status_code == 202
+        body_text = res.text
+        assert "secret_table" not in body_text
+        assert str(data_dir) not in body_text
+        assert res.json()["rejected"][0]["message"] == "Database error during document persistence. Please try again."
 
 
 def test_unicode_and_quoted_filename_content_disposition(client: TestClient):

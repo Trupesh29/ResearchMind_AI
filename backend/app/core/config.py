@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     AUTH_ENABLED: bool = Field(default=False)
     DEFAULT_USER_EMAIL: str = Field(default="local@researchmind.ai")
     DEFAULT_USER_NAME: str = Field(default="Local Researcher")
+    DISPOSABLE_TEST_ENV: bool = Field(default=False)
 
     # Document & Upload limits
     MAX_UPLOAD_MB: int = Field(default=25)

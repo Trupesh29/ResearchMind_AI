@@ -1,5 +1,6 @@
 import base64
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -210,8 +211,8 @@ def delete_workspace(
     # Collect backing files
     papers = db.query(Paper).filter(Paper.workspace_id == ws.id).all()
 
-    # Identify unique files to unlink that are NOT referenced by other workspaces
-    files_to_unlink: dict[str, list[Paper]] = {}
+    # Identify unique files to stage that are NOT referenced by other workspaces
+    files_to_stage: dict[str, list[Paper]] = {}
     for p in papers:
         if p.storage_path:
             p_file = Path(p.storage_path)
@@ -220,29 +221,59 @@ def delete_workspace(
                     db.query(Paper).filter(Paper.workspace_id != ws.id, Paper.storage_path == p.storage_path).first()
                 )
                 if not other_ref:
-                    files_to_unlink.setdefault(p.storage_path, []).append(p)
+                    files_to_stage.setdefault(p.storage_path, []).append(p)
 
-    failed_unlinks: list[dict[str, str]] = []
-    # Attempt unlinking and delete corresponding paper records
-    for path_str, associated_papers in files_to_unlink.items():
+    staged_files: list[tuple[Path, Path]] = []  # (original_path, staged_path)
+    # Stage each file into quarantine
+    for path_str, associated_papers in files_to_stage.items():
         p_file = Path(path_str)
+        trash_dir = p_file.parent / ".trash"
         try:
-            p_file.unlink()
-            for p in associated_papers:
-                db.delete(p)
-            db.commit()
+            trash_dir.mkdir(parents=True, exist_ok=True)
+            staged_path = trash_dir / f"del_ws_{ws.id}_{associated_papers[0].id}_{uuid.uuid4().hex[:8]}.tmp"
+            p_file.rename(staged_path)
+            staged_files.append((p_file, staged_path))
         except OSError as exc:
-            logger.error(f"Error removing file {path_str} during workspace deletion: {exc}")
-            failed_unlinks.append({"path": path_str, "error": str(exc)})
+            logger.error(f"Error staging file {path_str} during workspace deletion: {exc}")
+            # Restore any files already staged so far
+            for orig_p, stg_p in staged_files:
+                try:
+                    if stg_p.exists():
+                        stg_p.rename(orig_p)
+                except Exception as restore_err:
+                    logger.error(f"Failed to restore staged file {stg_p}: {restore_err}")
+            raise AppException(
+                code=ErrorCode.DATABASE_ERROR,
+                message="Failed to delete one or more backing files during workspace deletion. Workspace and papers preserved for retry.",
+                status_code=500,
+                details={"workspace_id": ws.id, "failed_paper_ids": [p.id for p in associated_papers]},
+            )
 
-    if failed_unlinks:
+    # Delete workspace from DB (FK cascade removes paper records)
+    try:
+        db.delete(ws)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"Database error committing deletion for workspace {ws.id}: {exc}")
+        # Restore all staged files back to their original paths
+        for orig_p, stg_p in staged_files:
+            try:
+                if stg_p.exists():
+                    stg_p.rename(orig_p)
+            except Exception as restore_err:
+                logger.error(f"Failed to restore staged file {stg_p}: {restore_err}")
         raise AppException(
             code=ErrorCode.DATABASE_ERROR,
-            message="Failed to delete one or more backing files during workspace deletion. Workspace and remaining papers preserved for retry.",
+            message="Database error during workspace deletion. Workspace and backing files preserved for retry.",
             status_code=500,
-            details={"failed_files": failed_unlinks},
+            details={"workspace_id": ws.id},
         )
 
-    # Delete workspace (FK cascade removes any remaining papers without storage paths or sharing files)
-    db.delete(ws)
-    db.commit()
+    # Database commit succeeded: permanently unlink all quarantined files
+    for _, stg_p in staged_files:
+        try:
+            if stg_p.exists():
+                stg_p.unlink()
+        except OSError as exc:
+            logger.warning(f"Failed to unlink staged file {stg_p}: {exc}")

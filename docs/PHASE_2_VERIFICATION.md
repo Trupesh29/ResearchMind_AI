@@ -1,10 +1,8 @@
 # ResearchMind AI — Phase 2 Verification Report
-> Latest review of 7a752aa: Phase 2 is not accepted. See `docs/PHASE_2_FOLLOWUP_REVIEW.md` for six remaining findings. Historical pass claims below do not close these findings.
-
-> Post-Review Repair Update (2026-10-17): All eight findings from [PHASE_2_REVIEW.md](PHASE_2_REVIEW.md) have been resolved via the Ralph-style repair loop and verified against fresh regressions, static analysis, and isolated live browser testing. Phase 2 is complete and left unpushed for completion review.
+> Post-Review Corrective Update (2026-10-17): All six findings from [PHASE_2_FOLLOWUP_REVIEW.md](PHASE_2_FOLLOWUP_REVIEW.md) have been resolved via architectural fixes and verified against fresh regressions, static analysis, and isolated live browser testing. Phase 2 is complete and left unpushed for completion review.
 
 **Date:** 2026-10-17<br>
-**Scope:** Workspace Management & PDF Research Library (Phase 2 Corrective Repair)<br>
+**Scope:** Workspace Management & PDF Research Library (Phase 2 Follow-Up Corrective Repair)<br>
 **Branch:** `manav`<br>
 **Execution Environment:** Windows (PowerShell), Python 3.12 (.venv), Node 20.x, Google Chrome 124+
 
@@ -49,12 +47,12 @@ All tests and validation scripts were executed directly against the codebase.
 ```powershell
 .venv\Scripts\python -m pytest -q
 ```
-**Result:** **109 passed, 65 warnings in 41.91s (Exit Code: 0)**
+**Result:** **117 passed, 71 warnings in 52.49s (Exit Code: 0)**
 Covers:
-- `tests/backend/test_phase2_fixes.py`: Comprehensive regression tests for all 8 Phase 2 review findings (isolation, upload body limits, DB commit failures, deletion error recovery, Unicode filenames, RFC 9110 range clipping, pagination, and UI race handling).
+- `tests/backend/test_phase2_fixes.py` (12 passed): Quarantine staging and recoverable deletion, DB commit failure rollback, lock failure 500 retry preservation, streaming body limit 413 response contract with request ID, public error sanitization, Unicode Content-Disposition, and RFC 9110 range clipping.
+- `tests/backend/test_browser_runner.py` (44 passed): Strict acceptance criteria enforcement without fallback defaults, attach mode disposable target check, caller `DISPOSABLE_TEST_ENV` environment restoration, process tree lifecycle termination.
 - `test_workspaces_api.py`: Creation, validation, conflicts, pagination, ownership, detail counts, update, deletion cascade.
 - `test_papers_api.py`: Single & batch upload, corrupt rejection, duplicate detection, cross-workspace duplicate tolerance, path traversal defense, HTTP Range streaming (200/206/416), search filtering, deletion.
-- `test_browser_runner.py`: Runner evaluation logic, mutation tests, committed summary validation.
 - `test_system_api.py`, `test_database.py`, `test_bootstrap.py`, `test_dependency_injection.py`.
 
 ### 3.2 Python Linting & Formatting (Ruff)
@@ -66,14 +64,14 @@ Covers:
 
 ### 3.3 Frontend Component & Integration Tests (Vitest)
 ```powershell
-npm test -- --run
+npm test
 ```
-**Result:** **17 passed in 4 test files (Exit Code: 0)**
+**Result:** **20 passed in 4 test files (Exit Code: 0)**
 
 - `mobile-nav.test.tsx` (3 tests passed)
 - `navigation.test.tsx` (3 tests passed)
 - `api-status.test.tsx` (3 tests passed)
-- `library.test.tsx` (8 tests passed): Renders selector & list, opens PDF viewer modal, delete confirmation flow with focus handling, and workspace-switch mutation race condition preservation with deferred promises.
+- `library.test.tsx` (11 tests passed): Renders selector & list, opens PDF viewer modal, delete confirmation flow with focus handling, cursor pagination, and async generation guards (query generation change during pagination, workspace switch during pagination, workspace switch during paper deletion, workspace switch during upload).
 
 ### 3.4 Frontend Static Checks & Production Build
 ```powershell

@@ -354,4 +354,172 @@ describe("LibraryPage Integration and Component Suite", () => {
       expect(selectorBtn).toHaveTextContent("Neural Networks");
     });
   });
+
+  it("discards pagination results if search query changed while request was in-flight (query generation guard)", async () => {
+    let resolvePage2: (val: any) => void = () => {};
+    const deferredPage2Promise = new Promise((resolve) => {
+      resolvePage2 = resolve;
+    });
+
+    vi.spyOn(client.api, "listPapers")
+      .mockResolvedValueOnce({
+        items: [mockPapers[0]],
+        next_cursor: "cursor-p2",
+        total_count: 2,
+      })
+      .mockImplementationOnce(() => deferredPage2Promise as any)
+      .mockResolvedValueOnce({
+        items: [],
+        next_cursor: null,
+        total_count: 0,
+      });
+
+    render(<LibraryPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Quantum Supremacy Experiment"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Load more documents" }),
+      ).toBeInTheDocument();
+    });
+
+    // Click load more (triggers deferred second request)
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load more documents" }),
+    );
+
+    // User types in search input while pagination request is in flight
+    const searchInput = screen.getByPlaceholderText(
+      /search papers by title or filename/i,
+    );
+    fireEvent.change(searchInput, { target: { value: "nonexistent query" } });
+
+    // Resolve pagination request (should be ignored because query changed)
+    resolvePage2({
+      items: [mockPapers[1]],
+      next_cursor: null,
+      total_count: 2,
+    });
+
+    await waitFor(() => {
+      // Outdated page 2 paper must NOT be appended to results!
+      expect(
+        screen.queryByText("Quantum Error Mitigation"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("discards pagination results if workspace changed while request was in-flight (workspace generation guard)", async () => {
+    let resolvePage2: (val: any) => void = () => {};
+    const deferredPage2Promise = new Promise((resolve) => {
+      resolvePage2 = resolve;
+    });
+
+    vi.spyOn(client.api, "listPapers")
+      .mockResolvedValueOnce({
+        items: [mockPapers[0]],
+        next_cursor: "cursor-p2",
+        total_count: 2,
+      })
+      .mockImplementationOnce(() => deferredPage2Promise as any)
+      .mockResolvedValueOnce({
+        items: [],
+        next_cursor: null,
+        total_count: 0,
+      });
+
+    render(<LibraryPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Quantum Supremacy Experiment"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Load more documents" }),
+      ).toBeInTheDocument();
+    });
+
+    // Click load more
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load more documents" }),
+    );
+
+    // Switch workspace while pagination request is in flight
+    const selectorBtn = document.getElementById(
+      "workspace-selector-btn",
+    ) as HTMLElement;
+    fireEvent.click(selectorBtn);
+    await waitFor(() => {
+      expect(screen.getByText("Neural Networks")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Neural Networks"));
+
+    // Resolve pagination request for old workspace
+    resolvePage2({
+      items: [mockPapers[1]],
+      next_cursor: null,
+      total_count: 2,
+    });
+
+    await waitFor(() => {
+      // Old paper must NOT be rendered into new workspace
+      expect(
+        screen.queryByText("Quantum Error Mitigation"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("does not force selection back to old workspace if user switches workspace during paper deletion", async () => {
+    let resolveDelete: (val: any) => void = () => {};
+    const deferredDeletePromise = new Promise((resolve) => {
+      resolveDelete = resolve;
+    });
+
+    vi.spyOn(client.api, "deletePaper").mockImplementation(
+      () => deferredDeletePromise as any,
+    );
+
+    render(<LibraryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Quantum Computing")).toBeInTheDocument();
+      expect(
+        screen.getByText("Quantum Supremacy Experiment"),
+      ).toBeInTheDocument();
+    });
+
+    // Trigger delete dialog for paper-1
+    const delBtn = screen.getByRole("button", {
+      name: `Delete ${mockPapers[0].original_filename}`,
+    });
+    fireEvent.click(delBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Delete Paper" }),
+      ).toBeInTheDocument();
+    });
+
+    // Click confirm delete (starts deletePaper in flight)
+    fireEvent.click(screen.getByRole("button", { name: "Delete Paper" }));
+
+    // While deletion is in flight, user switches to workspace 2
+    const selectorBtn = document.getElementById(
+      "workspace-selector-btn",
+    ) as HTMLElement;
+    fireEvent.click(selectorBtn);
+    await waitFor(() => {
+      expect(screen.getByText("Neural Networks")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Neural Networks"));
+
+    // Resolve deletion
+    resolveDelete({ success: true });
+
+    await waitFor(() => {
+      expect(selectorBtn).toHaveTextContent("Neural Networks");
+    });
+  });
 });

@@ -1027,3 +1027,157 @@ def test_evaluate_acceptance_require_phase2_passes_with_valid_phase2(valid_brows
     assert passed is True
     assert criteria["phase2_library_lifecycle"] is True
     assert len(failures) == 0
+
+
+def test_evaluate_acceptance_strictly_fails_when_viewer_pdf_loaded_missing_or_false(valid_browser_results):
+    """Strict acceptance: viewer_pdf_loaded missing or False must fail (no fallback default)."""
+    results = copy.deepcopy(valid_browser_results)
+    results["phase2_lifecycle"] = {
+        "workspace_created": True,
+        "pdf_uploaded": True,
+        "duplicate_identified": True,
+        "corrupt_rejected": True,
+        "search_success": True,
+        "viewer_opened": True,
+        # viewer_pdf_loaded missing
+        "viewer_escape_closed": True,
+        "cancel_deletion_kept_paper": True,
+        "confirm_deletion_removed_paper": True,
+        "workspace_deleted": True,
+    }
+
+    passed, failures, criteria = evaluate_acceptance(results, require_phase2=True)
+    assert passed is False
+    assert criteria["phase2_library_lifecycle"] is False
+
+    # Also test explicit False
+    results["phase2_lifecycle"]["viewer_pdf_loaded"] = False
+    passed2, _, criteria2 = evaluate_acceptance(results, require_phase2=True)
+    assert passed2 is False
+    assert criteria2["phase2_library_lifecycle"] is False
+
+
+def test_evaluate_acceptance_strictly_fails_when_viewer_escape_closed_missing_or_false(valid_browser_results):
+    """Strict acceptance: viewer_escape_closed missing or False must fail (no fallback default)."""
+    results = copy.deepcopy(valid_browser_results)
+    results["phase2_lifecycle"] = {
+        "workspace_created": True,
+        "pdf_uploaded": True,
+        "duplicate_identified": True,
+        "corrupt_rejected": True,
+        "search_success": True,
+        "viewer_opened": True,
+        "viewer_pdf_loaded": True,
+        # viewer_escape_closed missing
+        "cancel_deletion_kept_paper": True,
+        "confirm_deletion_removed_paper": True,
+        "workspace_deleted": True,
+    }
+
+    passed, failures, criteria = evaluate_acceptance(results, require_phase2=True)
+    assert passed is False
+    assert criteria["phase2_library_lifecycle"] is False
+
+    # Also test explicit False
+    results["phase2_lifecycle"]["viewer_escape_closed"] = False
+    passed2, _, criteria2 = evaluate_acceptance(results, require_phase2=True)
+    assert passed2 is False
+    assert criteria2["phase2_library_lifecycle"] is False
+
+
+def test_suite_attach_mode_rejects_non_disposable_target_for_phase2(tmp_path):
+    """In -Attach mode with -RequirePhase2, non-disposable target (disposable_test_env=False) must be rejected."""
+    b_port = find_free_port()
+    f_port = find_free_port()
+
+    class NonDisposableHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            if self.path == "/api/config/public":
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"disposable_test_env": false}')
+            else:
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+        def log_message(self, *args):
+            pass
+
+    backend_server = HTTPServer(("127.0.0.1", b_port), NonDisposableHandler)
+    frontend_server = HTTPServer(("127.0.0.1", f_port), NonDisposableHandler)
+    t_b = threading.Thread(target=backend_server.serve_forever, daemon=True)
+    t_f = threading.Thread(target=frontend_server.serve_forever, daemon=True)
+    t_b.start()
+    t_f.start()
+
+    try:
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SUITE_SCRIPT),
+            "-Attach",
+            "-RequirePhase2",
+            "-BackendPort",
+            str(b_port),
+            "-FrontendPort",
+            str(f_port),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        assert proc.returncode != 0
+        combined_output = proc.stdout + proc.stderr
+        assert (
+            "not running in a disposable test environment" in combined_output
+            or "disposable_test_env" in combined_output
+        )
+    finally:
+        backend_server.shutdown()
+        frontend_server.shutdown()
+
+
+def test_suite_preserves_caller_disposable_test_env(tmp_path):
+    """run_browser_suite.ps1 must restore caller's original DISPOSABLE_TEST_ENV variable."""
+    driver_script = tmp_path / "disposable_env_driver.ps1"
+    result_file = tmp_path / "disposable_env_result.json"
+
+    driver_content = f"""
+$initialVal = "caller_preset"
+[Environment]::SetEnvironmentVariable("DISPOSABLE_TEST_ENV", $initialVal, "Process")
+$before = [Environment]::GetEnvironmentVariable("DISPOSABLE_TEST_ENV", "Process")
+$caught = $null
+
+try {{
+    & '{SUITE_SCRIPT}' -BackendPort 0 -FrontendPort 0 -TimeoutSeconds 1
+}} catch {{
+    $caught = $_.ToString()
+}}
+
+$after = [Environment]::GetEnvironmentVariable("DISPOSABLE_TEST_ENV", "Process")
+
+$res = [PSCustomObject]@{{
+    before = $before
+    after = $after
+    exitCode = $LASTEXITCODE
+    error = $caught
+}}
+
+$res | ConvertTo-Json -Compress | Set-Content -Path '{result_file}' -Encoding UTF8
+"""
+    driver_script.write_text(driver_content, encoding="utf-8")
+
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(driver_script),
+    ]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    assert result_file.exists()
+    data = json.loads(result_file.read_text(encoding="utf-8-sig"))
+    assert data["after"] == "caller_preset"

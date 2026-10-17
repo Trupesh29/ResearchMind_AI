@@ -304,4 +304,5 @@ def get_public_config(
             "email": settings.DEFAULT_USER_EMAIL,
             "display_name": settings.DEFAULT_USER_NAME,
         },
+        "disposable_test_env": settings.DISPOSABLE_TEST_ENV,
     }
