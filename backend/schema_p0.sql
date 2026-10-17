@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS papers (
     keywords_json TEXT,
     metadata_source_json TEXT,
     status TEXT NOT NULL DEFAULT 'uploaded' CHECK (status IN ('uploaded', 'processing', 'ready', 'failed')),
+    current_run_id TEXT,
+    published_run_id TEXT,
     quality_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -60,6 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_papers_workspace_status ON papers(workspace_id, s
 CREATE TABLE IF NOT EXISTS pages (
     id TEXT PRIMARY KEY,
     paper_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
     page_number INTEGER NOT NULL CHECK (page_number >= 1),
     char_count INTEGER NOT NULL DEFAULT 0 CHECK (char_count >= 0),
     width REAL,
@@ -71,10 +74,11 @@ CREATE TABLE IF NOT EXISTS pages (
     blocks_json TEXT,
     created_at TEXT NOT NULL,
     CONSTRAINT fk_pages_paper FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE,
-    CONSTRAINT uq_pages_paper_page_number UNIQUE (paper_id, page_number)
+    CONSTRAINT uq_pages_paper_run_page UNIQUE (paper_id, run_id, page_number)
 );
 
 CREATE INDEX IF NOT EXISTS ix_pages_paper_id ON pages(paper_id);
+CREATE INDEX IF NOT EXISTS ix_pages_run_id ON pages(run_id);
 
 -- 5. Processing Jobs (Phase 3)
 CREATE TABLE IF NOT EXISTS processing_jobs (
@@ -101,3 +105,4 @@ CREATE INDEX IF NOT EXISTS ix_processing_jobs_run_id ON processing_jobs(run_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_paper_run ON processing_jobs(paper_id, run_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status_stage ON processing_jobs(status, stage);
 CREATE INDEX IF NOT EXISTS idx_jobs_heartbeat ON processing_jobs(status, heartbeat_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_job_per_paper ON processing_jobs(paper_id) WHERE status IN ('queued', 'running');

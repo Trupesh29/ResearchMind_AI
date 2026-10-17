@@ -259,7 +259,8 @@ async def process_paper_upload(
                 committed = False
                 try:
                     db.add(new_paper)
-                    processing_service.enqueue_validation_job(db, paper_id=paper_id)
+                    job = processing_service.enqueue_validation_job(db, paper_id=paper_id)
+                    new_paper.current_run_id = job.run_id
                     db.commit()
                     committed = True
                 except IntegrityError:

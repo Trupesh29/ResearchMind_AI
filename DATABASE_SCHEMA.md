@@ -175,8 +175,10 @@ For a single-user local MVP, create one default user row and skip the login flow
 | `authors_json` | `TEXT` | valid JSON or NULL | List of author names |
 | `publication_year` | `INTEGER` | 1900–2100 if set | |
 | `keywords_json` | `TEXT` | valid JSON or NULL | |
-| `metadata_source_json` | `TEXT` | valid JSON or NULL | Per field: `"pdf"` or `"inferred"` — see §5.1 |
+| `metadata_source_json` | `TEXT` | valid JSON or NULL | Per field: source + evidence dictionary — see §5.1 |
 | `status` | `TEXT` | `uploaded` \| `processing` \| `ready` \| `failed` | Default `uploaded` |
+| `current_run_id` | `TEXT` | nullable | Active processing generation run ID |
+| `published_run_id` | `TEXT` | nullable | Ingestion generation run ID whose pages/metadata are active |
 | `quality_json` | `TEXT` | valid JSON or NULL | Extraction quality summary — see §5.1 |
 | `created_at`, `updated_at` | `TEXT` | default current UTC | `updated_at` maintained by trigger |
 
@@ -191,19 +193,20 @@ For a single-user local MVP, create one default user row and skip the login flow
 |---|---|---|---|
 | `id` | `TEXT` | `PRIMARY KEY` | UUID string |
 | `paper_id` | `TEXT` | `NOT NULL`, `FK → papers.id` `CASCADE` | Indexed |
+| `run_id` | `TEXT` | `NOT NULL` | Ingestion generation run UUID |
 | `page_number` | `INTEGER` | `NOT NULL`, `>= 1` | 1-based, matches the PDF viewer |
 | `char_count` | `INTEGER` | `NOT NULL`, default 0 | Very low counts help detect scans |
-| `width` | `REAL` | nullable | Page width in PDF points |
-| `height` | `REAL` | nullable | Page height in PDF points |
+| `width` | `REAL` | nullable | Visual page width in PDF points |
+| `height` | `REAL` | nullable | Visual page height in PDF points |
 | `rotation` | `INTEGER` | nullable | Visual rotation in degrees (0, 90, 180, 270) |
 | `extraction_status` | `TEXT` | `ok` \| `partial` \| `failed` | Default `ok` |
 | `flags_json` | `TEXT` | `NOT NULL`, valid JSON, default `[]` | e.g. `possible_scan`, `table_unreliable`, `equations_may_be_missing` |
 | `raw_text` | `TEXT` | nullable | Extracted textual content of the page |
-| `blocks_json` | `TEXT` | valid JSON or NULL | Block coordinates and bounding boxes for citation highlighting — see §5.2 |
+| `blocks_json` | `TEXT` | valid JSON or NULL | Block coordinates and bounding boxes in visual page frame — see §5.2 |
 | `created_at` | `TEXT` | `NOT NULL`, default current UTC | |
 
-**Constraints:** `UNIQUE (paper_id, page_number)`, `CHECK (page_number >= 1)`, `CHECK (char_count >= 0)`, `CHECK (extraction_status IN ('ok', 'partial', 'failed'))`.
-**Index:** `ix_pages_paper_id(paper_id)`.
+**Constraints:** `UNIQUE (paper_id, run_id, page_number)`, `CHECK (page_number >= 1)`, `CHECK (char_count >= 0)`, `CHECK (extraction_status IN ('ok', 'partial', 'failed'))`.
+**Index:** `ix_pages_paper_id(paper_id)`, `ix_pages_run_id(run_id)`.
 
 This table is what makes the Quality Center honest: a flagged page is recorded rather than silently treated as understood.
 
@@ -267,8 +270,8 @@ This table is what makes the Quality Center honest: a flagged page is recorded r
 | `versions_json` | `TEXT` | valid JSON or NULL | Extractor and model versions used — see §5.3 |
 | `created_at` | `TEXT` | `NOT NULL`, default current UTC | |
 
-**Constraints:** `CHECK (status IN ('queued', 'running', 'succeeded', 'failed'))`, `CHECK (stage IN ('validating', 'extracting', 'sectioning', 'chunking', 'embedding', 'indexing', 'ready'))`, `CHECK (attempt >= 1)`.
-**Indexes:** `ix_processing_jobs_paper_id(paper_id)`, `ix_processing_jobs_run_id(run_id)`, `idx_jobs_paper_run(paper_id, run_id)`, `idx_jobs_status_stage(status, stage)`, `idx_jobs_heartbeat(status, heartbeat_at)`.
+**Constraints:** `CHECK (status IN ('queued', 'running', 'succeeded', 'failed'))`, `CHECK (stage IN ('validating', 'extracting', 'sectioning', 'chunking', 'embedding', 'indexing', 'ready'))`, `CHECK (attempt >= 1)`, partial unique index `uq_active_job_per_paper` on `(paper_id) WHERE status IN ('queued', 'running')`.
+**Indexes:** `ix_processing_jobs_paper_id(paper_id)`, `ix_processing_jobs_run_id(run_id)`, `idx_jobs_paper_run(paper_id, run_id)`, `idx_jobs_status_stage(status, stage)`, `idx_jobs_heartbeat(status, heartbeat_at)`, `uq_active_job_per_paper`.
 
 One row per stage per attempt gives the processing history the Quality Center displays and lets a failed run resume from the failing stage. Heartbeats and claim tokens ensure robust distributed lease fencing on SQLite.
 

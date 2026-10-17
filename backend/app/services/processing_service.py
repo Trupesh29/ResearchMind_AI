@@ -10,6 +10,7 @@ import json
 import logging
 import uuid
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.core.errors import AppException, ErrorCode
@@ -23,6 +24,7 @@ from backend.app.schemas.paper import (
     PaperStatusResponse,
 )
 from backend.app.services import paper_service
+from worker.engine import sanitize_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +82,20 @@ def request_reprocess(
 
     # Start new generation run
     new_run_id = str(uuid.uuid4())
-    enqueue_validation_job(db, paper_id=paper_id, run_id=new_run_id)
-
+    paper.current_run_id = new_run_id
     paper.status = "processing"
     paper.updated_at = utcnow_iso()
-    db.commit()
+
+    try:
+        enqueue_validation_job(db, paper_id=paper_id, run_id=new_run_id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise AppException(
+            code=ErrorCode.INVALID_REQUEST,
+            message=f"Paper {paper_id} has an active processing job in progress.",
+            status_code=409,
+        )
 
     return get_paper_status_details(db, user_id, paper_id)
 
@@ -114,9 +125,11 @@ def get_paper_status_details(
             stages=[],
         )
 
-    # Get the latest run_id
-    latest_run_id = all_jobs[-1].run_id
-    run_jobs = [j for j in all_jobs if j.run_id == latest_run_id]
+    # Target the active / current generation run
+    effective_run_id = paper.current_run_id or all_jobs[-1].run_id
+    run_jobs = [j for j in all_jobs if j.run_id == effective_run_id]
+    if not run_jobs:
+        run_jobs = all_jobs
 
     stage_details: list[PaperStageDetail] = [
         PaperStageDetail(
@@ -125,7 +138,7 @@ def get_paper_status_details(
             attempt=j.attempt,
             started_at=j.started_at,
             finished_at=j.finished_at,
-            error=j.error_message,
+            error=sanitize_error_message(j.error_message) if j.error_message else None,
         )
         for j in run_jobs
     ]
@@ -134,12 +147,13 @@ def get_paper_status_details(
     failing_jobs = [j for j in run_jobs if j.status == "failed"]
     if failing_jobs or paper.status == "failed":
         last_failed = failing_jobs[-1] if failing_jobs else run_jobs[-1]
+        raw_err = last_failed.error_message or "Processing failed."
         return PaperStatusResponse(
             status="failed",
             stage=last_failed.stage,
             progress=0.0,
             attempt=last_failed.attempt,
-            error=last_failed.error_message,
+            error=sanitize_error_message(raw_err),
             stages=stage_details,
         )
 
@@ -202,9 +216,17 @@ def get_paper_pages(
     paper_id: str,
 ) -> PagesListResponse:
     """Retrieve summary of extracted pages with quality flags."""
-    paper_service.get_paper_or_404(db, user_id, paper_id)
+    paper = paper_service.get_paper_or_404(db, user_id, paper_id)
 
-    pages = db.query(Page).filter(Page.paper_id == paper_id).order_by(Page.page_number.asc()).all()
+    if not paper.published_run_id:
+        return PagesListResponse(items=[], total_pages=0)
+
+    pages = (
+        db.query(Page)
+        .filter(Page.paper_id == paper_id, Page.run_id == paper.published_run_id)
+        .order_by(Page.page_number.asc())
+        .all()
+    )
 
     items: list[PageSummaryItem] = []
     for p in pages:
@@ -234,9 +256,24 @@ def get_paper_page_blocks(
     page_number: int,
 ) -> PageBlocksResponse:
     """Retrieve detailed block coordinates and text for a specific page."""
-    paper_service.get_paper_or_404(db, user_id, paper_id)
+    paper = paper_service.get_paper_or_404(db, user_id, paper_id)
 
-    page = db.query(Page).filter(Page.paper_id == paper_id, Page.page_number == page_number).first()
+    if not paper.published_run_id:
+        raise AppException(
+            code=ErrorCode.NOT_FOUND,
+            message=f"Page {page_number} not found for paper {paper_id}.",
+            status_code=404,
+        )
+
+    page = (
+        db.query(Page)
+        .filter(
+            Page.paper_id == paper_id,
+            Page.run_id == paper.published_run_id,
+            Page.page_number == page_number,
+        )
+        .first()
+    )
 
     if not page:
         raise AppException(

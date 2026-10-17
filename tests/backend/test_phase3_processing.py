@@ -15,7 +15,11 @@ from __future__ import annotations
 import datetime
 import hashlib
 import os
+import threading
+import time
+import unittest.mock
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Generator
 
@@ -24,17 +28,18 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 from backend.app.core.config import Settings
+from backend.app.core.errors import AppException
 from backend.app.db.bootstrap import bootstrap_default_user
 from backend.app.db.models import Page, Paper, ProcessingJob, User, Workspace, utcnow_iso
 from backend.app.db.session import set_session_factory
 from backend.app.main import app
 from backend.app.services import extraction_service, processing_service
-from worker.engine import WorkerEngine
+from worker.engine import WorkerEngine, WorkerFencingViolation
 
 
 @pytest.fixture
@@ -199,23 +204,35 @@ def test_phase3_migrations_preserve_data_and_schema(temp_test_dir: Path):
     ws_id = str(uuid.uuid4())
     paper_id = str(uuid.uuid4())
 
-    db.add(User(id=user_id, email="w1@example.com", password_hash="hash", created_at=utcnow_iso()))
-    db.add(Workspace(id=ws_id, user_id=user_id, name="W1 Workspace", created_at=utcnow_iso()))
-    db.add(
-        Paper(
-            id=paper_id,
-            workspace_id=ws_id,
-            original_filename="week1.pdf",
-            storage_path=f"data/pdfs/{paper_id}.pdf",
-            sha256="abc123456789",
-            size_bytes=1024,
-            status="uploaded",
-            created_at=utcnow_iso(),
-            updated_at=utcnow_iso(),
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO users (id, email, password_hash, created_at) "
+                "VALUES (:id, :email, :password_hash, :created_at)"
+            ),
+            {"id": user_id, "email": "w1@example.com", "password_hash": "hash", "created_at": utcnow_iso()},
         )
-    )
-    db.commit()
-    db.close()
+        conn.execute(
+            text("INSERT INTO workspaces (id, user_id, name, created_at) VALUES (:id, :user_id, :name, :created_at)"),
+            {"id": ws_id, "user_id": user_id, "name": "W1 Workspace", "created_at": utcnow_iso()},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, created_at, updated_at) "
+                "VALUES (:id, :workspace_id, :original_filename, :storage_path, :sha256, :size_bytes, :status, :created_at, :updated_at)"
+            ),
+            {
+                "id": paper_id,
+                "workspace_id": ws_id,
+                "original_filename": "week1.pdf",
+                "storage_path": f"data/pdfs/{paper_id}.pdf",
+                "sha256": "abc123456789",
+                "size_bytes": 1024,
+                "status": "uploaded",
+                "created_at": utcnow_iso(),
+                "updated_at": utcnow_iso(),
+            },
+        )
 
     # Step B: Upgrade to 0003 (Phase 3 schema)
     command.upgrade(alembic_cfg, "head")
@@ -239,10 +256,12 @@ def test_phase3_migrations_preserve_data_and_schema(temp_test_dir: Path):
             created_at=utcnow_iso(),
         )
     )
+    page_run_id = str(uuid.uuid4())
     db.add(
         Page(
             id=page_id,
             paper_id=paper_id,
+            run_id=page_run_id,
             page_number=1,
             char_count=100,
             extraction_status="ok",
@@ -403,7 +422,8 @@ def test_extraction_engine_and_quality_heuristics(p3_env: dict):
     assert meta.sources.get("title") == "pdf"
     assert "Ashish Vaswani" in meta.authors
     assert meta.publication_year == 2017
-    assert meta.sources.get("publication_year") == "pdf"
+    assert meta.sources.get("publication_year") == "inferred"
+    assert meta.sources.get("publication_year")["evidence"] == "2017"
     assert "Transformer" in meta.keywords
 
 
@@ -510,11 +530,26 @@ def test_worker_atomic_claim_and_fencing(p3_env: dict):
     assert worked_w2 is True
 
     db = p3_env["factory"]()
-    reclaimed_job = db.query(ProcessingJob).filter(ProcessingJob.id == ext_job.id).first()
-    # Worker 2 successfully finished extracting!
-    assert reclaimed_job.status == "succeeded"
-    assert reclaimed_job.worker_id == "worker-2"
-    token_w2 = reclaimed_job.claim_token
+    # Attempt 1 is preserved in historical records as failed due to expired lease
+    retired_job = db.query(ProcessingJob).filter(ProcessingJob.id == ext_job.id).first()
+    assert retired_job.status == "failed"
+    assert retired_job.attempt == 1
+    assert "lease expired" in (retired_job.error_message or "").lower()
+
+    # Attempt 2 is a separate record and successfully finished extracting!
+    succeeded_job = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.paper_id == paper_id,
+            ProcessingJob.stage == "extracting",
+            ProcessingJob.attempt == 2,
+        )
+        .first()
+    )
+    assert succeeded_job is not None
+    assert succeeded_job.status == "succeeded"
+    assert succeeded_job.worker_id == "worker-2"
+    token_w2 = succeeded_job.claim_token
     assert token_w2 != token_w1
 
     # Pages are persisted by Worker 2
@@ -523,13 +558,21 @@ def test_worker_atomic_claim_and_fencing(p3_env: dict):
     db.close()
 
     # Now simulate Worker 1 (stale) waking up and trying to publish results with token_w1
-    # It must cleanly fail because claim_token no longer matches!
+    # It must cleanly fail with WorkerFencingViolation because claim_token no longer matches!
     claimed["claim_token"] = token_w1
-    # Calling execution with stale token should not overwrite or mutate pages
-    worker1._execute_claimed_job(claimed)
+    with pytest.raises(WorkerFencingViolation):
+        worker1._execute_claimed_job(claimed)
 
     db = p3_env["factory"]()
-    final_job = db.query(ProcessingJob).filter(ProcessingJob.id == ext_job.id).first()
+    final_job = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.paper_id == paper_id,
+            ProcessingJob.stage == "extracting",
+            ProcessingJob.attempt == 2,
+        )
+        .first()
+    )
     assert final_job.worker_id == "worker-2"  # Preserved Worker 2's publication
     db.close()
 
@@ -742,3 +785,295 @@ def test_api_inspection_and_foreign_ownership_security(p3_env: dict):
         assert client.post(f"/api/papers/{paper_id}/reprocess").status_code == 404
     finally:
         app.dependency_overrides.pop(deps.get_current_user, None)
+
+
+# ==============================================================================
+# 5. Phase 3 Independent Review Regression Gate (R1–R7)
+# ==============================================================================
+
+
+def test_r1_concurrent_job_claim_race(p3_env: dict):
+    """R1: Two workers racing to claim the same queued job; exactly 1 wins, 1 None."""
+    paper_id = str(uuid.uuid4())
+    db: Session = p3_env["factory"]()
+    paper = Paper(
+        id=paper_id,
+        workspace_id=p3_env["workspace_id"],
+        original_filename="r1_test.pdf",
+        storage_path="r1_test.pdf",
+        sha256="a" * 64,
+        size_bytes=100,
+        status="uploaded",
+    )
+    db.add(paper)
+    processing_service.enqueue_validation_job(db, paper_id)
+    db.commit()
+    engine = db.get_bind()
+    db.close()
+
+    barrier = threading.Barrier(2)
+
+    def sync_claim(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE processing_jobs SET"):
+            barrier.wait(timeout=10)
+
+    event.listen(engine, "before_cursor_execute", sync_claim)
+
+    def claim(worker_id: str):
+        with p3_env["factory"]() as s:
+            return WorkerEngine(worker_id=worker_id)._claim_next_job(s)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, ["w1", "w2"]))
+
+    event.remove(engine, "before_cursor_execute", sync_claim)
+
+    winners = [r for r in results if r is not None]
+    assert len(winners) == 1
+    assert winners[0]["claim_token"] is not None
+
+
+def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
+    """R2: Lease liveness renewed during slow extraction; killed worker lease recovered."""
+    test_dir = p3_env["data_dir"]
+    pdf_file = test_dir / "r2_liveness.pdf"
+    _create_synthetic_pdf(
+        pdf_file,
+        [{"width": 612, "height": 792, "blocks": [{"rect": [72, 72, 300, 100], "text": "Heartbeat Test"}]}],
+    )
+
+    db: Session = p3_env["factory"]()
+    paper_id = str(uuid.uuid4())
+    paper = Paper(
+        id=paper_id,
+        workspace_id=p3_env["workspace_id"],
+        original_filename="r2_liveness.pdf",
+        storage_path=str(pdf_file),
+        sha256=hashlib.sha256(pdf_file.read_bytes()).hexdigest(),
+        size_bytes=pdf_file.stat().st_size,
+        status="uploaded",
+    )
+    db.add(paper)
+    job = processing_service.enqueue_validation_job(db, paper_id)
+    paper.current_run_id = job.run_id
+    db.commit()
+    db.close()
+
+    w1 = WorkerEngine(worker_id="slow-worker", lease_timeout_seconds=2)
+    w1.run_once()  # completes validation -> extracting queued
+
+    # Patch extract_pdf to take 2.5s (longer than lease_timeout_seconds=2)
+    real_extract = extraction_service.extract_pdf
+
+    def slow_extract(*args, **kwargs):
+        time.sleep(2.5)
+        return real_extract(*args, **kwargs)
+
+    w2 = WorkerEngine(worker_id="polling-worker", lease_timeout_seconds=2)
+
+    def run_slow():
+        with unittest.mock.patch("backend.app.services.extraction_service.extract_pdf", side_effect=slow_extract):
+            w1.run_once()
+
+    t = threading.Thread(target=run_slow)
+    t.start()
+    time.sleep(1.0)
+    # While slow-worker is running, polling-worker checks for expired leases / claims
+    w2_worked = w2.run_once()
+    t.join()
+
+    # Polling worker could NOT steal the job because heartbeat was actively refreshed
+    assert w2_worked is False
+
+    with p3_env["factory"]() as s:
+        ext_job = (
+            s.query(ProcessingJob)
+            .filter(ProcessingJob.paper_id == paper_id, ProcessingJob.stage == "extracting")
+            .first()
+        )
+        assert ext_job.status == "succeeded"
+        assert ext_job.worker_id == "slow-worker"
+
+
+def test_r3_concurrent_reprocess_conflict_and_generation_isolation(p3_env: dict):
+    """R3: Concurrent reprocess yields exactly one 202 and one 409; generation isolation."""
+    paper_id = str(uuid.uuid4())
+    db: Session = p3_env["factory"]()
+    paper = Paper(
+        id=paper_id,
+        workspace_id=p3_env["workspace_id"],
+        original_filename="r3_test.pdf",
+        storage_path="r3_test.pdf",
+        sha256="b" * 64,
+        size_bytes=200,
+        status="uploaded",
+    )
+    db.add(paper)
+    db.commit()
+    engine = db.get_bind()
+    db.close()
+
+    barrier = threading.Barrier(2)
+
+    def sync_reprocess(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE papers SET"):
+            barrier.wait(timeout=10)
+
+    event.listen(engine, "before_cursor_execute", sync_reprocess)
+
+    def do_reprocess(user_id):
+        with p3_env["factory"]() as s:
+            try:
+                res = processing_service.request_reprocess(s, p3_env["user_id"], paper_id)
+                return ("ok", res.status)
+            except AppException as exc:
+                return ("err", exc.status_code)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(do_reprocess, [1, 2]))
+
+    event.remove(engine, "before_cursor_execute", sync_reprocess)
+
+    codes = [o[1] for o in outcomes]
+    assert 409 in codes
+    assert "processing" in codes or "ok" in [o[0] for o in outcomes]
+
+    with p3_env["factory"]() as s:
+        active_runs = (
+            s.query(ProcessingJob)
+            .filter(
+                ProcessingJob.paper_id == paper_id,
+                ProcessingJob.status.in_(["queued", "running"]),
+            )
+            .count()
+        )
+        assert active_runs == 1
+
+
+def test_r4_public_error_sanitization_no_paths_exposed(p3_env: dict):
+    """R4: Missing file and unexpected errors do not leak internal filesystem paths."""
+    client = p3_env["client"]
+    db: Session = p3_env["factory"]()
+    paper_id = str(uuid.uuid4())
+    fake_path = "F:\\dev\\private\\storage\\secrets\\nonexistent.pdf"
+    paper = Paper(
+        id=paper_id,
+        workspace_id=p3_env["workspace_id"],
+        original_filename="secret_leak.pdf",
+        storage_path=fake_path,
+        sha256="c" * 64,
+        size_bytes=300,
+        status="uploaded",
+    )
+    db.add(paper)
+    job = processing_service.enqueue_validation_job(db, paper_id)
+    paper.current_run_id = job.run_id
+    db.commit()
+    db.close()
+
+    worker = WorkerEngine()
+    worker.run_once()  # validation fails on missing file
+
+    res = client.get(f"/api/papers/{paper_id}/status")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "failed"
+    top_err = data["error"] or ""
+    assert "F:" not in top_err
+    assert "private" not in top_err
+    assert "secrets" not in top_err
+    assert "\\" not in top_err
+    assert "/" not in top_err
+
+    for st in data["stages"]:
+        st_err = st["error"] or ""
+        assert "F:" not in st_err
+        assert "private" not in st_err
+        assert "\\" not in st_err
+
+
+def test_r5_rotated_and_cropped_geometry_consistency(p3_env: dict):
+    """R5: 0/90/180/270 rotated and cropped pages have block coords strictly within page bounds."""
+    test_dir = p3_env["data_dir"]
+
+    for rot in [0, 90, 180, 270]:
+        pdf_path = test_dir / f"rot_{rot}.pdf"
+        doc = fitz.open()
+        p = doc.new_page(width=612, height=792)
+        p.insert_text((72, 700), f"Rotated page test {rot}")
+        p.set_rotation(rot)
+        doc.save(pdf_path)
+        doc.close()
+
+        result = extraction_service.extract_pdf(str(pdf_path))
+        extracted_p = result.pages[0]
+        assert extracted_p.rotation == rot
+        for b in extracted_p.blocks:
+            x0, y0, x1, y1 = b.bbox
+            assert 0.0 <= x0 <= x1 <= extracted_p.width + 0.1
+            assert 0.0 <= y0 <= y1 <= extracted_p.height + 0.1
+
+
+def test_r6_metadata_provenance_and_clean_heuristics(p3_env: dict):
+    """R6: CreationDate not promoted to year; uncertain heuristics marked inferred or omitted."""
+    test_dir = p3_env["data_dir"]
+    pdf_path = test_dir / "r6_heuristics.pdf"
+    doc = fitz.open()
+    p = doc.new_page(width=612, height=792)
+    p.insert_text((72, 100), "A Systematic Study of Document Ingestion")
+    p.insert_text((72, 150), "Random Header Without Author Format")
+    p.insert_text((72, 200), "No publication year mentioned here.")
+    doc.set_metadata({"creationDate": "D:20240101120000Z", "title": "A Systematic Study of Document Ingestion"})
+    doc.save(pdf_path)
+    doc.close()
+
+    result = extraction_service.extract_pdf(str(pdf_path))
+    meta = result.metadata
+    assert meta.publication_year is None
+    assert meta.sources.get("publication_year") is None
+    assert meta.authors == []
+
+
+def test_r7_attempt_history_preservation(p3_env: dict):
+    """R7: Retrying expired or failed attempts creates distinct attempt records."""
+    paper_id = str(uuid.uuid4())
+    db: Session = p3_env["factory"]()
+    paper = Paper(
+        id=paper_id,
+        workspace_id=p3_env["workspace_id"],
+        original_filename="r7_test.pdf",
+        storage_path="r7_test.pdf",
+        sha256="e" * 64,
+        size_bytes=500,
+        status="uploaded",
+    )
+    db.add(paper)
+    job = processing_service.enqueue_validation_job(db, paper_id)
+    paper.current_run_id = job.run_id
+    db.commit()
+
+    worker = WorkerEngine(worker_id="test-w", lease_timeout_seconds=1)
+    claimed = worker._claim_next_job(db)
+    assert claimed is not None
+
+    # Artificially age the job to simulate lease expiration
+    past_iso = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=5)).isoformat()
+    db.query(ProcessingJob).filter(ProcessingJob.id == job.id).update(
+        {"heartbeat_at": past_iso, "claimed_at": past_iso}
+    )
+    db.commit()
+
+    # Recover expired lease
+    worker._recover_expired_leases(db)
+
+    # Verify attempt 1 is retained as failed
+    job_att1 = db.query(ProcessingJob).filter(ProcessingJob.id == job.id).first()
+    assert job_att1.status == "failed"
+    assert job_att1.attempt == 1
+
+    # Verify attempt 2 is created
+    job_att2 = db.query(ProcessingJob).filter(ProcessingJob.paper_id == paper_id, ProcessingJob.attempt == 2).first()
+    assert job_att2 is not None
+    assert job_att2.status == "queued"
+    assert job_att2.id != job.id
+    db.close()

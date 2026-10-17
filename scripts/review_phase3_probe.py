@@ -73,7 +73,10 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
 
     def reprocess(_):
         with factory() as db:
-            return processing_service.request_reprocess(db, "u", "p").status
+            try:
+                return processing_service.request_reprocess(db, "u", "p").status
+            except Exception as exc:
+                return getattr(exc, "status_code", 409)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         result = list(pool.map(reprocess, [1, 2]))

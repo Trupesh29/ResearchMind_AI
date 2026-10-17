@@ -1,7 +1,10 @@
+import uuid
+
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.db.models import Paper, User, Workspace
+from backend.app.db.models import Paper, User, Workspace, utcnow_iso
 
 
 def test_create_user_and_workspace_and_paper(db_session):
@@ -421,16 +424,26 @@ def test_upgrade_populated_database_preserves_records(temp_test_dir):
         session.commit()
         session.refresh(ws)
 
-        paper = Paper(
-            workspace_id=ws.id,
-            original_filename="historical_paper.pdf",
-            storage_path="path/to/historical.pdf",
-            sha256="sha_hist_1234567890",
-            size_bytes=2048,
-            publication_year=2021,
-            status="uploaded",
+        paper_id = str(uuid.uuid4())
+        now = utcnow_iso()
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, publication_year, status, created_at, updated_at) "
+                "VALUES (:id, :workspace_id, :original_filename, :storage_path, :sha256, :size_bytes, :publication_year, :status, :created_at, :updated_at)"
+            ),
+            {
+                "id": paper_id,
+                "workspace_id": ws.id,
+                "original_filename": "historical_paper.pdf",
+                "storage_path": "path/to/historical.pdf",
+                "sha256": "sha_hist_1234567890",
+                "size_bytes": 2048,
+                "publication_year": 2021,
+                "status": "uploaded",
+                "created_at": now,
+                "updated_at": now,
+            },
         )
-        session.add(paper)
         session.commit()
 
     # 3. Upgrade to head (0002_add_paper_check_constraints)

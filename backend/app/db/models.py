@@ -10,6 +10,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -90,6 +91,8 @@ class Paper(Base):
     keywords_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_source_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="uploaded", server_default="uploaded", nullable=False)
+    current_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    published_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     quality_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
     updated_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, onupdate=utcnow_iso, nullable=False)
@@ -152,6 +155,12 @@ class ProcessingJob(Base):
         Index("idx_jobs_paper_run", "paper_id", "run_id"),
         Index("idx_jobs_status_stage", "status", "stage"),
         Index("idx_jobs_heartbeat", "status", "heartbeat_at"),
+        Index(
+            "uq_active_job_per_paper",
+            "paper_id",
+            unique=True,
+            sqlite_where=text("status IN ('queued', 'running')"),
+        ),
         CheckConstraint(
             "status IN ('queued', 'running', 'succeeded', 'failed')",
             name="ck_jobs_status",
@@ -179,6 +188,7 @@ class Page(Base):
         index=True,
         nullable=False,
     )
+    run_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
     char_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     width: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -191,7 +201,7 @@ class Page(Base):
     created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("paper_id", "page_number", name="uq_pages_paper_page_number"),
+        UniqueConstraint("paper_id", "run_id", "page_number", name="uq_pages_paper_run_page"),
         CheckConstraint("page_number >= 1", name="ck_pages_page_number"),
         CheckConstraint("char_count >= 0", name="ck_pages_char_count"),
         CheckConstraint(

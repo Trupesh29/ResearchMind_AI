@@ -30,6 +30,22 @@ class UnsupportedTextError(ExtractionError):
     pass
 
 
+class ProvenanceInfo(dict):
+    """Structured metadata provenance supporting evidence fields while comparing with source strings."""
+
+    def __init__(self, source: str, **kwargs):
+        super().__init__(source=source, **kwargs)
+
+    @property
+    def source(self) -> str:
+        return self.get("source", "")
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.get("source") == other
+        return super().__eq__(other)
+
+
 @dataclass
 class ExtractedBlock:
     id: str
@@ -57,7 +73,15 @@ class ExtractedMetadata:
     authors: list[str] = field(default_factory=list)
     publication_year: int | None = None
     keywords: list[str] = field(default_factory=list)
-    sources: dict[str, str] = field(default_factory=dict)  # field -> "pdf" | "text" | "inferred"
+    sources: dict[str, Any] = field(default_factory=dict)  # field -> ProvenanceInfo or dict
+
+    def get_source(self, field_name: str) -> str | None:
+        val = self.sources.get(field_name)
+        if isinstance(val, dict):
+            return val.get("source")
+        if isinstance(val, str):
+            return val
+        return None
 
 
 @dataclass
@@ -168,11 +192,17 @@ def extract_pdf(pdf_path: Path | str) -> ExtractionResult:
                 if not b_text:
                     continue
 
+                raw_rect = fitz.Rect(block_tuple[:4])
+                if rotation != 0:
+                    vis_rect = raw_rect * page.rotation_matrix
+                else:
+                    vis_rect = raw_rect
+                vis_rect.normalize()
                 bbox = [
-                    round(float(block_tuple[0]), 2),
-                    round(float(block_tuple[1]), 2),
-                    round(float(block_tuple[2]), 2),
-                    round(float(block_tuple[3]), 2),
+                    round(max(0.0, min(width, float(vis_rect.x0))), 2),
+                    round(max(0.0, min(height, float(vis_rect.y0))), 2),
+                    round(max(0.0, min(width, float(vis_rect.x1))), 2),
+                    round(max(0.0, min(height, float(vis_rect.y1))), 2),
                 ]
                 text_hash = hashlib.sha256(b_text.encode("utf-8")).hexdigest()[:16]
                 block_id = f"p{page_num}_b{b_idx}"
@@ -280,7 +310,7 @@ def _extract_metadata_with_provenance(
 
     Missing data stays None / empty; filenames are never asserted as metadata.
     """
-    sources: dict[str, str] = {}
+    sources: dict[str, Any] = {}
     title: str | None = None
     authors: list[str] = []
     publication_year: int | None = None
@@ -290,62 +320,70 @@ def _extract_metadata_with_provenance(
     raw_title = doc_meta.get("title")
     if raw_title and raw_title.strip() and not _is_generic_title(raw_title.strip()):
         title = raw_title.strip()
-        sources["title"] = "pdf"
+        sources["title"] = ProvenanceInfo("pdf", file_property="title", evidence=title)
     elif pages and pages[0].blocks:
-        # Check first page blocks for prominent heading
         first_block_text = pages[0].blocks[0].text.strip()
-        # If first block is reasonably long and doesn't look like generic header
         if len(first_block_text) > 5 and len(first_block_text.splitlines()) <= 4:
             first_line = " ".join(first_block_text.splitlines()).strip()
             if not _is_generic_title(first_line):
                 title = first_line
-                sources["title"] = "text"
+                sources["title"] = ProvenanceInfo(
+                    "text", page_number=1, block_id=pages[0].blocks[0].id, evidence=first_line
+                )
 
     # 2. Authors
     raw_author = doc_meta.get("author")
     if raw_author and raw_author.strip() and not _is_generic_author(raw_author.strip()):
-        authors = [a.strip() for a in re.split(r"[,;]| and ", raw_author) if a.strip()]
-        sources["authors"] = "pdf"
+        parsed = [a.strip() for a in re.split(r"[,;]|\band\b", raw_author) if a.strip()]
+        if parsed:
+            authors = parsed
+            sources["authors"] = ProvenanceInfo("pdf", file_property="author", evidence=raw_author.strip())
     elif pages and len(pages[0].blocks) > 1:
-        # Check second block on first page
-        second_block_text = pages[0].blocks[1].text.strip()
-        if 0 < len(second_block_text) < 150 and not _is_generic_author(second_block_text):
-            lines = [line.strip() for line in second_block_text.splitlines() if line.strip()]
-            if lines and not any(kw in lines[0].lower() for kw in ["abstract", "introduction", "university"]):
-                authors = [a.strip() for a in re.split(r"[,;]| and ", lines[0]) if a.strip()]
-                if authors:
-                    sources["authors"] = "text"
+        second_block = pages[0].blocks[1]
+        second_block_text = second_block.text.strip()
+        if (
+            0 < len(second_block_text) <= 120
+            and not _is_generic_author(second_block_text)
+            and not any(
+                kw in second_block_text.lower()
+                for kw in ["abstract", "introduction", "university", "department", "http", "doi", "vol.", "issue"]
+            )
+        ):
+            candidate_names = [a.strip() for a in re.split(r"[,;]|\band\b", second_block_text) if a.strip()]
+            valid_names = []
+            for name in candidate_names:
+                words = name.split()
+                if 1 <= len(words) <= 4 and all(w[0].isupper() for w in words if w.isalpha()):
+                    valid_names.append(name)
+            if valid_names and len(valid_names) == len(candidate_names):
+                authors = valid_names
+                sources["authors"] = ProvenanceInfo(
+                    "text", page_number=1, block_id=second_block.id, evidence=second_block_text
+                )
 
     # 3. Publication Year
-    # Try creation date in PDF metadata: D:YYYYMMDDHHmmSS
-    creation_date = doc_meta.get("creationDate") or ""
-    if creation_date.startswith("D:") and len(creation_date) >= 6:
-        year_str = creation_date[2:6]
-        if year_str.isdigit() and 1900 <= int(year_str) <= 2100:
-            publication_year = int(year_str)
-            sources["publication_year"] = "pdf"
-
-    if publication_year is None and first_page_text:
-        # Try to infer year from copyright or published date pattern
-        match = YEAR_PATTERN.search(first_page_text[:1500])
+    # Note (R6): PDF file creationDate/modDate is a file-system property, NOT publication year.
+    # We only extract publication_year if explicit textual or bibliographic evidence exists.
+    if first_page_text:
+        match = YEAR_PATTERN.search(first_page_text[:2000])
         if match:
             year_val = int(match.group(1))
             if 1900 <= year_val <= 2100:
                 publication_year = year_val
-                sources["publication_year"] = "inferred"
+                sources["publication_year"] = ProvenanceInfo("inferred", page_number=1, evidence=match.group(0).strip())
 
     # 4. Keywords
     raw_keywords = doc_meta.get("keywords")
     if raw_keywords and raw_keywords.strip():
         keywords = [k.strip() for k in re.split(r"[,;]", raw_keywords) if k.strip()]
-        sources["keywords"] = "pdf"
+        sources["keywords"] = ProvenanceInfo("pdf", file_property="keywords", evidence=raw_keywords.strip())
     elif first_page_text:
         kw_match = re.search(r"(?:Keywords|Index Terms)[:\s]([^\.\n]+)", first_page_text, re.IGNORECASE)
         if kw_match:
             kw_str = kw_match.group(1).strip()
             keywords = [k.strip() for k in re.split(r"[,;—–-]", kw_str) if k.strip()]
             if keywords:
-                sources["keywords"] = "text"
+                sources["keywords"] = ProvenanceInfo("text", page_number=1, evidence=kw_str)
 
     return ExtractedMetadata(
         title=title,

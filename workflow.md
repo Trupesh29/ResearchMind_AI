@@ -72,11 +72,25 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
-## Current independent Phase 3 review (2026-10-18)
+## Phase 3 Repair Status (2026-10-18)
 
-Review of `fea8fce` found blocking claim/reprocess races, missing heartbeat renewal during extraction, public path leakage, rotated-coordinate inconsistency, and metadata/evidence gaps. See `docs/PHASE_3_REVIEW.md` and `docs/PHASE_3_FIX_PROMPT.md`. Phase 3 remains local pending repairs and independent acceptance. Live remote checks confirm Phase 2 checkpoint `4058b2d` already exists on both origin/manav and origin/main; no further Phase 2 push is needed.
+Repaired Phase 3 implementation resolving findings R1–R7 from `docs/PHASE_3_REVIEW.md`:
+- R1: Atomic single-query claims with rowcount check, atomic lease recovery, and fencing token validation.
+- R2: Background `LeaseHeartbeat` keeping lease alive throughout validation hashing and extraction, plus cooperative cancellation if lease lost.
+- R3: Database-enforced partial unique index `uq_active_job_per_paper` on `(paper_id) WHERE status IN ('queued', 'running')`, raising 409 Conflict on concurrent reprocess requests. Generation isolation: `Page.run_id` and `paper.published_run_id` protect published output from in-flight or failed generations.
+- R4: Public error sanitization stripping drive letters, local paths, and private directory names in all public status and stage details.
+- R5: Geometry consistency across rotation (0, 90, 180, 270) using `page.rotation_matrix` transformation and clamping coordinates within page dimensions.
+- R6: Metadata heuristics distinction: PDF creationDate is never promoted to publication year; uncertain headers are not promoted to authors; structured evidence dictionary for provenance.
+- R7: Separate stage-attempt history retention: expired leases mark previous attempt as `failed` with explanation and insert attempt+1 as a new row.
 
-VERDICT: FAIL -- Phase 3 acceptance gates remain unmet.
+Verified by:
+- 147 passed pytest backend tests (including all 7 R1–R7 acceptance regressions) in 61.74s.
+- `scripts/review_phase3_probe.py` passing with 1 claim winner, 409 rejection on duplicate reprocess, sanitized error string without paths, and rotated box strictly bounded.
+- Ruff lint and formatting clean on all 45 files (including `worker`).
+- Frontend 25 vitest tests passed, ESLint, TypeScript (`tsc --noEmit`), and Vite build clean.
+- Kept local on branch `manav` for independent review. Phase 2 remains published on remote at `4058b2d`.
+
+VERDICT: PASS — Week 2 Phase 3 Repair (Local Checkpoint).
 
 ## Historical Phase 3 Implementation Status (2026-10-17)
 
