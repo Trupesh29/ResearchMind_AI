@@ -209,21 +209,40 @@ def delete_workspace(
 
     # Collect backing files
     papers = db.query(Paper).filter(Paper.workspace_id == ws.id).all()
-    file_paths = [p.storage_path for p in papers if p.storage_path]
 
-    # Delete from DB (FK cascade will remove papers from database)
+    # Identify unique files to unlink that are NOT referenced by other workspaces
+    files_to_unlink: dict[str, list[Paper]] = {}
+    for p in papers:
+        if p.storage_path:
+            p_file = Path(p.storage_path)
+            if p_file.exists():
+                other_ref = (
+                    db.query(Paper).filter(Paper.workspace_id != ws.id, Paper.storage_path == p.storage_path).first()
+                )
+                if not other_ref:
+                    files_to_unlink.setdefault(p.storage_path, []).append(p)
+
+    failed_unlinks: list[dict[str, str]] = []
+    # Attempt unlinking and delete corresponding paper records
+    for path_str, associated_papers in files_to_unlink.items():
+        p_file = Path(path_str)
+        try:
+            p_file.unlink()
+            for p in associated_papers:
+                db.delete(p)
+            db.commit()
+        except OSError as exc:
+            logger.error(f"Error removing file {path_str} during workspace deletion: {exc}")
+            failed_unlinks.append({"path": path_str, "error": str(exc)})
+
+    if failed_unlinks:
+        raise AppException(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Failed to delete one or more backing files during workspace deletion. Workspace and remaining papers preserved for retry.",
+            status_code=500,
+            details={"failed_files": failed_unlinks},
+        )
+
+    # Delete workspace (FK cascade removes any remaining papers without storage paths or sharing files)
     db.delete(ws)
     db.commit()
-
-    # Clean up physical files from disk
-    # Check that no other paper row in another workspace points to the same storage_path
-    for path_str in file_paths:
-        try:
-            p_file = Path(path_str)
-            if p_file.exists():
-                # Verify if referenced elsewhere
-                other_ref = db.query(Paper).filter(Paper.storage_path == path_str).first()
-                if not other_ref:
-                    p_file.unlink(missing_ok=True)
-        except Exception as exc:
-            logger.warning(f"Error removing file {path_str} during workspace deletion: {exc}")

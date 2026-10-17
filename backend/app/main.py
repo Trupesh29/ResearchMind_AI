@@ -3,15 +3,17 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.app.api.router import api_router
 from backend.app.core.config import ensure_data_directories, settings
 from backend.app.core.errors import (
     AppException,
+    ErrorCode,
     app_exception_handler,
     http_exception_handler,
     unhandled_exception_handler,
@@ -98,7 +100,88 @@ async def request_context_middleware(request: Request, call_next):
     return response
 
 
-# 2. CORS Middleware
+# 2. Request Body Size Limiting Middleware (Early Rejection before Spooling)
+class RequestSizeLimitMiddleware:
+    def __init__(self, app_asgi, max_bytes: int):
+        self.app = app_asgi
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Check effective limit from app.state if available, else self.max_bytes
+        app_instance = scope.get("app")
+        effective_settings = getattr(getattr(app_instance, "state", None), "settings", None)
+        max_limit = effective_settings.MAX_REQUEST_BODY_BYTES if effective_settings else self.max_bytes
+
+        # Fast path: check Content-Length header
+        content_length = None
+        for k, v in scope.get("headers", []):
+            if k.lower() == b"content-length":
+                try:
+                    content_length = int(v.decode("latin-1"))
+                except ValueError:
+                    pass
+                break
+
+        if content_length is not None and content_length > max_limit:
+            response = JSONResponse(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                content={
+                    "error": {
+                        "code": ErrorCode.FILE_TOO_LARGE.value,
+                        "message": f"Request body exceeds maximum allowed size of {max_limit // (1024 * 1024)} MB.",
+                        "details": {"max_bytes": max_limit, "content_length": content_length},
+                        "request_id": "",
+                    }
+                },
+            )
+            await response(scope, receive, send)
+            return
+
+        # Streaming check for chunked / unstated Content-Length
+        bytes_received = 0
+
+        async def limited_receive():
+            nonlocal bytes_received
+            message = await receive()
+            if message["type"] == "http.request":
+                body = message.get("body", b"")
+                bytes_received += len(body)
+                if bytes_received > max_limit:
+                    raise AppException(
+                        code=ErrorCode.FILE_TOO_LARGE,
+                        message=f"Streamed request body exceeds maximum allowed size of {max_limit // (1024 * 1024)} MB.",
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        details={"max_bytes": max_limit, "received_bytes": bytes_received},
+                    )
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except AppException as exc:
+            if exc.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE:
+                response = JSONResponse(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    content={
+                        "error": {
+                            "code": exc.code.value if hasattr(exc.code, "value") else str(exc.code),
+                            "message": exc.message,
+                            "details": exc.details,
+                            "request_id": "",
+                        }
+                    },
+                )
+                await response(scope, receive, send)
+            else:
+                raise
+
+
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=settings.MAX_REQUEST_BODY_BYTES)
+
+# 3. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,

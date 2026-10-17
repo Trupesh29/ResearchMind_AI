@@ -260,19 +260,98 @@ describe("LibraryPage Integration and Component Suite", () => {
     });
   });
 
-  it("renders empty state when no workspaces exist", async () => {
-    vi.spyOn(client.api, "listWorkspaces").mockResolvedValue({
-      items: [],
-      next_cursor: null,
-      total_count: 0,
-    });
+  it("supports document pagination and loading more documents", async () => {
+    const page1Papers = [mockPapers[0]];
+    const page2Papers = [mockPapers[1]];
+
+    vi.spyOn(client.api, "listPapers")
+      .mockResolvedValueOnce({
+        items: page1Papers,
+        next_cursor: "cursor-page-2",
+        total_count: 2,
+      })
+      .mockResolvedValueOnce({
+        items: page2Papers,
+        next_cursor: null,
+        total_count: 2,
+      });
 
     render(<LibraryPage />);
 
     await waitFor(() => {
       expect(
-        screen.getByText(/No Research Workspaces Yet/i),
+        screen.getByText("Quantum Supremacy Experiment"),
       ).toBeInTheDocument();
+      expect(screen.getByText("Showing 1 of 2 documents")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Load more documents" }),
+      ).toBeInTheDocument();
+    });
+
+    const loadMoreBtn = screen.getByRole("button", {
+      name: "Load more documents",
+    });
+    fireEvent.click(loadMoreBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Quantum Supremacy Experiment"),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Quantum Error Mitigation")).toBeInTheDocument();
+      expect(screen.getByText("Showing 2 of 2 documents")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Load more documents" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("does not force selection back to old workspace if user switches workspace during upload (race condition guard)", async () => {
+    let resolveUpload: (val: any) => void = () => {};
+    const deferredUploadPromise = new Promise((resolve) => {
+      resolveUpload = resolve;
+    });
+
+    vi.spyOn(client.api, "uploadPapers").mockImplementation(
+      () => deferredUploadPromise as any,
+    );
+
+    render(<LibraryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Quantum Computing")).toBeInTheDocument();
+    });
+
+    // 1. Start upload in ws-1
+    const fileInput = document.getElementById(
+      "pdf-upload-input",
+    ) as HTMLInputElement;
+    const file = new File(["dummy"], "slow.pdf", { type: "application/pdf" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    // 2. While upload is in flight, user opens selector dropdown and switches to ws-2 ("Neural Networks")
+    const selectorBtn = document.getElementById(
+      "workspace-selector-btn",
+    ) as HTMLElement;
+    fireEvent.click(selectorBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText("Neural Networks")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Neural Networks"));
+
+    // 3. Resolve upload for ws-1
+    resolveUpload({
+      papers: [
+        { id: "slow-p1", original_filename: "slow.pdf", status: "uploaded" },
+      ],
+      duplicates: [],
+      rejected: [],
+    });
+
+    await waitFor(() => {
+      // Neural Networks must REMAIN active in the selector button!
+      expect(selectorBtn).toHaveTextContent("Neural Networks");
     });
   });
 });

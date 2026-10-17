@@ -69,6 +69,9 @@ $backendProc = $null
 $frontendProc = $null
 $envModified = $false
 $prevBackendUrl = [Environment]::GetEnvironmentVariable("VITE_BACKEND_URL", "Process")
+$prevDataDir = [Environment]::GetEnvironmentVariable("DATA_DIR", "Process")
+$prevDatabaseUrl = [Environment]::GetEnvironmentVariable("DATABASE_URL", "Process")
+$tempDataDir = $null
 $exitCode = 1
 
 try {
@@ -89,6 +92,35 @@ try {
             throw "Port $FrontendPort is already occupied by a pre-existing server. Aborting to avoid conflicts. Use -Attach to run against running servers."
         }
 
+        # Provision disposable isolated database and storage directory for owned verification server
+        $tempDataDir = Join-Path $ProjectRoot ".temp\browser_test_$([Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $tempDataDir -Force | Out-Null
+        $disposableDbPath = (Join-Path $tempDataDir "researchmind_test.db").Replace('\', '/')
+
+        $env:DATA_DIR = $tempDataDir
+        $env:DATABASE_URL = "sqlite:///$disposableDbPath"
+        $env:DISPOSABLE_TEST_ENV = "1"
+        $env:VITE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
+        $envModified = $true
+
+        if (-not $BackendCommand) {
+            Write-Host "Migrating and bootstrapping disposable database at $tempDataDir..." -ForegroundColor Cyan
+            $alembicConfig = Join-Path $ProjectRoot "backend\alembic.ini"
+            Push-Location $ProjectRoot
+            try {
+                & $PythonExe -m alembic -c $alembicConfig upgrade head
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Alembic migrations failed on disposable verification database."
+                }
+                & $PythonExe -m backend.app.db.bootstrap
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Database bootstrap failed on disposable verification database."
+                }
+            } finally {
+                Pop-Location
+            }
+        }
+
         # 1. Launch Backend
         Write-Host "Starting temporary backend on http://127.0.0.1:$BackendPort..." -ForegroundColor Cyan
         if ($BackendCommand) {
@@ -101,10 +133,6 @@ try {
         if ($backendProc.HasExited) {
             throw "Backend process exited prematurely with code $($backendProc.ExitCode)."
         }
-
-        # Propagate backend URL to Vite development server
-        $env:VITE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
-        $envModified = $true
 
         # 2. Launch Frontend
         Write-Host "Starting temporary frontend on http://127.0.0.1:$FrontendPort..." -ForegroundColor Cyan
@@ -161,7 +189,8 @@ try {
             --chrome-path $ChromePath `
             --base-url "http://127.0.0.1:$FrontendPort" `
             --output-dir "$ProjectRoot\artifacts\browser_verification" `
-            --summary-path "$ProjectRoot\docs\browser_verification_summary.json"
+            --summary-path "$ProjectRoot\docs\browser_verification_summary.json" `
+            --require-phase2
         $exitCode = $LASTEXITCODE
     }
 } catch {
@@ -183,6 +212,22 @@ try {
         } else {
             [Environment]::SetEnvironmentVariable("VITE_BACKEND_URL", $null, "Process")
         }
+        if ($null -ne $prevDataDir) {
+            $env:DATA_DIR = $prevDataDir
+        } else {
+            [Environment]::SetEnvironmentVariable("DATA_DIR", $null, "Process")
+        }
+        if ($null -ne $prevDatabaseUrl) {
+            $env:DATABASE_URL = $prevDatabaseUrl
+        } else {
+            [Environment]::SetEnvironmentVariable("DATABASE_URL", $null, "Process")
+        }
+        [Environment]::SetEnvironmentVariable("DISPOSABLE_TEST_ENV", $null, "Process")
+    }
+
+    if ($tempDataDir -and (Test-Path $tempDataDir)) {
+        Write-Host "Removing disposable test storage at $tempDataDir..." -ForegroundColor Cyan
+        Remove-Item -Recurse -Force $tempDataDir -ErrorAction SilentlyContinue
     }
 }
 

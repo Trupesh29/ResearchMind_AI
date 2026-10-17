@@ -110,6 +110,16 @@ export const api = {
     const qs = params.toString();
     return request<WorkspaceListResponse>(`/workspaces${qs ? `?${qs}` : ""}`);
   },
+  listAllWorkspaces: async (): Promise<WorkspaceItem[]> => {
+    let all: WorkspaceItem[] = [];
+    let cursor: string | null = null;
+    do {
+      const res = await api.listWorkspaces(cursor, 100);
+      all = all.concat(res.items);
+      cursor = res.next_cursor;
+    } while (cursor);
+    return all;
+  },
   getWorkspace: (id: string) => request<WorkspaceDetail>(`/workspaces/${id}`),
   createWorkspace: (data: WorkspaceCreatePayload) =>
     request<WorkspaceItem>("/workspaces", {

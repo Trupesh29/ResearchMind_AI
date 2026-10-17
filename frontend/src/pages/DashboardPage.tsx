@@ -40,10 +40,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   useEffect(() => {
     let isMounted = true;
     api
-      .listWorkspaces(null, 100)
-      .then((res) => {
+      .listAllWorkspaces()
+      .then((items) => {
         if (isMounted) {
-          setWorkspaces(res.items);
+          setWorkspaces(items);
           setIsLoadingWorkspaces(false);
         }
       })

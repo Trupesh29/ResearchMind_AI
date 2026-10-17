@@ -42,32 +42,47 @@ export const LibraryPage: React.FC = () => {
   const [isDeletingWs, setIsDeletingWs] = useState(false);
   const [isActionLoading, setIsActionLoading] = useState(false);
 
+  // Pagination state
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
   // Error banners
   const [pageError, setPageError] = useState<string | null>(null);
 
-  // Track active request ID to ignore stale responses
+  // Track active request ID and selected workspace ref to prevent race conditions
   const activePaperReqRef = useRef<number>(0);
+  const selectedWorkspaceRef = useRef<WorkspaceItem | null>(null);
+
+  // Sync ref with selectedWorkspace state
+  useEffect(() => {
+    selectedWorkspaceRef.current = selectedWorkspace;
+  }, [selectedWorkspace]);
 
   // 1. Fetch Workspaces
   const loadWorkspaces = useCallback(async (selectIdAfter?: string) => {
     setIsLoadingWorkspaces(true);
     setPageError(null);
     try {
-      const res = await api.listWorkspaces(null, 100);
-      setWorkspaces(res.items);
+      const items = await api.listAllWorkspaces();
+      setWorkspaces(items);
 
-      if (res.items.length === 0) {
+      if (items.length === 0) {
         setSelectedWorkspace(null);
+        selectedWorkspaceRef.current = null;
         localStorage.removeItem(STORAGE_KEY_SELECTED_WS);
         return;
       }
 
-      // Determine active workspace
+      // Determine active workspace: priority is selectIdAfter, then current selection ref, then storage, then first item
+      const currentSelectedId = selectedWorkspaceRef.current?.id;
       const targetId =
-        selectIdAfter || localStorage.getItem(STORAGE_KEY_SELECTED_WS);
-      const matched = res.items.find((w) => w.id === targetId);
-      const active = matched || res.items[0];
+        selectIdAfter ||
+        currentSelectedId ||
+        localStorage.getItem(STORAGE_KEY_SELECTED_WS);
+      const matched = items.find((w) => w.id === targetId);
+      const active = matched || items[0];
       setSelectedWorkspace(active);
+      selectedWorkspaceRef.current = active;
       localStorage.setItem(STORAGE_KEY_SELECTED_WS, active.id);
     } catch (err: any) {
       setPageError(err?.message || "Failed to load research workspaces.");
@@ -87,13 +102,20 @@ export const LibraryPage: React.FC = () => {
       setIsLoadingPapers(true);
       setPageError(null);
       try {
-        const res = await api.listPapers(workspaceId, { q: query, limit: 100 });
-        if (reqId === activePaperReqRef.current) {
+        const res = await api.listPapers(workspaceId, { q: query, limit: 25 });
+        if (
+          reqId === activePaperReqRef.current &&
+          selectedWorkspaceRef.current?.id === workspaceId
+        ) {
           setPapers(res.items);
+          setNextCursor(res.next_cursor);
           setTotalPaperCount(res.total_count);
         }
       } catch (err: any) {
-        if (reqId === activePaperReqRef.current) {
+        if (
+          reqId === activePaperReqRef.current &&
+          selectedWorkspaceRef.current?.id === workspaceId
+        ) {
           setPageError(err?.message || "Failed to load workspace documents.");
         }
       } finally {
@@ -105,11 +127,35 @@ export const LibraryPage: React.FC = () => {
     [],
   );
 
+  // Load more papers (pagination)
+  const loadMorePapers = useCallback(async () => {
+    if (!selectedWorkspaceRef.current || !nextCursor || isLoadingMore) return;
+    const currentWsId = selectedWorkspaceRef.current.id;
+    setIsLoadingMore(true);
+    try {
+      const res = await api.listPapers(currentWsId, {
+        q: searchQuery,
+        cursor: nextCursor,
+        limit: 25,
+      });
+      if (selectedWorkspaceRef.current?.id === currentWsId) {
+        setPapers((prev) => [...prev, ...res.items]);
+        setNextCursor(res.next_cursor);
+        setTotalPaperCount(res.total_count);
+      }
+    } catch (err: any) {
+      setPageError(err?.message || "Failed to load additional documents.");
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [nextCursor, isLoadingMore, searchQuery]);
+
   useEffect(() => {
     if (selectedWorkspace) {
       loadPapers(selectedWorkspace.id, searchQuery);
     } else {
       setPapers([]);
+      setNextCursor(null);
       setTotalPaperCount(0);
     }
   }, [selectedWorkspace, searchQuery, loadPapers]);
@@ -117,6 +163,7 @@ export const LibraryPage: React.FC = () => {
   // Workspace Actions
   const handleSelectWorkspace = (ws: WorkspaceItem) => {
     setSelectedWorkspace(ws);
+    selectedWorkspaceRef.current = ws;
     localStorage.setItem(STORAGE_KEY_SELECTED_WS, ws.id);
     setSearchQuery("");
     setLastBatchResult(null);
@@ -126,20 +173,24 @@ export const LibraryPage: React.FC = () => {
     if (wsModalMode === "create") {
       const created = await api.createWorkspace({ name, description });
       await loadWorkspaces(created.id);
-    } else if (selectedWorkspace) {
-      const updated = await api.updateWorkspace(selectedWorkspace.id, {
-        name,
-        description,
-      });
+    } else if (selectedWorkspaceRef.current) {
+      const updated = await api.updateWorkspace(
+        selectedWorkspaceRef.current.id,
+        {
+          name,
+          description,
+        },
+      );
       await loadWorkspaces(updated.id);
     }
   };
 
   const handleDeleteWorkspace = async () => {
-    if (!selectedWorkspace) return;
+    if (!selectedWorkspaceRef.current) return;
+    const wsIdToDelete = selectedWorkspaceRef.current.id;
     setIsActionLoading(true);
     try {
-      await api.deleteWorkspace(selectedWorkspace.id);
+      await api.deleteWorkspace(wsIdToDelete);
       setIsDeletingWs(false);
       await loadWorkspaces();
     } catch (err: any) {
@@ -151,17 +202,19 @@ export const LibraryPage: React.FC = () => {
 
   // Upload Action
   const handleUploadFiles = async (files: File[]) => {
-    if (!selectedWorkspace) return;
+    if (!selectedWorkspaceRef.current) return;
+    const targetWsId = selectedWorkspaceRef.current.id;
     setIsUploading(true);
     setPageError(null);
     try {
-      const batchResult = await api.uploadPapers(selectedWorkspace.id, files);
-      setLastBatchResult(batchResult);
-      // Reload papers and refresh workspace count
-      await Promise.all([
-        loadPapers(selectedWorkspace.id, searchQuery),
-        loadWorkspaces(selectedWorkspace.id),
-      ]);
+      const batchResult = await api.uploadPapers(targetWsId, files);
+      // Only refresh papers if user is still on the target workspace
+      if (selectedWorkspaceRef.current?.id === targetWsId) {
+        setLastBatchResult(batchResult);
+        await loadPapers(targetWsId, searchQuery);
+      }
+      // Refresh workspace counts without changing user's latest selection
+      await loadWorkspaces(selectedWorkspaceRef.current?.id);
     } catch (err: any) {
       if (err instanceof ApiClientError) {
         setPageError(`${err.code}: ${err.message}`);
@@ -175,15 +228,17 @@ export const LibraryPage: React.FC = () => {
 
   // Delete Paper Action
   const handleConfirmDeletePaper = async () => {
-    if (!deletingPaper || !selectedWorkspace) return;
+    if (!deletingPaper || !selectedWorkspaceRef.current) return;
+    const targetWsId = selectedWorkspaceRef.current.id;
+    const paperToDeleteId = deletingPaper.id;
     setIsActionLoading(true);
     try {
-      await api.deletePaper(deletingPaper.id);
+      await api.deletePaper(paperToDeleteId);
       setDeletingPaper(null);
-      await Promise.all([
-        loadPapers(selectedWorkspace.id, searchQuery),
-        loadWorkspaces(selectedWorkspace.id),
-      ]);
+      if (selectedWorkspaceRef.current?.id === targetWsId) {
+        await loadPapers(targetWsId, searchQuery);
+      }
+      await loadWorkspaces(selectedWorkspaceRef.current?.id);
     } catch (err: any) {
       setPageError(err?.message || "Failed to delete paper.");
     } finally {
@@ -378,6 +433,9 @@ export const LibraryPage: React.FC = () => {
             onViewPaper={setViewingPaper}
             onDeletePaper={setDeletingPaper}
             isLoading={isLoadingPapers}
+            nextCursor={nextCursor}
+            onLoadMore={loadMorePapers}
+            isLoadingMore={isLoadingMore}
           />
         </>
       )}

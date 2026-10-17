@@ -1,5 +1,13 @@
-import React from "react";
-import { Search, Eye, Trash2, FileText, Calendar, Layers } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import {
+  Search,
+  Eye,
+  Trash2,
+  FileText,
+  Calendar,
+  Layers,
+  ChevronDown,
+} from "lucide-react";
 import { PaperItem } from "../../api/types";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -12,6 +20,9 @@ interface PaperListProps {
   onViewPaper: (paper: PaperItem) => void;
   onDeletePaper: (paper: PaperItem) => void;
   isLoading: boolean;
+  nextCursor?: string | null;
+  onLoadMore?: () => void;
+  isLoadingMore?: boolean;
 }
 
 function formatBytes(bytes: number): string {
@@ -43,7 +54,27 @@ export const PaperList: React.FC<PaperListProps> = ({
   onViewPaper,
   onDeletePaper,
   isLoading,
+  nextCursor,
+  onLoadMore,
+  isLoadingMore,
 }) => {
+  const [searchTerm, setSearchTerm] = useState(searchQuery);
+
+  // Sync with prop when external query changes
+  useEffect(() => {
+    setSearchTerm(searchQuery);
+  }, [searchQuery]);
+
+  // 250ms debounce for search input
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (searchTerm !== searchQuery) {
+        onSearchChange(searchTerm);
+      }
+    }, 250);
+    return () => clearTimeout(handler);
+  }, [searchTerm, searchQuery, onSearchChange]);
+
   return (
     <div
       style={{
@@ -105,8 +136,8 @@ export const PaperList: React.FC<PaperListProps> = ({
             id="paper-search-input"
             type="search"
             placeholder="Search papers by title or filename..."
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
             style={{
               width: "100%",
               padding: "8px 12px 8px 36px",
@@ -300,6 +331,42 @@ export const PaperList: React.FC<PaperListProps> = ({
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Pagination Footer */}
+      {!isLoading && papers.length > 0 && (
+        <div
+          style={{
+            padding: "12px 20px",
+            borderTop: "1px solid var(--hairline)",
+            background: "var(--surface-alt)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "12px",
+          }}
+        >
+          <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+            Showing {papers.length} of {totalCount} document
+            {totalCount === 1 ? "" : "s"}
+          </span>
+
+          {nextCursor && onLoadMore && (
+            <Button
+              variant="soft"
+              size="sm"
+              onClick={onLoadMore}
+              disabled={isLoadingMore}
+              aria-label="Load more documents"
+            >
+              <ChevronDown size={14} />
+              <span>
+                {isLoadingMore ? "Loading more..." : "Load more documents"}
+              </span>
+            </Button>
+          )}
         </div>
       )}
     </div>

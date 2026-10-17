@@ -987,3 +987,43 @@ server.serve_forever()
 
     assert not is_process_running(b_pid), f"Owned backend PID {b_pid} was not terminated on success"
     assert not is_process_running(f_pid), f"Owned frontend PID {f_pid} was not terminated on success"
+
+
+def test_evaluate_acceptance_require_phase2_enforces_phase2_results(valid_browser_results):
+    """When require_phase2=True, evaluate_acceptance must fail if phase2_lifecycle is missing."""
+    results = copy.deepcopy(valid_browser_results)
+    results.pop("phase2_lifecycle", None)
+
+    # Without require_phase2, it passes (Phase 1 baseline)
+    p1_passed, _, p1_criteria = evaluate_acceptance(results, require_phase2=False)
+    assert p1_passed is True
+    assert "phase2_library_lifecycle" not in p1_criteria
+
+    # With require_phase2, it MUST fail!
+    p2_passed, p2_failures, p2_criteria = evaluate_acceptance(results, require_phase2=True)
+    assert p2_passed is False
+    assert p2_criteria["phase2_library_lifecycle"] is False
+    assert any("Phase 2 Library Lifecycle verification is required" in f for f in p2_failures)
+
+
+def test_evaluate_acceptance_require_phase2_passes_with_valid_phase2(valid_browser_results):
+    """When require_phase2=True and phase2_lifecycle is valid, evaluate_acceptance passes."""
+    results = copy.deepcopy(valid_browser_results)
+    results["phase2_lifecycle"] = {
+        "workspace_created": True,
+        "pdf_uploaded": True,
+        "duplicate_identified": True,
+        "corrupt_rejected": True,
+        "search_success": True,
+        "viewer_opened": True,
+        "viewer_pdf_loaded": True,
+        "viewer_escape_closed": True,
+        "cancel_deletion_kept_paper": True,
+        "confirm_deletion_removed_paper": True,
+        "workspace_deleted": True,
+    }
+
+    passed, failures, criteria = evaluate_acceptance(results, require_phase2=True)
+    assert passed is True
+    assert criteria["phase2_library_lifecycle"] is True
+    assert len(failures) == 0

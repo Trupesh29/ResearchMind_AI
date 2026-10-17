@@ -37,13 +37,29 @@ async def upload_papers(
             message="workspace_id is required.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    return await paper_service.process_paper_upload(
-        db=db,
-        user_id=current_user.id,
-        workspace_id=effective_ws_id,
-        files=files,
-        settings=settings,
-    )
+
+    if len(files) > settings.MAX_BATCH_FILES:
+        raise AppException(
+            code=ErrorCode.INVALID_REQUEST,
+            message=f"Batch size exceeds maximum limit of {settings.MAX_BATCH_FILES} files.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            details={"max_batch_files": settings.MAX_BATCH_FILES, "received_files": len(files)},
+        )
+
+    try:
+        return await paper_service.process_paper_upload(
+            db=db,
+            user_id=current_user.id,
+            workspace_id=effective_ws_id,
+            files=files,
+            settings=settings,
+        )
+    finally:
+        for upload_file in files:
+            try:
+                await upload_file.close()
+            except Exception:
+                pass
 
 
 @router.get("", response_model=PaperListResponse)
@@ -113,10 +129,17 @@ def get_paper_file(
         )
 
     file_size = file_path.stat().st_size
-    safe_filename = paper_service.sanitize_filename(paper.original_filename)
+    disposition_header = paper_service.format_content_disposition(paper.original_filename, disposition_type="inline")
 
-    # Handle HTTP Range requests
+    # Handle HTTP Range requests per RFC 9110 §14.1.2
     if range and range.strip():
+        # Reject if file is empty
+        if file_size == 0:
+            return Response(
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                headers={"Content-Range": "bytes */0"},
+            )
+
         range_match = re.match(r"^bytes=(\d*)-(\d*)$", range.strip())
         if not range_match:
             return Response(
@@ -127,25 +150,52 @@ def get_paper_file(
         start_str, end_str = range_match.groups()
 
         if start_str and end_str:
-            start = int(start_str)
-            end = int(end_str)
+            try:
+                start = int(start_str)
+                end = int(end_str)
+            except ValueError:
+                return Response(
+                    status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                    headers={"Content-Range": f"bytes */{file_size}"},
+                )
         elif start_str:
-            start = int(start_str)
-            end = file_size - 1
+            try:
+                start = int(start_str)
+                end = file_size - 1
+            except ValueError:
+                return Response(
+                    status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                    headers={"Content-Range": f"bytes */{file_size}"},
+                )
         elif end_str:
-            # Suffix range
-            suffix_len = int(end_str)
+            # Suffix range: bytes=-N (last N bytes)
+            try:
+                suffix_len = int(end_str)
+            except ValueError:
+                return Response(
+                    status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                    headers={"Content-Range": f"bytes */{file_size}"},
+                )
+            if suffix_len <= 0:
+                return Response(
+                    status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                    headers={"Content-Range": f"bytes */{file_size}"},
+                )
             start = max(0, file_size - suffix_len)
             end = file_size - 1
         else:
             return Response(
-                status_code=status.HTTP_416_RANGE_NOT_SATISFIABLE,
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
                 headers={"Content-Range": f"bytes */{file_size}"},
             )
 
-        if start >= file_size or end >= file_size or start > end or start < 0:
+        # RFC 9110 §14.1.2: If end extends past EOF (end >= file_size), clip it to file_size - 1!
+        if end >= file_size:
+            end = file_size - 1
+
+        if start >= file_size or start > end or start < 0:
             return Response(
-                status_code=status.HTTP_416_RANGE_NOT_SATISFIABLE,
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
                 headers={"Content-Range": f"bytes */{file_size}"},
             )
 
@@ -168,7 +218,7 @@ def get_paper_file(
             "Accept-Ranges": "bytes",
             "Content-Length": str(chunk_length),
             "Content-Type": "application/pdf",
-            "Content-Disposition": f'inline; filename="{safe_filename}"',
+            "Content-Disposition": disposition_header,
         }
         return StreamingResponse(
             iter_range_bytes(),
@@ -179,12 +229,12 @@ def get_paper_file(
     # Standard full response
     headers = {
         "Accept-Ranges": "bytes",
-        "Content-Disposition": f'inline; filename="{safe_filename}"',
+        "Content-Disposition": disposition_header,
+        "Content-Type": "application/pdf",
     }
     return FileResponse(
         path=str(file_path),
         media_type="application/pdf",
-        filename=safe_filename,
         headers=headers,
     )
 

@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import tempfile
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -46,6 +47,18 @@ def sanitize_filename(name: str) -> str:
     if not cleaned:
         cleaned = "unnamed_document.pdf"
     return cleaned[:255]
+
+
+def format_content_disposition(name: str, disposition_type: str = "inline") -> str:
+    """Formats an RFC 6266 / RFC 5987 compliant Content-Disposition header with safe ASCII fallback and UTF-8 encoding."""
+    cleaned = sanitize_filename(name)
+    # ASCII fallback replaces non-ASCII with underscore and escapes quotes/backslashes
+    ascii_name = re.sub(r"[^\x20-\x7e]", "_", cleaned)
+    ascii_escaped = ascii_name.replace("\\", "\\\\").replace('"', '\\"')
+    if not ascii_escaped.strip(" _."):
+        ascii_escaped = "document.pdf"
+    encoded_utf8 = urllib.parse.quote(cleaned, encoding="utf-8")
+    return f"{disposition_type}; filename=\"{ascii_escaped}\"; filename*=UTF-8''{encoded_utf8}"
 
 
 def get_paper_or_404(db: Session, user_id: str, paper_id: str) -> Paper:
@@ -242,23 +255,15 @@ async def process_paper_upload(
                     status="uploaded",
                 )
 
+                committed = False
                 try:
                     db.add(new_paper)
                     db.commit()
-                    db.refresh(new_paper)
-                    batch_seen_hashes[computed_hash] = new_paper.id
-                    success_items.append(
-                        PaperUploadSuccessItem(
-                            id=new_paper.id,
-                            original_filename=new_paper.original_filename,
-                            status=new_paper.status,
-                        )
-                    )
+                    committed = True
                 except IntegrityError:
                     db.rollback()
-                    # Remove final file if DB insert rolled back due to concurrent duplicate race
                     final_storage_path.unlink(missing_ok=True)
-                    # Look up the winning duplicate
+                    # Look up winning duplicate
                     winner = (
                         db.query(Paper)
                         .filter(
@@ -267,12 +272,50 @@ async def process_paper_upload(
                         )
                         .first()
                     )
-                    duplicate_items.append(
-                        PaperUploadDuplicateItem(
+                    if winner:
+                        duplicate_items.append(
+                            PaperUploadDuplicateItem(
+                                original_filename=display_name,
+                                existing_paper_id=winner.id,
+                            )
+                        )
+                    else:
+                        rejected_items.append(
+                            PaperUploadRejectedItem(
+                                original_filename=display_name,
+                                code=ErrorCode.DATABASE_ERROR.value,
+                                message="Database integrity error during paper persistence.",
+                            )
+                        )
+                    continue
+                except Exception as exc:
+                    db.rollback()
+                    if not committed:
+                        final_storage_path.unlink(missing_ok=True)
+                    logger.error(f"Database error persisting paper {paper_id}: {exc}")
+                    rejected_items.append(
+                        PaperUploadRejectedItem(
                             original_filename=display_name,
-                            existing_paper_id=winner.id if winner else "unknown",
+                            code=ErrorCode.DATABASE_ERROR.value,
+                            message=f"Database error during persistence: {exc}",
                         )
                     )
+                    continue
+
+                # Refresh attributes; if refresh fails, the row is already committed so do NOT unlink
+                try:
+                    db.refresh(new_paper)
+                except Exception as exc:
+                    logger.warning(f"Refresh failed for paper {paper_id} after commit: {exc}")
+
+                batch_seen_hashes[computed_hash] = new_paper.id
+                success_items.append(
+                    PaperUploadSuccessItem(
+                        id=new_paper.id,
+                        original_filename=new_paper.original_filename,
+                        status=new_paper.status,
+                    )
+                )
 
         finally:
             # Clean temporary file if still exists
@@ -342,16 +385,22 @@ def delete_paper(db: Session, user_id: str, paper_id: str) -> None:
     paper = get_paper_or_404(db, user_id, paper_id)
     storage_path_str = paper.storage_path
 
-    db.delete(paper)
-    db.commit()
-
     # Safely remove physical file if not referenced by another record
     if storage_path_str:
-        try:
-            other_ref = db.query(Paper).filter(Paper.storage_path == storage_path_str).first()
-            if not other_ref:
-                p_file = Path(storage_path_str)
-                if p_file.exists():
-                    p_file.unlink(missing_ok=True)
-        except Exception as exc:
-            logger.warning(f"Error removing paper file {storage_path_str}: {exc}")
+        other_ref = db.query(Paper).filter(Paper.id != paper.id, Paper.storage_path == storage_path_str).first()
+        if not other_ref:
+            p_file = Path(storage_path_str)
+            if p_file.exists():
+                try:
+                    p_file.unlink()
+                except OSError as exc:
+                    logger.error(f"Failed to remove backing file {storage_path_str}: {exc}")
+                    raise AppException(
+                        code=ErrorCode.DATABASE_ERROR,
+                        message=f"Failed to delete paper file from storage: {exc}. Deletion aborted to preserve retryable state.",
+                        status_code=500,
+                        details={"paper_id": paper_id, "storage_path": storage_path_str},
+                    )
+
+    db.delete(paper)
+    db.commit()

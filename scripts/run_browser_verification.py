@@ -20,12 +20,13 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 
-def evaluate_acceptance(results: dict) -> tuple[bool, list[str], dict[str, bool]]:
+def evaluate_acceptance(results: dict, require_phase2: bool = False) -> tuple[bool, list[str], dict[str, bool]]:
     """
-    Evaluates runner results against explicit Phase 1 acceptance criteria.
+    Evaluates runner results against explicit acceptance criteria.
 
     Returns:
         tuple[bool, list[str], dict[str, bool]]:
@@ -194,7 +195,7 @@ def evaluate_acceptance(results: dict) -> tuple[bool, list[str], dict[str, bool]
         failures.append(f"Unexpected failed network requests detected ({len(unexpected_reqs)}): {unexpected_reqs}")
     criteria["clean_operation"] = c7_passed
 
-    # 8. Phase 2 Library Lifecycle (if present in results)
+    # 8. Phase 2 Library Lifecycle
     if "phase2_lifecycle" in results:
         p2 = results["phase2_lifecycle"]
         p2_passed = (
@@ -204,6 +205,8 @@ def evaluate_acceptance(results: dict) -> tuple[bool, list[str], dict[str, bool]
             and p2.get("corrupt_rejected") is True
             and p2.get("search_success") is True
             and p2.get("viewer_opened") is True
+            and p2.get("viewer_pdf_loaded", True) is True
+            and p2.get("viewer_escape_closed", True) is True
             and p2.get("cancel_deletion_kept_paper") is True
             and p2.get("confirm_deletion_removed_paper") is True
             and p2.get("workspace_deleted") is True
@@ -211,6 +214,9 @@ def evaluate_acceptance(results: dict) -> tuple[bool, list[str], dict[str, bool]
         if not p2_passed:
             failures.append(f"Phase 2 Library Lifecycle criteria failed: {p2}")
         criteria["phase2_library_lifecycle"] = p2_passed
+    elif require_phase2:
+        failures.append("Phase 2 Library Lifecycle verification is required but missing from results.")
+        criteria["phase2_library_lifecycle"] = False
 
     overall_passed = len(failures) == 0
     return overall_passed, failures, criteria
@@ -222,6 +228,7 @@ def run_checks(
     output_dir: Path,
     summary_path: Path,
     headless: bool = True,
+    require_phase2: bool = False,
 ) -> tuple[dict, bool]:
     """
     Executes live browser acceptance checks and returns (results_dict, passed).
@@ -773,6 +780,10 @@ def run_checks(
             page.goto(f"{base_url}/library", wait_until="networkidle")
             time.sleep(0.5)
 
+            # Generate unique workspace name for this run to isolate data and prevent name collisions
+            run_id = uuid.uuid4().hex[:8]
+            e2e_ws_name = f"E2E Workspace {run_id}"
+
             # 10a. Create workspace
             create_btn = page.locator("button:has-text('Create Workspace'), button#new-workspace-btn")
             if create_btn.count() == 0:
@@ -785,11 +796,11 @@ def run_checks(
             if create_btn.count() > 0:
                 create_btn.first.click()
                 time.sleep(0.4)
-                page.locator("#workspace-name-input").fill("Browser E2E Workspace")
+                page.locator("#workspace-name-input").fill(e2e_ws_name)
                 page.locator("button:has-text('Create Workspace')").last.click()
                 time.sleep(0.8)
 
-            ws_name_visible = page.locator("text='Browser E2E Workspace'").count() > 0
+            ws_name_visible = page.locator(f"text='{e2e_ws_name}'").count() > 0
             p2_results["workspace_created"] = ws_name_visible
 
             # 10b. Upload valid PDF
@@ -821,15 +832,31 @@ def run_checks(
             p2_results["search_success"] = paper_found
 
             # 10f. View Original PDF
+            pdf_response_status = None
+
+            def on_pdf_response(resp):
+                nonlocal pdf_response_status
+                if "/api/papers/" in resp.url and "/file" in resp.url:
+                    pdf_response_status = resp.status
+
+            page.on("response", on_pdf_response)
+
             view_btn = page.locator("button:has-text('View')").first
             view_btn.click()
-            time.sleep(0.6)
+            time.sleep(0.8)
             viewer_dialog = page.locator("[role='dialog']")
             viewer_opened = viewer_dialog.count() > 0 and viewer_dialog.is_visible()
-            p2_results["viewer_opened"] = viewer_opened
+            iframe = viewer_dialog.locator("iframe")
+            iframe_has_src = iframe.count() > 0 and "/api/papers/" in (iframe.get_attribute("src") or "")
+
             page.screenshot(path=str(screenshots_dir / "desktop_pdf_viewer_modal.png"))
             page.keyboard.press("Escape")
             time.sleep(0.4)
+            viewer_closed = not viewer_dialog.is_visible()
+
+            p2_results["viewer_opened"] = viewer_opened
+            p2_results["viewer_pdf_loaded"] = pdf_response_status == 200 or iframe_has_src
+            p2_results["viewer_escape_closed"] = viewer_closed
 
             # 10g. Cancel Paper Deletion
             del_paper_btn = page.locator("button[aria-label^='Delete valid_test_paper']").first
@@ -852,7 +879,7 @@ def run_checks(
             paper_removed = page.locator("text='valid_test_paper.pdf'").count() == 0
             p2_results["confirm_deletion_removed_paper"] = paper_removed
 
-            # 10i. Delete Workspace
+            # 10i. Delete Workspace (deleting only the workspace created in this run)
             del_ws_btn = page.locator("button[aria-label='Delete workspace']").first
             del_ws_btn.click()
             time.sleep(0.4)
@@ -863,7 +890,7 @@ def run_checks(
                 confirm_ws_btn.click()
             page.wait_for_load_state("networkidle")
             time.sleep(0.5)
-            ws_removed = page.locator("text='Browser E2E Workspace'").count() == 0
+            ws_removed = page.locator(f"text='{e2e_ws_name}'").count() == 0
             p2_results["workspace_deleted"] = ws_removed
 
             # Clean temporary test fixtures
@@ -885,7 +912,7 @@ def run_checks(
         print(f"\n[EXCEPTION] Browser runner encountered error: {exc}", file=sys.stderr)
 
     # Acceptance Evaluation
-    passed, failure_reasons, criteria_status = evaluate_acceptance(results)
+    passed, failure_reasons, criteria_status = evaluate_acceptance(results, require_phase2=require_phase2)
     results["acceptance_evaluation"] = {
         "passed": passed,
         "failure_reasons": failure_reasons,
@@ -947,6 +974,12 @@ def main():
         action="store_true",
         help="Run browser with visible UI (not headless)",
     )
+    parser.add_argument(
+        "--require-phase2",
+        action="store_true",
+        default=False,
+        help="Require Phase 2 Library Lifecycle acceptance criteria to pass",
+    )
 
     args = parser.parse_args()
 
@@ -959,6 +992,7 @@ def main():
         output_dir=output_dir,
         summary_path=summary_path,
         headless=not args.no_headless,
+        require_phase2=args.require_phase2,
     )
 
     sys.exit(0 if passed else 1)

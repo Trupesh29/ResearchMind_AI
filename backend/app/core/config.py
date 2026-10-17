@@ -33,6 +33,8 @@ class Settings(BaseSettings):
 
     # Document & Upload limits
     MAX_UPLOAD_MB: int = Field(default=25)
+    MAX_BATCH_FILES: int = Field(default=20)
+    MAX_REQUEST_BODY_BYTES: int = Field(default=250 * 1024 * 1024)  # 250 MB aggregate request limit
 
     # Embedding / Retrieval Baseline (Week 3)
     EMBEDDING_MODEL_NAME: str = Field(default="sentence-transformers/all-MiniLM-L6-v2")
