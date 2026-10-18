@@ -1,12 +1,12 @@
 {
   "meta": {
     "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "base_url": "http://127.0.0.1:5178",
+    "base_url": "http://127.0.0.1:15173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-10-17T12:25:28Z",
+    "timestamp": "2026-10-18T14:58:16Z",
     "headless": true,
-    "search_delay_ms": 750
+    "search_delay_ms": 0
   },
   "viewports": {},
   "routes": {
@@ -122,11 +122,11 @@
   "unexpected_failed_requests": [],
   "simulated_offline_requests": [
     {
-      "url": "http://127.0.0.1:5178/api/ready",
+      "url": "http://127.0.0.1:15173/api/ready",
       "failure": "net::ERR_FAILED"
     },
     {
-      "url": "http://127.0.0.1:5178/api/config/public",
+      "url": "http://127.0.0.1:15173/api/config/public",
       "failure": "net::ERR_FAILED"
     }
   ],
