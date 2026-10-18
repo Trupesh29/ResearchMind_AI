@@ -648,10 +648,96 @@ def test_reprocess_conflict_and_generation_consistency(p3_env: dict):
     worker.run_once()  # validating
     worker.run_once()  # extracting
 
-    # Verify pages count is still 1 (old pages were replaced, not duplicated or mixed!)
+    # Verify pages count in API is still 1 (latest published generation served, not mixed!)
     pages_res2 = client.get(f"/api/papers/{paper_id}/pages")
     assert pages_res2.status_code == 200
     assert len(pages_res2.json()["items"]) == 1
+
+    # Verify database retains pages from BOTH generations with distinct run_ids
+    db: Session = p3_env["factory"]()
+    all_pages = db.query(Page).filter(Page.paper_id == paper_id).all()
+    assert len(all_pages) == 2
+    distinct_runs = {p.run_id for p in all_pages}
+    assert len(distinct_runs) == 2
+    paper = db.query(Paper).filter(Paper.id == paper_id).first()
+    assert paper.published_run_id in distinct_runs
+    db.close()
+
+
+def test_worker_multirun_migration_preservation(p3_env: dict):
+    """Verifies that an actual worker-produced reprocess database upgrades/downgrades cleanly without losing generations."""
+    client: TestClient = p3_env["client"]
+    test_dir = p3_env["data_dir"]
+    pdf_file = test_dir / "worker_multirun.pdf"
+
+    _create_synthetic_pdf(
+        pdf_file,
+        [
+            {
+                "width": 612,
+                "height": 792,
+                "blocks": [{"rect": [72, 72, 400, 120], "text": "Worker Gen 1 Text"}],
+            }
+        ],
+    )
+
+    with open(pdf_file, "rb") as f:
+        res = client.post(
+            "/api/papers",
+            data={"workspace_id": p3_env["workspace_id"]},
+            files={"files": ("worker_multirun.pdf", f, "application/pdf")},
+        )
+    assert res.status_code == 202
+    paper_id = res.json()["papers"][0]["id"]
+
+    worker = WorkerEngine(worker_id="test-worker-mr", lease_timeout_seconds=30)
+    worker.run_once()  # validating
+    worker.run_once()  # extracting gen 1
+
+    # Reprocess to create gen 2
+    rep_res = client.post(f"/api/papers/{paper_id}/reprocess")
+    assert rep_res.status_code == 202
+    worker.run_once()  # validating
+    worker.run_once()  # extracting gen 2
+
+    # Database has 2 worker-produced page records
+    db: Session = p3_env["factory"]()
+    pages_before = db.query(Page).filter(Page.paper_id == paper_id).order_by(Page.created_at.asc()).all()
+    assert len(pages_before) == 2
+    page_ids_before = [p.id for p in pages_before]
+    page_runs_before = [p.run_id for p in pages_before]
+    assert len(set(page_runs_before)) == 2
+    db.close()
+
+    # Perform migration test on this live worker DB:
+    cfg = Config(str(Path(__file__).resolve().parent.parent.parent / "backend" / "alembic.ini"))
+    cfg.set_main_option(
+        "script_location",
+        str(Path(__file__).resolve().parent.parent.parent / "backend" / "migrations"),
+    )
+    cfg.set_main_option("sqlalchemy.url", p3_env["db_url"])
+
+    # Downgrade to 0004
+    command.downgrade(cfg, "0004_add_generation_and_fencing_controls")
+    # Upgrade to head (0006)
+    command.upgrade(cfg, "head")
+
+    # Verify both worker generations survive with identical IDs and run_ids
+    db = p3_env["factory"]()
+    pages_after = db.query(Page).filter(Page.paper_id == paper_id).order_by(Page.created_at.asc()).all()
+    assert len(pages_after) == 2
+    assert [p.id for p in pages_after] == page_ids_before
+    assert [p.run_id for p in pages_after] == page_runs_before
+
+    paper_after = db.query(Paper).filter(Paper.id == paper_id).first()
+    assert paper_after.published_run_id == page_runs_before[1]
+    db.close()
+
+    # API still serves the latest published generation
+    pages_res = client.get(f"/api/papers/{paper_id}/pages")
+    assert pages_res.status_code == 200
+    assert len(pages_res.json()["items"]) == 1
+    assert pages_res.json()["run_id"] == page_runs_before[1]
 
 
 # ==============================================================================

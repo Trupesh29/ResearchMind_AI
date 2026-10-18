@@ -908,4 +908,386 @@ def test_historical_generation_attribution_matrix(temp_test_dir):
         repaired_pg1 = session.execute(text("SELECT run_id FROM pages WHERE id = 'pg1'")).fetchone()
         assert repaired_pg1[0] == "run-A1"  # Pages repaired to run A1!
 
+    # 6. Advance to head (0006) and verify stability
+    command.upgrade(cfg, "head")
+    with SessionCls() as session:
+        head_rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        assert head_rev == "0006_preserve_multirun_page_generations"
+        final_p1 = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"), {"id": p1_id}
+        ).fetchone()
+        assert final_p1[0] == "run-B1"
+        assert final_p1[1] == "run-A1"
+        final_pg1 = session.execute(text("SELECT run_id FROM pages WHERE id = 'pg1'")).fetchone()
+        assert final_pg1[0] == "run-A1"
+
+    engine.dispose()
+
+
+def test_multirun_page_generation_preservation_matrix(temp_test_dir):
+    """
+    Exhaustively verifies H1 multi-generation page preservation:
+    1. Overlapping multi-generation pages:
+       - Run A (succeeded) has page 1 with raw_text='Run A page 1'
+       - Run B (succeeded) has page 1 with raw_text='Run B page 1'
+       - Both rows survive unchanged with their respective run_ids and raw_texts.
+       - published_run_id = 'run-B'. get_paper_pages() serves Run B page 1.
+    2. Non-overlapping historical pages:
+       - Run A has page 1, Run B has page 2.
+       - Neither is relabeled. Run A retains page 1, Run B retains page 2.
+       - get_paper_pages() serves Run B page 2.
+    3. Active replacement run (successful A + running C):
+       - current_run_id = 'run-C', published_run_id = 'run-A'.
+       - get_paper_pages() serves Run A page 1 with is_stale=True.
+    4. Failed replacement run (successful A + failed F):
+       - current_run_id = 'run-F', published_run_id = 'run-A'.
+       - get_paper_pages() serves Run A page 1 with is_stale=True.
+    5. Ambiguous history (no successful extracting jobs):
+       - Pages preserved under dedicated legacy ID without false claim by failed job.
+    6. Unique constraint enforcement:
+       - Attempting to insert duplicate (paper_id, run_id, page_number) raises IntegrityError.
+    7. Forward compatibility:
+       - Upgrading from 0004 directly to head (0006) succeeds cleanly.
+       - Upgrading from already-applied 0005 to head (0006) succeeds cleanly.
+    """
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.app.services.processing_service import get_paper_pages
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    db_file = temp_test_dir / "multirun_preservation.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+
+    cfg = Config(str(PROJECT_ROOT / "backend" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "backend" / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+
+    # 1. Start at 0004 to create the exact multi-generation state
+    command.upgrade(cfg, "0004_add_generation_and_fencing_controls")
+
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    SessionCls = sessionmaker(bind=engine)
+
+    user_id = "user_multirun"
+    ws_id = "ws_multirun"
+    p_overlap_id = "p_overlap"
+    p_nonov_id = "p_nonov"
+    p_active_id = "p_active"
+    p_failed_id = "p_failed"
+    p_ambig_id = "p_ambig"
+
+    t1 = "2026-10-18T10:00:00+00:00"
+    t2 = "2026-10-18T11:00:00+00:00"
+    t3 = "2026-10-18T12:00:00+00:00"
+
+    with SessionCls() as session:
+        session.execute(
+            text("INSERT INTO users (id, email, password_hash, created_at) VALUES (:u, 'mr@test.org', 'h', :now)"),
+            {"u": user_id, "now": t1},
+        )
+        session.execute(
+            text("INSERT INTO workspaces (id, user_id, name, created_at) VALUES (:w, :u, 'MR WS', :now)"),
+            {"w": ws_id, "u": user_id, "now": t1},
+        )
+
+        # Paper 1: Overlapping multi-generation (Run A page 1, Run B page 1)
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, "
+                "current_run_id, published_run_id, created_at, updated_at) "
+                "VALUES (:id, :w, 'overlap.pdf', 'overlap.pdf', 'sha_ov', 100, 'processing', 'run-B', 'run-B', :t1, :t2)"
+            ),
+            {"id": p_overlap_id, "w": ws_id, "t1": t1, "t2": t2},
+        )
+        for r_id, r_time, p_text in [("run-A", t1, "Run A page 1 text"), ("run-B", t2, "Run B page 1 text")]:
+            session.execute(
+                text(
+                    "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                    "VALUES (:jid, :pid, :rid, 'extracting', 'succeeded', 1, :tm)"
+                ),
+                {"jid": f"job-{r_id}", "pid": p_overlap_id, "rid": r_id, "tm": r_time},
+            )
+            session.execute(
+                text(
+                    "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                    "VALUES (:pgid, :pid, :rid, 1, 20, 'ok', '[]', :txt, :tm)"
+                ),
+                {"pgid": f"page-{r_id}", "pid": p_overlap_id, "rid": r_id, "txt": p_text, "tm": r_time},
+            )
+
+        # Paper 2: Non-overlapping multi-generation (Run A page 1, Run B page 2)
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, "
+                "current_run_id, published_run_id, created_at, updated_at) "
+                "VALUES (:id, :w, 'nonov.pdf', 'nonov.pdf', 'sha_no', 100, 'processing', 'run-B-no', 'run-B-no', :t1, :t2)"
+            ),
+            {"id": p_nonov_id, "w": ws_id, "t1": t1, "t2": t2},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('job-A-no', :pid, 'run-A-no', 'extracting', 'succeeded', 1, :t1)"
+            ),
+            {"pid": p_nonov_id, "t1": t1},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('job-B-no', :pid, 'run-B-no', 'extracting', 'succeeded', 1, :t2)"
+            ),
+            {"pid": p_nonov_id, "t2": t2},
+        )
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                "VALUES ('page-A-no', :pid, 'run-A-no', 1, 15, 'ok', '[]', 'Non-ov page 1', :t1)"
+            ),
+            {"pid": p_nonov_id, "t1": t1},
+        )
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                "VALUES ('page-B-no', :pid, 'run-B-no', 2, 15, 'ok', '[]', 'Non-ov page 2', :t2)"
+            ),
+            {"pid": p_nonov_id, "t2": t2},
+        )
+
+        # Paper 3: Successful A + Active replacement run C (running)
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, "
+                "current_run_id, published_run_id, created_at, updated_at) "
+                "VALUES (:id, :w, 'act.pdf', 'act.pdf', 'sha_act', 100, 'processing', 'run-C-act', 'run-A-act', :t1, :t3)"
+            ),
+            {"id": p_active_id, "w": ws_id, "t1": t1, "t3": t3},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('job-A-act', :pid, 'run-A-act', 'extracting', 'succeeded', 1, :t1)"
+            ),
+            {"pid": p_active_id, "t1": t1},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('job-C-act', :pid, 'run-C-act', 'validating', 'running', 1, :t3)"
+            ),
+            {"pid": p_active_id, "t3": t3},
+        )
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                "VALUES ('page-A-act', :pid, 'run-A-act', 1, 15, 'ok', '[]', 'Active doc page 1', :t1)"
+            ),
+            {"pid": p_active_id, "t1": t1},
+        )
+
+        # Paper 4: Successful A + Failed replacement run F
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, "
+                "current_run_id, published_run_id, created_at, updated_at) "
+                "VALUES (:id, :w, 'fail.pdf', 'fail.pdf', 'sha_fail', 100, 'failed', 'run-F-fail', 'run-A-fail', :t1, :t3)"
+            ),
+            {"id": p_failed_id, "w": ws_id, "t1": t1, "t3": t3},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('job-A-fail', :pid, 'run-A-fail', 'extracting', 'succeeded', 1, :t1)"
+            ),
+            {"pid": p_failed_id, "t1": t1},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('job-F-fail', :pid, 'run-F-fail', 'extracting', 'failed', 1, :t3)"
+            ),
+            {"pid": p_failed_id, "t3": t3},
+        )
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                "VALUES ('page-A-fail', :pid, 'run-A-fail', 1, 15, 'ok', '[]', 'Failed doc page 1', :t1)"
+            ),
+            {"pid": p_failed_id, "t1": t1},
+        )
+
+        # Paper 5: Ambiguous (no successful extracting jobs, pages exist)
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, "
+                "current_run_id, published_run_id, created_at, updated_at) "
+                "VALUES (:id, :w, 'ambig.pdf', 'ambig.pdf', 'sha_amb', 100, 'failed', 'run-bad', 'run-bad', :t1, :t1)"
+            ),
+            {"id": p_ambig_id, "w": ws_id, "t1": t1},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('job-amb-bad', :pid, 'run-bad', 'extracting', 'failed', 1, :t1)"
+            ),
+            {"pid": p_ambig_id, "t1": t1},
+        )
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                "VALUES ('page-amb', :pid, 'run-bad', 1, 15, 'ok', '[]', 'Ambiguous page 1', :t1)"
+            ),
+            {"pid": p_ambig_id, "t1": t1},
+        )
+
+        session.commit()
+
+    engine.dispose()
+
+    # 2. Upgrade to head (0004 -> 0005 -> 0006)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    SessionCls = sessionmaker(bind=engine)
+
+    with SessionCls() as session:
+        # Check revision advanced to 0006
+        rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        assert rev == "0006_preserve_multirun_page_generations"
+
+        # Verification 1: Overlapping multi-generation pages survive!
+        ov_pages = session.execute(
+            text("SELECT id, run_id, page_number, raw_text FROM pages WHERE paper_id = :pid ORDER BY id"),
+            {"pid": p_overlap_id},
+        ).fetchall()
+        assert len(ov_pages) == 2
+        assert ov_pages[0] == ("page-run-A", "run-A", 1, "Run A page 1 text")
+        assert ov_pages[1] == ("page-run-B", "run-B", 1, "Run B page 1 text")
+
+        ov_paper = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :pid"),
+            {"pid": p_overlap_id},
+        ).fetchone()
+        assert ov_paper[0] == "run-B"
+        assert ov_paper[1] == "run-B"
+
+        ov_view = get_paper_pages(session, user_id, p_overlap_id)
+        assert ov_view.run_id == "run-B"
+        assert ov_view.is_stale is False
+        assert len(ov_view.items) == 1
+        assert ov_view.items[0].page_number == 1
+
+        # Verification 2: Non-overlapping historical pages survive without silent relabeling!
+        no_pages = session.execute(
+            text("SELECT id, run_id, page_number, raw_text FROM pages WHERE paper_id = :pid ORDER BY id"),
+            {"pid": p_nonov_id},
+        ).fetchall()
+        assert len(no_pages) == 2
+        assert no_pages[0] == ("page-A-no", "run-A-no", 1, "Non-ov page 1")
+        assert no_pages[1] == ("page-B-no", "run-B-no", 2, "Non-ov page 2")
+
+        no_view = get_paper_pages(session, user_id, p_nonov_id)
+        assert no_view.run_id == "run-B-no"
+        assert len(no_view.items) == 1
+        assert no_view.items[0].page_number == 2
+
+        # Verification 3: Active replacement run
+        act_paper = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :pid"),
+            {"pid": p_active_id},
+        ).fetchone()
+        assert act_paper[0] == "run-C-act"
+        assert act_paper[1] == "run-A-act"
+        act_view = get_paper_pages(session, user_id, p_active_id)
+        assert act_view.is_stale is True
+        assert act_view.run_id == "run-A-act"
+
+        # Verification 4: Failed replacement run
+        fail_paper = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :pid"),
+            {"pid": p_failed_id},
+        ).fetchone()
+        assert fail_paper[0] == "run-F-fail"
+        assert fail_paper[1] == "run-A-fail"
+        fail_view = get_paper_pages(session, user_id, p_failed_id)
+        assert fail_view.is_stale is True
+        assert fail_view.run_id == "run-A-fail"
+
+        # Verification 5: Ambiguous history preserved under legacy run ID
+        amb_paper = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :pid"),
+            {"pid": p_ambig_id},
+        ).fetchone()
+        assert amb_paper[0] == "run-bad"
+        assert amb_paper[1].startswith("legacy-")
+        amb_pg = session.execute(text("SELECT run_id FROM pages WHERE id = 'page-amb'")).scalar()
+        assert amb_pg == amb_paper[1]
+
+        # Verification 6: Unique constraint (paper_id, run_id, page_number) is actively enforced
+        with pytest.raises(IntegrityError):
+            session.execute(
+                text(
+                    "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                    "VALUES ('dup-pg', :pid, 'run-B', 1, 10, 'ok', '[]', 'Dup', :t2)"
+                ),
+                {"pid": p_overlap_id, "t2": t2},
+            )
+            session.commit()
+        session.rollback()
+
+    # 3. Test downgrade to 0005, then upgrade to 0006 (simulates database already applied 0005)
+    command.downgrade(cfg, "0005_repair_historical_generation_attribution")
+    with engine.connect() as c:
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
+            "0005_repair_historical_generation_attribution"
+        )
+    command.upgrade(cfg, "head")
+    with engine.connect() as c:
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
+            "0006_preserve_multirun_page_generations"
+        )
+
+    engine.dispose()
+
+
+def test_clean_install_and_already_0005_upgrade(temp_test_dir):
+    """Verifies clean install directly to head and idempotence of 0006 on already-0005 databases."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    db_file = temp_test_dir / "clean_install.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+
+    cfg = Config(str(PROJECT_ROOT / "backend" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "backend" / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+
+    # 1. Clean install to head
+    command.upgrade(cfg, "head")
+    engine = create_engine(db_url)
+    with engine.connect() as c:
+        rev = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        assert rev == "0006_preserve_multirun_page_generations"
+
+    # 2. Downgrade to 0005 and upgrade back to head
+    command.downgrade(cfg, "0005_repair_historical_generation_attribution")
+    with engine.connect() as c:
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
+            "0005_repair_historical_generation_attribution"
+        )
+    command.upgrade(cfg, "head")
+    with engine.connect() as c:
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
+            "0006_preserve_multirun_page_generations"
+        )
+
     engine.dispose()

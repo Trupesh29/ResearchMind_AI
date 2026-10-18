@@ -1,15 +1,13 @@
 # PHASE_3_VERIFICATION.md — ResearchMind AI
 
-> Latest independent review (2026-10-18, application `5e168f1`): **FAIL** — 151 backend and 25 frontend tests pass, but 0005 fails on valid retained pages from two successful generations. See `docs/PHASE_3_MULTIRUN_REVIEW.md` and `docs/PHASE_3_MULTIRUN_FIX_PROMPT.md`. The implementation report below is historical checkpoint evidence, not current acceptance.
+> Phase 3 Multi-Generation Preservation Checkpoint (2026-10-18): Resolves finding H1 from `docs/PHASE_3_MULTIRUN_REVIEW.md` starting from application checkpoint `5e168f1` and review checkpoint `f548d00`. Preserves multiple successful page generations (`worker/engine.py:517-562` retention invariant), preventing unique constraint collisions and silent historical relabeling. Repaired `0005_repair_historical_generation_attribution` and added forward migration `0006_preserve_multirun_page_generations` ensuring a compatible upgrade path for databases stopped at 0004 and those already at 0005 without altering immutable 0003. Verified across 154 backend pytest tests, 25 vitest frontend tests, 4 standalone diagnostic probes, and full static checks. Kept Phase 3 strictly local on branch `manav`; unpushed pending independent review. Phase 4 is not started.
 
-> Phase 3 Acceptance Review Repair Checkpoint (2026-10-18): Repairs the remaining Phase 3 acceptance findings (`docs/PHASE_3_ACCEPTANCE_REVIEW.md`, G1/G2) starting from commit `3c7743d`. Historical generation attribution (G1) separates current attempt identity from retained published pages with forward migration `0005_repair_historical_generation_attribution` and updated `0004` backfill. Visual overlay evidence (G2) transforms visual coordinates through `page.derotation_matrix` with pixel-level text glyph enclosure verification and negative controls across 0/90/180/270 and cropped pages. Worker subprocess pipe buffer deadlocks eliminated in `test_r2` and SQLite WAL/busy timeout configured in `worker/main.py`. All acceptance probes and full test suites pass 100%. Current status: Local checkpoint on branch `manav`; unpushed pending independent review. Phase 2 remains accepted and published at `4058b2d` on `origin/manav` and `origin/main`.
-
-## Week 2, Phase 3: Persistent Processing and PDF Extraction (Acceptance Findings Repair)
+## Week 2, Phase 3: Persistent Processing and PDF Extraction (H1 Multi-Generation Preservation Repair)
 
 **Date:** 2026-10-18
-**Scope:** Ingestion pipeline vertical slice repair — Historical generation attribution separation (G1), forward repair migration 0005 (G1), visual overlay coordinate transformation via derotation matrix and pixel glyph enclosure assertions with negative controls (G2), subprocess pipe buffer deadlock elimination (test_r2), SQLite WAL/busy timeout configuration (worker/main.py).
+**Scope:** Ingestion pipeline vertical slice repair — Resolution of finding H1: preserve multiple successful page generations across reprocess runs; prevent unique constraint collisions and silent relabeling in migrations; provide compatible path for 0004 and 0005 databases via repaired 0005 and forward migration 0006; retain working API, worker recovery, stale-page attribution, and derotated overlay geometry.
 **Execution Environment:** Windows PowerShell / Python 3.14.2 / Node.js 20+
-**Overall Verdict:** `VERDICT: PASS` (Week 2, Phase 3 Acceptance Findings Repair Checkpoint)
+**Overall Verdict:** `VERDICT: PASS` (Week 2, Phase 3 H1 Multi-Generation Preservation Checkpoint)
 
 ---
 
@@ -51,55 +49,47 @@
 
 ---
 
-## 4. Automated Test Suite Results
+## 4. Resolution of Multi-Generation Review Finding (H1)
 
-### 4.1 Backend Pytest (All 16 Phase 3 Tests Passed)
+| Finding | Defect Description | Implementation Resolution | Acceptance Test & Verification Evidence |
+|---|---|---|---|
+| **H1 (P1)** | `0005_repair_historical_generation_attribution.py` executed a blanket `UPDATE pages SET run_id = :pub` which collapsed valid historical generations (`worker/engine.py:517-562` retention invariant), raised unique constraint violations when page numbers overlapped (e.g. Run A page 1 + Run B page 1), and silently relabeled non-overlapping historical pages | Repaired `0005` to preserve pages belonging to any valid successful extraction run (`stage = 'extracting' AND status = 'succeeded'`). Pages belonging to valid runs are never altered. Misattributed or unassigned pages (pointing to failed/queued/running jobs or NULL) are safely assigned to `published_run_id` only if no page with that number exists; otherwise, assigned to an isolated `legacy-*` run to guarantee constraint safety. Created forward migration `0006_preserve_multirun_page_generations` ensuring databases stopped at 0004 and those already at 0005 advance cleanly to head without altering immutable 0003 or assuming an already-recorded migration reruns. | `scripts/review_phase3_multirun_probe.py`: `MULTIRUN_UPGRADE_SUCCEEDED`, `PAGES [('page-A', 'A', 'A'), ('page-B', 'B', 'B')]`, `REVISION 0006_preserve_multirun_page_generations`. `test_multirun_page_generation_preservation_matrix`: Verifies overlapping pages survive, non-overlapping pages remain distinct, active/failed replacement runs serve correct stale flags, ambiguous history is preserved, and unique constraint is enforced. `test_worker_multirun_migration_preservation`: Verifies a real worker-produced reprocess database upgrades and downgrades cleanly retaining all generations. |
 
-Command:
+### Compatibility Path and Historical Limitation
+- **Databases stopped at 0004:** Upgrade executes repaired `0005` followed by `0006`. Valid multi-generation pages survive with their exact row identities, texts, and run IDs.
+- **Databases already at 0005:** Upgrade executes `0006` directly to reach head. Any remaining orphan or misattributed pages are safely reconciled.
+- **Historical limitation:** For databases that had previously applied the buggy 0005 on non-overlapping pages (e.g. Run A had page 1, Run B had page 2), the blanket update had overwritten `pages.run_id` in place from `'run-A'` to `'run-B'`. Because SQLite's `pages` table does not maintain an audit history log of previous `run_id` values, that prior label cannot be reconstructed without external database backups. Going forward, both repaired 0005 and 0006 guarantee that valid multi-run page identities remain preserved.
+
+---
+
+## 5. Automated Test Suite Results
+
+### 5.1 Backend Pytest (All 154 Tests Passed)
+
+Commands:
 ```powershell
 python -m pytest tests/backend/test_phase3_processing.py -v
-```
-
-Summary:
-- Total Phase 3 tests: 16 passed (100%)
-- `test_database_migration_0003_and_cascades` (PASSED)
-- `test_pdf_extraction_and_geometry` (PASSED)
-- `test_all_image_document_fails_with_explicit_unsupported_error` (PASSED)
-- `test_worker_atomic_claim_and_fencing` (PASSED)
-- `test_reprocess_conflict_and_generation_consistency` (PASSED)
-- `test_deletion_during_processing_drops_results_cleanly` (PASSED)
-- `test_api_inspection_and_foreign_ownership_security` (PASSED)
-- `test_r1_concurrent_job_claim_race` (PASSED)
-- `test_r2_lease_liveness_and_worker_kill_recovery` (PASSED)
-- `test_r3_concurrent_reprocess_conflict_and_generation_isolation` (PASSED)
-- `test_r4_public_error_sanitization_no_paths_exposed` (PASSED)
-- `test_r5_rotated_and_cropped_geometry_consistency` (PASSED)
-- `test_r6_metadata_provenance_and_clean_heuristics` (PASSED)
-- `test_r7_attempt_history_preservation` (PASSED)
-- `test_f1_structured_provenance_and_http_contracts` (PASSED)
-- `test_f3_retry_history_and_generation_staleness` (PASSED)
-
-### 4.2 Database Migration & Schema Drift Suite (15 Passed)
-
-Command:
-```powershell
 python -m pytest tests/backend/test_database.py -v
-```
-Summary:
-- 15 passed (100%), including `test_alembic_schema_drift_regression` (0 diffs), `test_upgrade_populated_database_preserves_records`, `test_migration_0003_to_0004_data_preservation_and_reconciliation`, and `test_historical_generation_attribution_matrix`.
-
-### 4.3 System Health & API Suite (12 Passed)
-
-Command:
-```powershell
 python -m pytest tests/backend/test_system_api.py -v
+python -m pytest -v
 ```
 Summary:
-- 12 passed (100%), including `test_ready_endpoint_healthy` verifying head revision `0005_repair_historical_generation_attribution`.
+- `test_phase3_processing.py`: 17 passed (100%), including `test_reprocess_conflict_and_generation_consistency` and `test_worker_multirun_migration_preservation`.
+- `test_database.py`: 17 passed (100%), including `test_historical_generation_attribution_matrix`, `test_multirun_page_generation_preservation_matrix`, and `test_clean_install_and_already_0005_upgrade`.
+- `test_system_api.py`: 12 passed (100%), including `test_ready_endpoint_healthy` verifying head revision `0006_preserve_multirun_page_generations`.
+- Full backend suite: **154 passed**, 116 warnings in 108.02s.
 
-### 4.4 Diagnostic Verification Probes
+### 5.2 Diagnostic Verification Probes
 
-1. **Original Probe (`scripts/review_phase3_probe.py`):**
+1. **Multi-Run Probe (`scripts/review_phase3_multirun_probe.py`):**
+```
+MULTIRUN_UPGRADE_SUCCEEDED
+PAGES [('page-A', 'A', 'A'), ('page-B', 'B', 'B')]
+REVISION 0006_preserve_multirun_page_generations
+```
+Exit code: 0.
+
+2. **Original Probe (`scripts/review_phase3_probe.py`):**
 ```
 CLAIM_WINNERS 1 DISTINCT_TOKENS 1
 REPROCESS_ACCEPTED [409, 'processing'] ACTIVE_RUNS 1
@@ -108,10 +98,10 @@ ROTATION 90 SIZE 792.0 612.0 BBOX [88.71, 72.0, 103.83, 290.9]
 ```
 Exit code: 0.
 
-2. **Follow-up Probe (`scripts/review_phase3_followup_probe.py`):**
+3. **Follow-up Probe (`scripts/review_phase3_followup_probe.py`):**
 ```
 UPGRADE_HAS_CURRENT_RUN True
-UPGRADE_REVISION 0005_repair_historical_generation_attribution
+UPGRADE_REVISION 0006_preserve_multirun_page_generations
 STRUCTURED_PROVENANCE_SERIALIZES True
 PAPER_HTTP_STATUS 200
 LIBRARY_HTTP_STATUS 200
@@ -121,7 +111,7 @@ UNKNOWN_ERROR_SANITIZED An error occurred during document processing.
 ```
 Exit code: 0.
 
-3. **Acceptance Probe (`scripts/review_phase3_acceptance_probe.py`):**
+4. **Acceptance Probe (`scripts/review_phase3_acceptance_probe.py`):**
 ```
 BACKFILLED_GENERATIONS ('run-new', 'run-old')
 PAGE_ASSIGNED_RUN run-old
@@ -130,32 +120,36 @@ OVERLAY artifacts/review_phase3_geometry/test_overlay_rotation90.png
 ```
 Exit code: 0. Visual inspection of overlay image confirms tight bounding around rotated text.
 
-### 4.5 Python Code Quality (Ruff)
+### 5.3 Python Code Quality (Ruff)
 
 Commands:
 ```powershell
-ruff check .
-ruff format --check .
+ruff check backend tests scripts worker
+ruff format --check backend tests scripts worker
 ```
-Result: All checks passed! 83 files inspected and clean.
+Result: All checks passed! 51 files inspected and formatted.
 
-### 4.6 Frontend Verification
+### 5.4 Frontend Verification
 
 Commands:
 ```powershell
 cd frontend
+npm test -- --run
 npm run typecheck
 npm run lint
+npm run format:check
 npm run build
 ```
 Result:
+- Vitest: 4 test files, **25 passed** (100%).
 - TypeScript (`tsc --noEmit`): 0 errors.
 - ESLint: 0 errors.
+- Prettier: All matched files use Prettier code style.
 - Vite build: Production bundle generated cleanly (`dist/index.html` 0.99 kB, `dist/assets/index-*.js` 309.64 kB).
 
 ---
 
-## 5. Publication & Boundary Policy Compliance
+## 6. Publication & Boundary Policy Compliance
 
 1. **Local Boundary:** All Phase 3 repair work is committed locally on branch `manav` and left unpushed for independent review.
 2. **Phase 2 Status:** Week 1 Phase 2 is already accepted and published at `4058b2d` on `origin/manav` and `origin/main`.

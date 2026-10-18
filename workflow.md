@@ -1,6 +1,6 @@
 # ResearchMind AI agent workflow
 
-Latest independent review of `5e168f1` (2026-10-18): Phase 3 remains local. Existing suites pass, but H1 blocks populated upgrades with multiple successful retained page generations. See `docs/PHASE_3_MULTIRUN_REVIEW.md` and `docs/PHASE_3_MULTIRUN_FIX_PROMPT.md`. This finding supersedes earlier acceptance status below. VERDICT: FAIL -- migration preservation repair required.
+Latest repair checkpoint (2026-10-18): Finding H1 resolved. Phase 3 remains local on branch manav. Repaired 0005 to preserve multi-generation pages and added forward migration 0006 for 0005 databases. 154 backend tests, 25 frontend tests, and all 4 probes pass. VERDICT: PASS -- multi-generation preservation repaired.
 
 ## Purpose
 
@@ -8,7 +8,7 @@ Guide implementation and review with less redundant agent context, while preserv
 
 ## 1. Establish scope
 
-Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 2 Phase 3 Acceptance Findings repair (from 3c7743d): historical generation attribution (G1) with separated current attempt vs published pages and forward migration 0005, and visual overlay evidence (G2) with derotation matrix transformation, sub-pixel glyph enclosure assertions, and negative controls. Keep Phase 3 local for independent review; do not push or advance to Phase 4.
+Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 2 Phase 3 Multi-Generation Preservation repair (H1): preserve multiple successful page generations, prevent unique constraint collisions and silent relabeling in migrations, provide compatible upgrade path for 0004 and 0005 via repaired 0005 and forward migration 0006. Keep Phase 3 local for independent review; do not push or advance to Phase 4.
 
 Gravitas policy equivalent:
 
