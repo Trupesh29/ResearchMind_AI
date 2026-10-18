@@ -1,0 +1,25 @@
+// Reproduce by copying to frontend/src/test/phase4-review-probe.test.tsx and running Vitest on that file.
+import { afterEach, expect, it, vi } from "vitest";
+import { act, cleanup, render } from "@testing-library/react";
+import { QualityCenterModal } from "../components/library/QualityCenterModal";
+import { api } from "../api/client";
+import type { PaperItem } from "../api/types";
+
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+
+it("reschedules polling after one transient error", async () => {
+  vi.useFakeTimers();
+  const status = vi.spyOn(api, "getPaperStatus")
+    .mockResolvedValueOnce({ status: "uploaded", substate: "queued", stages: [] } as never)
+    .mockRejectedValueOnce(new Error("temporary failure"))
+    .mockResolvedValue({ status: "processing", substate: "awaiting_indexing", stages: [] } as never);
+  vi.spyOn(api, "getPaperChunks").mockResolvedValue({ items: [], total: 0 } as never);
+  vi.spyOn(api, "getPaperSections").mockResolvedValue({ items: [] } as never);
+  vi.spyOn(api, "getPaperPages").mockResolvedValue({ items: [] } as never);
+  const paper = { id: "review", original_filename: "review.pdf", status: "uploaded" } as PaperItem;
+  render(<QualityCenterModal paper={paper} isOpen onClose={() => {}} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+  expect(status.mock.calls.length).toBeGreaterThanOrEqual(3);
+});

@@ -1,5 +1,7 @@
 # ResearchMind AI agent workflow
 
+Latest independent Phase 4 review (`fc38b35`, 2026-10-19): FAIL -- source spans are lost at persistence, polling stops after transient failure, action responses lack identity guards, and rejected tokenizer state remains cached. See `docs/PHASE_4_FOLLOWUP_REVIEW.md` and `docs/PHASE_4_FOLLOWUP_PROMPT.md`. Keep Phase 4 local.
+
 Current independent Phase 4 review (`1cf85bf`): FAIL -- P4-01 through P4-07 and fresh acceptance gaps remain. See `docs/PHASE_4_REVIEW.md` and `docs/PHASE_4_FIX_PROMPT.md`. Phase 3 is verified published at 6de34b3 on both origin branches; keep Phase 4 local. Earlier PASS statements below are historical.
 
 Phase 4 Implementation Checkpoint (2026-10-18): Week 2 Phase 4 (document sectioning, token-safe chunking, and Quality Center) implementation is complete. All 166 backend tests, 30 frontend tests, static analysis (ruff, eslint, tsc, vite build), and full live Chrome browser acceptance suite (8/8 criteria) have passed. Phase 4 remains local on branch `manav` for independent review (DO NOT PUSH).

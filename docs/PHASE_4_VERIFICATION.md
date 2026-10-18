@@ -1,5 +1,7 @@
 # PHASE_4_VERIFICATION.md — ResearchMind AI
 
+> Independent review of `fc38b35` (2026-10-19): **FAIL** — J1–J4 remain. Unequal-block source attribution and rejected-tokenizer caching are reproduced; a focused polling test fails after transient error. See `docs/PHASE_4_FOLLOWUP_REVIEW.md` and `docs/PHASE_4_FOLLOWUP_PROMPT.md`. Prior completion claims below are superseded by this review.
+
 **Week 2 Phase 4 Implementation, Review Remediation & Acceptance Report**
 **Date:** 2026-10-19
 **Application Checkpoint:** `1cf85bf` remediation
