@@ -1,10 +1,10 @@
 {
   "meta": {
     "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "base_url": "http://127.0.0.1:15174",
+    "base_url": "http://127.0.0.1:15173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-10-18T18:50:42Z",
+    "timestamp": "2026-10-18T19:28:28Z",
     "headless": true,
     "search_delay_ms": 0
   },
@@ -122,19 +122,19 @@
   "unexpected_failed_requests": [],
   "simulated_offline_requests": [
     {
-      "url": "http://127.0.0.1:15174/api/ready",
+      "url": "http://127.0.0.1:15173/api/ready",
       "failure": "net::ERR_FAILED"
     },
     {
-      "url": "http://127.0.0.1:15174/api/config/public",
+      "url": "http://127.0.0.1:15173/api/config/public",
       "failure": "net::ERR_FAILED"
     }
   ],
   "phase4_quality_center": {
-    "planned_routes_available": false,
-    "quality_route_guidance": false,
+    "planned_routes_available": true,
+    "quality_route_guidance": true,
     "quality_modal_opened": true,
-    "quality_tabs_present": false,
+    "quality_tabs_present": true,
     "quality_modal_escape_closed": true
   },
   "phase2_lifecycle": {
@@ -152,10 +152,8 @@
     "workspace_deleted": true
   },
   "acceptance_evaluation": {
-    "passed": false,
-    "failure_reasons": [
-      "Phase 4 Quality Center criteria failed: {'planned_routes_available': False, 'quality_route_guidance': False, 'quality_modal_opened': True, 'quality_tabs_present': False, 'quality_modal_escape_closed': True}"
-    ],
+    "passed": true,
+    "failure_reasons": [],
     "criteria": {
       "no_horizontal_overflow": true,
       "routes_and_navigation": true,
@@ -165,7 +163,7 @@
       "api_states_and_recovery": true,
       "clean_operation": true,
       "phase2_library_lifecycle": true,
-      "phase4_quality_center": false
+      "phase4_quality_center": true
     }
   }
 }

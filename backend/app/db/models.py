@@ -236,6 +236,7 @@ class Section(Base):
     page_end: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     block_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    block_spans_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
 
     __table_args__ = (

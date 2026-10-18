@@ -74,10 +74,16 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
   const pollTimerRef = useRef<any>(null);
   const retryCountRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const statusDataRef = useRef<PaperStatusResponse | null>(null);
+
+  useEffect(() => {
+    statusDataRef.current = statusData;
+  }, [statusData]);
 
   // Reset state when active paper changes
   useEffect(() => {
     setStatusData(null);
+    statusDataRef.current = null;
     setChunks([]);
     setTotalChunks(0);
     setSections([]);
@@ -85,7 +91,21 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     setNextChunkCursor(null);
     setErrorMsg(null);
     setReprocessMsg(null);
+    setSectionFilter("");
+    setPageFilter("");
+    setSearchFilter("");
+    setIsReprocessing(false);
+    setIsLoadingMoreChunks(false);
     retryCountRef.current = 0;
+    activeReqRef.current += 1;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
   }, [paper?.id]);
 
   // Focus trap & Escape key
@@ -141,6 +161,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
   const loadData = useCallback(
     async (isPolling: boolean = false) => {
       if (!paper) return;
+      const targetPaperId = paper.id;
+      const targetSection = sectionFilter;
+      const targetPage = pageFilter;
       const reqId = ++activeReqRef.current;
       if (!isPolling) setIsLoading(true);
       setErrorMsg(null);
@@ -155,19 +178,50 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
       try {
         const [statusRes, chunksRes, sectionsRes, pagesRes] = await Promise.all(
           [
-            api.getPaperStatus(paper.id, abortCtrl.signal),
-            api.getPaperChunks(paper.id, {
-              section: sectionFilter || undefined,
-              page: pageFilter ? parseInt(pageFilter, 10) : undefined,
+            api.getPaperStatus(targetPaperId, abortCtrl.signal),
+            api.getPaperChunks(targetPaperId, {
+              section: targetSection || undefined,
+              page: targetPage ? parseInt(targetPage, 10) : undefined,
               limit: 100,
               signal: abortCtrl.signal,
             }),
-            api.getPaperSections(paper.id, abortCtrl.signal),
-            api.getPaperPages(paper.id, abortCtrl.signal),
+            api.getPaperSections(targetPaperId, abortCtrl.signal),
+            api.getPaperPages(targetPaperId, abortCtrl.signal),
           ],
         );
 
-        if (reqId === activeReqRef.current) {
+        if (
+          reqId === activeReqRef.current &&
+          paper?.id === targetPaperId &&
+          sectionFilter === targetSection &&
+          pageFilter === targetPage
+        ) {
+          // Multi-resource generation agreement check
+          const targetPublishedRunId =
+            statusRes.published_run_id || statusRes.run_id;
+          const gens = [
+            chunksRes.run_id,
+            sectionsRes.run_id,
+            pagesRes.run_id,
+          ].filter(Boolean);
+          const hasConflict = gens.some(
+            (g) => targetPublishedRunId && g !== targetPublishedRunId,
+          );
+
+          if (hasConflict && isPolling) {
+            // Transient disagreement across resources: retry on next poll to avoid mixed snapshot
+            retryCountRef.current += 1;
+            const delay = Math.min(
+              2000 * Math.pow(1.5, retryCountRef.current),
+              8000,
+            );
+            if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+            pollTimerRef.current = setTimeout(() => {
+              loadData(true);
+            }, delay);
+            return;
+          }
+
           setStatusData(statusRes);
           setChunks(chunksRes.items);
           setTotalChunks(chunksRes.total ?? chunksRes.items.length);
@@ -178,16 +232,39 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
         }
       } catch (err: any) {
         if (abortCtrl.signal.aborted) return;
-        if (reqId === activeReqRef.current) {
+        if (reqId === activeReqRef.current && paper?.id === targetPaperId) {
           if (!isPolling) {
             setErrorMsg(err?.message || "Failed to load quality metrics.");
           } else {
-            // Transient polling failure: record retry attempt so polling backoff increases
+            // Transient polling failure: record retry attempt and explicitly schedule next poll
             retryCountRef.current += 1;
+            const currentStatus = statusDataRef.current?.status || paper.status;
+            const currentSubstate = statusDataRef.current?.substate;
+            const shouldPoll =
+              currentStatus === "uploaded" ||
+              (currentStatus === "processing" &&
+                currentSubstate !== "awaiting_indexing");
+
+            if (shouldPoll) {
+              const delay = Math.min(
+                2000 * Math.pow(1.5, retryCountRef.current),
+                8000,
+              );
+              if (pollTimerRef.current) {
+                clearTimeout(pollTimerRef.current);
+              }
+              pollTimerRef.current = setTimeout(() => {
+                loadData(true);
+              }, delay);
+            }
           }
         }
       } finally {
-        if (reqId === activeReqRef.current && !isPolling) {
+        if (
+          reqId === activeReqRef.current &&
+          !isPolling &&
+          paper?.id === targetPaperId
+        ) {
           setIsLoading(false);
         }
       }
@@ -241,33 +318,51 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
   // Load More Chunks handler for pagination beyond 100
   const handleLoadMoreChunks = async () => {
     if (!paper || !nextChunkCursor || isLoadingMoreChunks) return;
+    const targetPaperId = paper.id;
+    const targetCursor = nextChunkCursor;
+    const targetSection = sectionFilter;
+    const targetPage = pageFilter;
     setIsLoadingMoreChunks(true);
     try {
-      const res = await api.getPaperChunks(paper.id, {
-        section: sectionFilter || undefined,
-        page: pageFilter ? parseInt(pageFilter, 10) : undefined,
-        cursor: nextChunkCursor,
+      const res = await api.getPaperChunks(targetPaperId, {
+        section: targetSection || undefined,
+        page: targetPage ? parseInt(targetPage, 10) : undefined,
+        cursor: targetCursor,
         limit: 100,
       });
-      setChunks((prev) => [...prev, ...res.items]);
-      setNextChunkCursor(res.next_cursor ?? null);
-      if (res.total !== undefined) {
-        setTotalChunks(res.total);
+      // Guard against paper, filter, or cursor identity change
+      if (
+        paper?.id === targetPaperId &&
+        sectionFilter === targetSection &&
+        pageFilter === targetPage &&
+        nextChunkCursor === targetCursor
+      ) {
+        setChunks((prev) => [...prev, ...res.items]);
+        setNextChunkCursor(res.next_cursor ?? null);
+        if (res.total !== undefined) {
+          setTotalChunks(res.total);
+        }
       }
     } catch (err: any) {
-      setErrorMsg(err?.message || "Failed to load more chunks.");
+      if (paper?.id === targetPaperId) {
+        setErrorMsg(err?.message || "Failed to load more chunks.");
+      }
     } finally {
-      setIsLoadingMoreChunks(false);
+      if (paper?.id === targetPaperId) {
+        setIsLoadingMoreChunks(false);
+      }
     }
   };
 
   // Reprocess Handler
   const handleReprocess = async () => {
     if (!paper || isReprocessing) return;
+    const targetPaperId = paper.id;
     setIsReprocessing(true);
     setReprocessMsg(null);
     try {
-      const res = await api.reprocessPaper(paper.id);
+      const res = await api.reprocessPaper(targetPaperId);
+      if (paper?.id !== targetPaperId) return;
       setStatusData(res);
       setReprocessMsg({
         type: "success",
@@ -275,6 +370,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
       });
       loadData(true);
     } catch (err: any) {
+      if (paper?.id !== targetPaperId) return;
       if (err instanceof ApiClientError && err.statusCode === 409) {
         setReprocessMsg({
           type: "error",
@@ -289,7 +385,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
         });
       }
     } finally {
-      setIsReprocessing(false);
+      if (paper?.id === targetPaperId) {
+        setIsReprocessing(false);
+      }
     }
   };
 
@@ -568,8 +666,16 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
           </div>
 
           {/* Navigation Tabs */}
-          <div style={{ display: "flex", gap: "4px" }}>
+          <div
+            role="tablist"
+            aria-label="Quality Center Navigation"
+            style={{ display: "flex", gap: "4px" }}
+          >
             <button
+              role="tab"
+              id="tab-chunks"
+              aria-selected={activeTab === "chunks"}
+              aria-controls="tabpanel-chunks"
               onClick={() => setActiveTab("chunks")}
               style={{
                 padding: "6px 14px",
@@ -592,6 +698,10 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               Chunks ({totalChunks})
             </button>
             <button
+              role="tab"
+              id="tab-pipeline"
+              aria-selected={activeTab === "pipeline"}
+              aria-controls="tabpanel-pipeline"
               onClick={() => setActiveTab("pipeline")}
               style={{
                 padding: "6px 14px",
@@ -614,6 +724,10 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               Stage History
             </button>
             <button
+              role="tab"
+              id="tab-metadata"
+              aria-selected={activeTab === "metadata"}
+              aria-controls="tabpanel-metadata"
               onClick={() => setActiveTab("metadata")}
               style={{
                 padding: "6px 14px",

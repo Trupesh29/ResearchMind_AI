@@ -709,6 +709,7 @@ class WorkerEngine:
                         page_end=s.page_end,
                         text=s.text,
                         block_ids_json=json.dumps(s.block_ids),
+                        block_spans_json=json.dumps(s.block_spans) if s.block_spans else None,
                         created_at=now,
                     )
                     db.add(sec_row)
@@ -767,6 +768,13 @@ class WorkerEngine:
                                 block_ids = json.loads(sr.block_ids_json)
                             except Exception:
                                 block_ids = []
+                        block_spans: list[tuple[str, int, int, int]] = []
+                        if sr.block_spans_json:
+                            try:
+                                raw_spans = json.loads(sr.block_spans_json)
+                                block_spans = [tuple(x) for x in raw_spans]  # type: ignore[misc]
+                            except Exception:
+                                block_spans = []
                         sec_results.append(
                             sectioning_service.SectionResult(
                                 section_index=sr.section_index,
@@ -777,6 +785,7 @@ class WorkerEngine:
                                 text=sr.text or "",
                                 block_ids=block_ids,
                                 is_reference=(sr.section == "references"),
+                                block_spans=block_spans,
                             )
                         )
                     chunks_data = chunking_service.chunk_document_sections(sec_results)
@@ -838,15 +847,7 @@ class WorkerEngine:
                     .values(
                         status="succeeded",
                         finished_at=now,
-                        versions_json=json.dumps(
-                            {
-                                "tokenizer": chunking_service.TOKENIZER_MODEL_NAME,
-                                "revision": chunking_service.TOKENIZER_REVISION,
-                                "max_sequence_limit": chunking_service.MODEL_MAX_SEQUENCE_LIMIT,
-                                "target_tokens": chunking_service.TARGET_CHUNK_TOKENS,
-                                "overlap_tokens": chunking_service.TARGET_OVERLAP_TOKENS,
-                            }
-                        ),
+                        versions_json=json.dumps(chunking_service.get_tokenizer_metadata()),
                     )
                 )
                 res = db.execute(stmt)

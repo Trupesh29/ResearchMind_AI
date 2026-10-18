@@ -203,7 +203,7 @@ describe("QualityCenterModal Component", () => {
       expect(screen.getByText("1. Introduction")).toBeInTheDocument();
     });
 
-    const stageTab = screen.getByRole("button", { name: /stage history/i });
+    const stageTab = screen.getByRole("tab", { name: /stage history/i });
     fireEvent.click(stageTab);
 
     await waitFor(() => {
@@ -371,6 +371,183 @@ describe("QualityCenterModal Component", () => {
         "paper-999",
         expect.anything(),
       );
+    });
+  });
+
+  it("reschedules polling after transient error (J2)", async () => {
+    vi.useFakeTimers();
+    try {
+      const statusSpy = vi
+        .spyOn(client.api, "getPaperStatus")
+        .mockResolvedValueOnce({
+          status: "uploaded",
+          substate: "queued",
+          stages: [],
+        } as any)
+        .mockRejectedValueOnce(new Error("temporary network failure"))
+        .mockResolvedValue({
+          status: "processing",
+          substate: "awaiting_indexing",
+          stages: [],
+        } as any);
+
+      render(
+        <QualityCenterModal
+          paper={{ ...mockPaper, status: "uploaded" }}
+          isOpen={true}
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Initial load
+      await vi.advanceTimersByTimeAsync(0);
+      expect(statusSpy).toHaveBeenCalledTimes(1);
+
+      // First poll timer fires and fails
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(statusSpy).toHaveBeenCalledTimes(2);
+
+      // Second poll timer (backoff) must have been scheduled and fires
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(statusSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("guards late load more response from mutating switched paper state (J3)", async () => {
+    let resolveDelayedChunks: (val: any) => void = () => {};
+    const delayedPromise = new Promise((resolve) => {
+      resolveDelayedChunks = resolve;
+    });
+
+    vi.spyOn(client.api, "getPaperChunks").mockImplementation(
+      (_paperId: string, opts: any) => {
+        if (opts?.cursor === "cursor-1") {
+          return delayedPromise as any;
+        }
+        return Promise.resolve({
+          items: mockChunks,
+          total: 10,
+          next_cursor: "cursor-1",
+        }) as any;
+      },
+    );
+
+    const { rerender } = render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Load More Chunks/i)).toBeInTheDocument();
+    });
+
+    // Click load more for paper A
+    fireEvent.click(screen.getByText(/Load More Chunks/i));
+
+    // Switch to paper B before response arrives
+    const secondPaper: PaperItem = {
+      ...mockPaper,
+      id: "paper-B",
+      title: "Paper B Title",
+    };
+    rerender(
+      <QualityCenterModal
+        paper={secondPaper}
+        isOpen={true}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // Resolve late response for paper A
+    resolveDelayedChunks({
+      items: [
+        {
+          id: "chunk-late-A",
+          paper_id: "paper-123",
+          run_id: "run-1",
+          chunk_index: 99,
+          page_start: 1,
+          page_end: 1,
+          section: "introduction",
+          text: "Stale Chunk From Paper A",
+          token_count: 50,
+          block_ids: ["b1"],
+          is_excluded: false,
+          created_at: "2026-10-18T10:00:00Z",
+        },
+      ],
+      total: 11,
+      next_cursor: null,
+    });
+
+    // Wait a tick and verify stale chunk was NOT appended to Paper B
+    await waitFor(() => {
+      expect(
+        screen.queryByText("Stale Chunk From Paper A"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("guards late reprocess response from updating state when closed or switched (J3)", async () => {
+    let resolveReprocess: (val: any) => void = () => {};
+    const delayedReprocessPromise = new Promise((resolve) => {
+      resolveReprocess = resolve;
+    });
+    vi.spyOn(client.api, "reprocessPaper").mockReturnValue(
+      delayedReprocessPromise as any,
+    );
+
+    const { rerender } = render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Reprocess")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Reprocess"));
+
+    // Switch paper before reprocess resolves
+    rerender(
+      <QualityCenterModal
+        paper={{ ...mockPaper, id: "paper-different" }}
+        isOpen={true}
+        onClose={vi.fn()}
+      />,
+    );
+
+    resolveReprocess({
+      status: "processing",
+      stage: "validating",
+      substate: "queued",
+      progress: 0.05,
+      attempt: 1,
+      run_id: "late-run-id",
+    });
+
+    // Verify late reprocess message is not shown
+    await waitFor(() => {
+      expect(
+        screen.queryByText(
+          "Reprocessing job enqueued successfully. Pipeline restarted.",
+        ),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("renders tablist and role=tab with aria-selected attributes", async () => {
+    render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("tablist")).toBeInTheDocument();
+      const tabs = screen.getAllByRole("tab");
+      expect(tabs.length).toBe(3);
+      expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+      expect(tabs[1]).toHaveAttribute("aria-selected", "false");
+      expect(tabs[2]).toHaveAttribute("aria-selected", "false");
     });
   });
 });

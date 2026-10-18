@@ -425,9 +425,9 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
         >
           <CheckCircle2 size={18} color="var(--blue-action)" />
           <span>
-            <strong>Quality Center:</strong> Select any ingested paper below and
-            click <strong>Inspect Quality</strong> to examine sections, chunks,
-            tokens, and page boundaries.
+            <strong>Quality Center · Inspection Mode</strong>: Select any
+            ingested paper below and click <strong>Inspect Quality</strong> to
+            examine sections, chunks, tokens, and page boundaries.
           </span>
         </div>
       )}

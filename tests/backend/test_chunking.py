@@ -1,4 +1,4 @@
-"""Unit tests for Token-Safe Sentence-Aware Chunking Service (Phase 4)."""
+import pytest
 
 from backend.app.services.chunking_service import (
     MODEL_MAX_SEQUENCE_LIMIT,
@@ -9,7 +9,7 @@ from backend.app.services.chunking_service import (
     get_tokenizer,
     split_oversized_sentence,
 )
-from backend.app.services.sectioning_service import SectionResult
+from backend.app.services.sectioning_service import SectionResult, section_pages
 
 
 def test_tokenizer_metadata_and_special_tokens():
@@ -50,6 +50,7 @@ def test_chunk_section_bounds_and_no_silent_truncation():
     sentence = "Deep learning and natural language processing allow researchers to extract knowledge from scientific literature. "
     full_text = sentence * 25  # ~500 tokens
 
+    l_block = len(full_text) // 3
     sec = SectionResult(
         section_index=0,
         section="methodology",
@@ -59,6 +60,11 @@ def test_chunk_section_bounds_and_no_silent_truncation():
         text=full_text,
         block_ids=["p2_b1", "p2_b2", "p3_b0"],
         is_reference=False,
+        block_spans=[
+            ("p2_b1", 2, 0, l_block),
+            ("p2_b2", 2, l_block, 2 * l_block),
+            ("p3_b0", 3, 2 * l_block, len(full_text)),
+        ],
     )
 
     chunks = chunk_section(sec, tokenizer)
@@ -209,6 +215,10 @@ def test_chunk_fine_grained_provenance():
         page_end=2,
         text=full_text,
         block_ids=["page1-alpha", "page2-beta"],
+        block_spans=[
+            ("page1-alpha", 1, 0, len(alpha_text)),
+            ("page2-beta", 2, len(alpha_text), len(full_text)),
+        ],
     )
 
     chunks = chunk_section(section, tokenizer)
@@ -249,8 +259,57 @@ def test_chunk_fine_grained_provenance():
     assert explicit_chunks[-1].block_ids == ["blk_6"]
 
 
+def test_unequal_blocks_provenance_and_no_cross_page_pollution():
+    """Verify J1: Unequal source blocks across pages never cross-pollinate page provenance."""
+    tokenizer = get_tokenizer()
+    alpha = "Alpha evidence exists only on page one. " * 100
+    beta = "Beta evidence exists only on page two."
+
+    # Through sectioning_service
+    sec = section_pages(
+        [
+            {"page_number": 1, "height": 792, "blocks": [{"id": "a", "bbox": [20, 100, 500, 600], "text": alpha}]},
+            {"page_number": 2, "height": 792, "blocks": [{"id": "b", "bbox": [20, 100, 500, 600], "text": beta}]},
+        ]
+    )[0]
+
+    chunks = chunk_section(sec, tokenizer)
+    assert len(chunks) >= 3
+
+    # All chunks containing only Alpha text must belong ONLY to page 1 and block 'a'
+    alpha_only_chunks = [c for c in chunks if "Beta" not in c.text]
+    assert len(alpha_only_chunks) >= 2
+    for c in alpha_only_chunks:
+        assert c.page_start == 1
+        assert c.page_end == 1
+        assert c.block_ids == ["a"]
+
+
+def test_unmigrated_or_missing_block_spans_honesty():
+    """Verify J1: When block_spans is missing, no false blocks or guessed pages are fabricated."""
+    tokenizer = get_tokenizer()
+    text = "Some historical section text without recorded character offsets."
+    sec = SectionResult(
+        section_index=0,
+        section="introduction",
+        heading=None,
+        page_start=1,
+        page_end=3,
+        text=text,
+        block_ids=["old_blk_1", "old_blk_2"],
+        block_spans=[],  # Empty / un-migrated
+    )
+    chunks = chunk_section(sec, tokenizer)
+    assert len(chunks) >= 1
+    for c in chunks:
+        # Honest fallback: no false block attribution
+        assert c.block_ids == []
+        assert c.page_start == 1
+        assert c.page_end == 3
+
+
 def test_strict_tokenizer_verification_and_sequence_limit():
-    """Verify P4-03: Model limits and tokenizer configuration are strictly verified."""
+    """Verify P4-03 / J4: Model limits and tokenizer configuration are strictly verified."""
     tokenizer = get_tokenizer()
     assert tokenizer.name_or_path == TOKENIZER_MODEL_NAME
 
@@ -264,8 +323,35 @@ def test_strict_tokenizer_verification_and_sequence_limit():
         page_end=1,
         text=long_text,
         block_ids=["b_disc"],
+        block_spans=[("b_disc", 1, 0, len(long_text))],
     )
     chunks = chunk_section(sec, tokenizer)
     for c in chunks:
         assert c.token_count <= MODEL_MAX_SEQUENCE_LIMIT
         assert c.tokenizer_revision == TOKENIZER_REVISION
+
+
+def test_tokenizer_singleton_rejection_safety():
+    """Verify J4: Invalid tokenizer is never published; second call also rejects."""
+    from unittest.mock import patch
+
+    from backend.app.services import chunking_service as cs
+
+    class TooSmallTokenizer:
+        model_max_length = 128
+
+    previous = cs._tokenizer_instance
+    try:
+        cs._tokenizer_instance = None
+        with patch.object(cs.AutoTokenizer, "from_pretrained", return_value=TooSmallTokenizer()):
+            # First attempt: rejected
+            with pytest.raises(ValueError, match="less than required limit"):
+                cs.get_tokenizer()
+
+            # Second attempt: must ALSO reject because singleton was not published
+            with pytest.raises(ValueError, match="less than required limit"):
+                cs.get_tokenizer()
+
+            assert cs._tokenizer_instance is None
+    finally:
+        cs._tokenizer_instance = previous

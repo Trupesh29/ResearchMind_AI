@@ -41,6 +41,11 @@ try:
             cs.get_tokenizer()
         except ValueError:
             print("FIRST_INVALID_LOAD_REJECTED", True)
-        print("SECOND_INVALID_LOAD_ACCEPTED", cs.get_tokenizer().model_max_length == 128)
+        second_accepted = False
+        try:
+            second_accepted = cs.get_tokenizer().model_max_length == 128
+        except ValueError:
+            second_accepted = False
+        print("SECOND_INVALID_LOAD_ACCEPTED", second_accepted)
 finally:
     cs._tokenizer_instance = previous

@@ -214,26 +214,18 @@ def section_pages(pages_data: list[dict[str, Any]]) -> list[SectionResult]:
             t = b_text.strip()
             if not t:
                 continue
+            cleaned_t = dehyphenate_text(t)
+            if not cleaned_t:
+                continue
             if parts:
                 curr_offset += 2  # for separator "\n\n"
             start_c = curr_offset
-            end_c = start_c + len(t)
+            end_c = start_c + len(cleaned_t)
             block_spans.append((b_id, p_num, start_c, end_c))
-            parts.append(t)
+            parts.append(cleaned_t)
             curr_offset = end_c
 
-        joined = "\n\n".join(parts)
-        cleaned = dehyphenate_text(joined)
-
-        # Scale offsets if dehyphenation altered character length
-        if len(joined) > 0 and len(cleaned) != len(joined):
-            scale = len(cleaned) / len(joined)
-            adjusted_spans: list[tuple[str, int, int, int]] = []
-            for b_id, p_num, s_c, e_c in block_spans:
-                adj_s = int(s_c * scale)
-                adj_e = int(e_c * scale)
-                adjusted_spans.append((b_id, p_num, adj_s, max(adj_s + 1, adj_e)))
-            block_spans = adjusted_spans
+        cleaned = "\n\n".join(parts)
 
         if cleaned or current_blocks:
             sec_idx = len(sections)

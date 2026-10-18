@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
+from typing import Any
 
 from transformers import AutoTokenizer
 
@@ -43,15 +44,16 @@ def get_tokenizer() -> AutoTokenizer:
     """Retrieve or initialize the cached MiniLM AutoTokenizer instance.
 
     Raises RuntimeError with actionable message if tokenizer assets cannot be loaded.
-    Never silently falls back to an unpinned revision.
+    Never silently falls back to an unpinned revision or invalid sequence length.
     """
     global _tokenizer_instance
     if _tokenizer_instance is None:
         model_name = getattr(settings, "EMBEDDING_MODEL_NAME", TOKENIZER_MODEL_NAME) or TOKENIZER_MODEL_NAME
         revision = getattr(settings, "EMBEDDING_MODEL_REVISION", TOKENIZER_REVISION) or TOKENIZER_REVISION
+        candidate: AutoTokenizer | None = None
         try:
             # First try loading locally with the pinned revision
-            _tokenizer_instance = AutoTokenizer.from_pretrained(
+            candidate = AutoTokenizer.from_pretrained(
                 model_name,
                 revision=revision,
                 local_files_only=True,
@@ -59,7 +61,7 @@ def get_tokenizer() -> AutoTokenizer:
         except Exception:
             try:
                 # If not present in local cache with pinned revision, load with revision
-                _tokenizer_instance = AutoTokenizer.from_pretrained(
+                candidate = AutoTokenizer.from_pretrained(
                     model_name,
                     revision=revision,
                     local_files_only=False,
@@ -71,12 +73,29 @@ def get_tokenizer() -> AutoTokenizer:
                 ) from exc
 
         # Verify model / tokenizer configuration and sequence limit
-        model_max = getattr(_tokenizer_instance, "model_max_length", None)
+        model_max = getattr(candidate, "model_max_length", None)
         if model_max is not None and model_max < MODEL_MAX_SEQUENCE_LIMIT:
             raise ValueError(
                 f"Configured tokenizer sequence limit {model_max} is less than required limit {MODEL_MAX_SEQUENCE_LIMIT}."
             )
+        _tokenizer_instance = candidate
     return _tokenizer_instance
+
+
+def get_tokenizer_metadata() -> dict[str, Any]:
+    """Retrieve verified tokenizer and chunking configuration metadata."""
+    tok = get_tokenizer()
+    model_name = getattr(settings, "EMBEDDING_MODEL_NAME", TOKENIZER_MODEL_NAME) or TOKENIZER_MODEL_NAME
+    revision = getattr(settings, "EMBEDDING_MODEL_REVISION", TOKENIZER_REVISION) or TOKENIZER_REVISION
+    model_max = getattr(tok, "model_max_length", None)
+    return {
+        "tokenizer": model_name,
+        "revision": revision,
+        "model_max_length": model_max,
+        "max_sequence_limit": MODEL_MAX_SEQUENCE_LIMIT,
+        "target_tokens": TARGET_CHUNK_TOKENS,
+        "overlap_tokens": TARGET_OVERLAP_TOKENS,
+    }
 
 
 @dataclasses.dataclass
@@ -211,19 +230,6 @@ def chunk_section(
 
     # 1. Resolve block spans for provenance
     block_spans = list(section.block_spans)
-    if not block_spans and section.block_ids:
-        # Synthesize proportional spans from block_ids across text length and page range
-        n_blocks = len(section.block_ids)
-        total_len = len(text)
-        block_spans = []
-        for b_i, b_id in enumerate(section.block_ids):
-            s_c = int(b_i * total_len / n_blocks)
-            e_c = int((b_i + 1) * total_len / n_blocks) if b_i < n_blocks - 1 else total_len
-            if n_blocks > 1:
-                p_num = section.page_start + int(b_i * (section.page_end - section.page_start) / (n_blocks - 1))
-            else:
-                p_num = section.page_start
-            block_spans.append((b_id, p_num, s_c, e_c))
 
     # 2. Split into base sentences
     raw_sentences = split_into_sentences(text)
@@ -326,15 +332,7 @@ def chunk_section(
                     chunk_blocks.append(b_id)
                     chunk_pages.append(p_num)
 
-            if not chunk_blocks:
-                closest = min(
-                    block_spans,
-                    key=lambda s: min(abs(chunk_c_start - s[2]), abs(chunk_c_end - s[3])),
-                )
-                chunk_blocks.append(closest[0])
-                chunk_pages.append(closest[1])
-
-        distinct_blocks = list(dict.fromkeys(chunk_blocks)) if chunk_blocks else [b for b in section.block_ids if b]
+        distinct_blocks = list(dict.fromkeys(chunk_blocks))
         page_start = min(chunk_pages) if chunk_pages else section.page_start
         page_end = max(chunk_pages) if chunk_pages else section.page_end
 

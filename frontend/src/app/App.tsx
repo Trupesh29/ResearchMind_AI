@@ -92,7 +92,7 @@ export const App: React.FC = () => {
           <PlannedFeaturePage
             featureName="Research Explorer"
             roadmapPhase={5}
-            description="Graph-based citation exploration, literature clustering, and co-citation discovery."
+            description="Source sections, cited summaries, multi-dimensional document comparison, and verified research findings."
             onNavigate={handleNavigate}
           />
         );
@@ -110,7 +110,7 @@ export const App: React.FC = () => {
           <PlannedFeaturePage
             featureName="Model Lab"
             roadmapPhase={6}
-            description="Fine-tuning evaluation, custom prompt ablation, and embedding model benchmarking."
+            description="SciCite classifier experiment, baseline comparison, training curves, and independently reproducible results."
             onNavigate={handleNavigate}
           />
         );
