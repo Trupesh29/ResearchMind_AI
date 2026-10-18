@@ -1,8 +1,8 @@
 # ResearchMind AI agent workflow
 
-Independent completion review (2026-10-18, application `abdde12`): PASS for the reviewed Phase 3 repair. H1 is resolved; 154 backend tests, 25 frontend tests, four probes, static/build checks and 8/8 live browser library criteria passed. See `docs/PHASE_3_FINAL_REVIEW.md`. No corrective prompt needed. Keep local; publication and Phase 4 were not performed by this review.
+Phase 4 Implementation Checkpoint (2026-10-18): Week 2 Phase 4 (document sectioning, token-safe chunking, and Quality Center) implementation is complete. All 166 backend tests, 30 frontend tests, static analysis (ruff, eslint, tsc, vite build), and full live Chrome browser acceptance suite (8/8 criteria) have passed. Phase 4 remains local on branch `manav` for independent review (DO NOT PUSH).
 
-Latest repair checkpoint (2026-10-18): Finding H1 resolved. Phase 3 remains local on branch manav. Repaired 0005 to preserve multi-generation pages and added forward migration 0006 for 0005 databases. 154 backend tests, 25 frontend tests, and all 4 probes pass. VERDICT: PASS -- multi-generation preservation repaired.
+Phase 3 Publication Checkpoint (2026-10-18): Phase 3 accepted commit `6de34b3` has been safely published to remote `origin/manav` and `origin/main` per explicit user authorization.
 
 ## Purpose
 
@@ -10,7 +10,7 @@ Guide implementation and review with less redundant agent context, while preserv
 
 ## 1. Establish scope
 
-Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 2 Phase 3 Multi-Generation Preservation repair (H1): preserve multiple successful page generations, prevent unique constraint collisions and silent relabeling in migrations, provide compatible upgrade path for 0004 and 0005 via repaired 0005 and forward migration 0006. Keep Phase 3 local for independent review; do not push or advance to Phase 4.
+Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 2 Phase 4 (Document Sectioning, Token-Safe Sentence-Aware Chunking, and Quality Center UI). Keep Phase 4 local for independent review; do not push.
 
 Gravitas policy equivalent:
 

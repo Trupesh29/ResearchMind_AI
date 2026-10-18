@@ -622,7 +622,11 @@ def test_reprocess_conflict_and_generation_consistency(p3_env: dict):
     worker = WorkerEngine(worker_id="test-worker", lease_timeout_seconds=30)
     # Pass 1: processes validating -> enqueues extracting
     worker.run_once()
-    # Pass 2: processes extracting -> completes extraction
+    # Pass 2: processes extracting -> completes extraction, enqueues sectioning
+    worker.run_once()
+    # Pass 3: processes sectioning -> enqueues chunking
+    worker.run_once()
+    # Pass 4: processes chunking -> completes Week 2 ingestion
     worker.run_once()
 
     # Check status
@@ -630,8 +634,8 @@ def test_reprocess_conflict_and_generation_consistency(p3_env: dict):
     assert stat_res.status_code == 200
     stat_data = stat_res.json()
     assert stat_data["status"] == "processing"
-    assert stat_data["stage"] == "extracting"
-    assert stat_data["progress"] == 0.5
+    assert stat_data["stage"] == "chunking"
+    assert stat_data["progress"] == 1.0
 
     # Check pages
     pages_res = client.get(f"/api/papers/{paper_id}/pages")
@@ -647,6 +651,8 @@ def test_reprocess_conflict_and_generation_consistency(p3_env: dict):
     # Worker runs new generation
     worker.run_once()  # validating
     worker.run_once()  # extracting
+    worker.run_once()  # sectioning
+    worker.run_once()  # chunking
 
     # Verify pages count in API is still 1 (latest published generation served, not mixed!)
     pages_res2 = client.get(f"/api/papers/{paper_id}/pages")
@@ -693,12 +699,16 @@ def test_worker_multirun_migration_preservation(p3_env: dict):
     worker = WorkerEngine(worker_id="test-worker-mr", lease_timeout_seconds=30)
     worker.run_once()  # validating
     worker.run_once()  # extracting gen 1
+    worker.run_once()  # sectioning gen 1
+    worker.run_once()  # chunking gen 1
 
     # Reprocess to create gen 2
     rep_res = client.post(f"/api/papers/{paper_id}/reprocess")
     assert rep_res.status_code == 202
     worker.run_once()  # validating
     worker.run_once()  # extracting gen 2
+    worker.run_once()  # sectioning gen 2
+    worker.run_once()  # chunking gen 2
 
     # Database has 2 worker-produced page records
     db: Session = p3_env["factory"]()
@@ -984,6 +994,10 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
         assert ext_job.status == "succeeded"
         assert ext_job.worker_id == "slow-worker"
 
+    # Drain remaining stages for Paper 1 so no queued jobs remain before Part 2
+    w1.run_once()  # sectioning
+    w1.run_once()  # chunking
+
     # Part 2: Real worker subprocess kill and recovery with independent worker
     proc_paper_id = str(uuid.uuid4())
     proc_pdf = p3_env["data_dir"] / "subprocess_kill.pdf"
@@ -1041,7 +1055,7 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
     try:
         # Wait until worker subprocess claims the extracting job and is running
         claimed = False
-        for _ in range(60):
+        for _ in range(150):
             time.sleep(0.2)
             with p3_env["factory"]() as s:
                 running_job = (

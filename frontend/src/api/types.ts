@@ -154,11 +154,14 @@ export interface PaperStageDetail {
 export interface PaperStatusResponse {
   status: string;
   stage: string;
+  substate?: string | null;
   progress: number;
   attempt: number;
   error?: string | null;
   stages?: PaperStageDetail[];
   run_id?: string | null;
+  current_run_id?: string | null;
+  published_run_id?: string | null;
   is_stale?: boolean;
 }
 
@@ -189,6 +192,52 @@ export interface PageBlocksResponse {
   height?: number | null;
   rotation?: number | null;
   blocks: PageBlockItem[];
+  run_id?: string | null;
+  is_stale?: boolean;
+}
+
+export interface ChunkItem {
+  id: string;
+  paper_id: string;
+  run_id: string;
+  chunk_index: number;
+  page_start: number;
+  page_end: number;
+  section: string;
+  text: string;
+  token_count: number;
+  block_ids: string[];
+  is_excluded: boolean;
+  tokenizer_name?: string | null;
+  tokenizer_revision?: string | null;
+  created_at: string;
+}
+
+export interface ChunksListResponse {
+  items: ChunkItem[];
+  total: number;
+  run_id?: string | null;
+  is_stale?: boolean;
+  next_cursor?: string | null;
+}
+
+export interface SectionItem {
+  id: string;
+  paper_id: string;
+  run_id: string;
+  section_index: number;
+  section: string;
+  heading?: string | null;
+  page_start: number;
+  page_end: number;
+  text?: string | null;
+  block_ids: string[];
+  created_at: string;
+}
+
+export interface SectionsListResponse {
+  items: SectionItem[];
+  total: number;
   run_id?: string | null;
   is_stale?: boolean;
 }

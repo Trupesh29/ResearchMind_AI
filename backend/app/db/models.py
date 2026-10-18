@@ -122,6 +122,8 @@ class Paper(Base):
         "ProcessingJob", back_populates="paper", cascade="all, delete-orphan"
     )
     pages: Mapped[list["Page"]] = relationship("Page", back_populates="paper", cascade="all, delete-orphan")
+    sections: Mapped[list["Section"]] = relationship("Section", back_populates="paper", cascade="all, delete-orphan")
+    chunks: Mapped[list["Chunk"]] = relationship("Chunk", back_populates="paper", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Paper id={self.id} filename={self.original_filename} status={self.status}>"
@@ -214,3 +216,77 @@ class Page(Base):
 
     def __repr__(self) -> str:
         return f"<Page id={self.id} paper_id={self.paper_id} page={self.page_number} status={self.extraction_status}>"
+
+
+class Section(Base):
+    __tablename__ = "sections"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    paper_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    run_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    section_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    section: Mapped[str] = mapped_column(String(100), default="unknown", server_default="unknown", nullable=False)
+    heading: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    page_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    block_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("paper_id", "run_id", "section_index", name="uq_sections_paper_run_index"),
+        Index("idx_sections_paper_run", "paper_id", "run_id"),
+        CheckConstraint("section_index >= 0", name="ck_sections_section_index"),
+        CheckConstraint("page_start >= 1 AND page_end >= page_start", name="ck_sections_page_range"),
+    )
+
+    paper: Mapped["Paper"] = relationship("Paper", back_populates="sections")
+
+    def __repr__(self) -> str:
+        return f"<Section id={self.id} paper_id={self.paper_id} section={self.section} index={self.section_index}>"
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    paper_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    run_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    section: Mapped[str] = mapped_column(String(100), default="unknown", server_default="unknown", nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    block_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_excluded: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    embedding_index_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    faiss_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_deleted: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    tokenizer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tokenizer_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("paper_id", "run_id", "chunk_index", name="uq_chunks_paper_run_index"),
+        Index("idx_chunks_paper_run", "paper_id", "run_id"),
+        Index("idx_chunks_paper_section", "paper_id", "section"),
+        CheckConstraint("chunk_index >= 0", name="ck_chunks_chunk_index"),
+        CheckConstraint("page_start >= 1 AND page_end >= page_start", name="ck_chunks_page_range"),
+        CheckConstraint("token_count > 0", name="ck_chunks_token_count"),
+    )
+
+    paper: Mapped["Paper"] = relationship("Paper", back_populates="chunks")
+
+    def __repr__(self) -> str:
+        return f"<Chunk id={self.id} paper_id={self.paper_id} index={self.chunk_index} tokens={self.token_count}>"

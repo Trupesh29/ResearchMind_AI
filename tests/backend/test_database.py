@@ -908,11 +908,11 @@ def test_historical_generation_attribution_matrix(temp_test_dir):
         repaired_pg1 = session.execute(text("SELECT run_id FROM pages WHERE id = 'pg1'")).fetchone()
         assert repaired_pg1[0] == "run-A1"  # Pages repaired to run A1!
 
-    # 6. Advance to head (0006) and verify stability
+    # 6. Advance to head (0007) and verify stability
     command.upgrade(cfg, "head")
     with SessionCls() as session:
         head_rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert head_rev == "0006_preserve_multirun_page_generations"
+        assert head_rev == "0007_add_sections_and_chunks"
         final_p1 = session.execute(
             text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"), {"id": p1_id}
         ).fetchone()
@@ -1156,9 +1156,9 @@ def test_multirun_page_generation_preservation_matrix(temp_test_dir):
     SessionCls = sessionmaker(bind=engine)
 
     with SessionCls() as session:
-        # Check revision advanced to 0006
+        # Check revision advanced to head
         rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "0006_preserve_multirun_page_generations"
+        assert rev == "0007_add_sections_and_chunks"
 
         # Verification 1: Overlapping multi-generation pages survive!
         ov_pages = session.execute(
@@ -1248,9 +1248,7 @@ def test_multirun_page_generation_preservation_matrix(temp_test_dir):
         )
     command.upgrade(cfg, "head")
     with engine.connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
-            "0006_preserve_multirun_page_generations"
-        )
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == ("0007_add_sections_and_chunks")
 
     engine.dispose()
 
@@ -1276,7 +1274,7 @@ def test_clean_install_and_already_0005_upgrade(temp_test_dir):
     engine = create_engine(db_url)
     with engine.connect() as c:
         rev = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "0006_preserve_multirun_page_generations"
+        assert rev == "0007_add_sections_and_chunks"
 
     # 2. Downgrade to 0005 and upgrade back to head
     command.downgrade(cfg, "0005_repair_historical_generation_attribution")
@@ -1286,8 +1284,6 @@ def test_clean_install_and_already_0005_upgrade(temp_test_dir):
         )
     command.upgrade(cfg, "head")
     with engine.connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
-            "0006_preserve_multirun_page_generations"
-        )
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == ("0007_add_sections_and_chunks")
 
     engine.dispose()

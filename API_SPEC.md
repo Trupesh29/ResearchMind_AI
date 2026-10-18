@@ -267,20 +267,24 @@ Cheap endpoint for polling (every 2 seconds is fine). Status is computed from th
 ```json
 {
   "status": "processing",
-  "stage": "extracting",
-  "progress": 0.5,
+  "stage": "chunking",
+  "substate": "awaiting_indexing",
+  "progress": 1.0,
   "attempt": 1,
   "run_id": "9a1b…",
   "current_run_id": "9a1b…",
-  "published_run_id": null,
+  "published_run_id": "9a1b…",
   "error": null,
+  "is_stale": false,
   "stages": [
     { "stage": "validating", "status": "succeeded", "finished_at": "…" },
-    { "stage": "extracting", "status": "running", "started_at": "…" }
+    { "stage": "extracting", "status": "succeeded", "finished_at": "…" },
+    { "stage": "sectioning", "status": "succeeded", "finished_at": "…" },
+    { "stage": "chunking", "status": "succeeded", "finished_at": "…" }
   ]
 }
 ```
-`progress` is an estimate from completed stages, not a promise. When `status = failed`, `error` holds a sanitized public message.
+`progress` represents pipeline completion: validating (0.1), extracting (0.5), sectioning (0.75), chunking (1.0). When chunking finishes in Week 2, `status = 'processing'` and `substate = 'awaiting_indexing'` until Week 3 explicit semantic indexing begins. When `status = failed`, `error` holds a sanitized public message.
 
 ### `GET /papers/{paper_id}/pages`
 Response `200`:
@@ -318,14 +322,73 @@ Response `200`:
 }
 ```
 
+### `GET /papers/{paper_id}/sections` [P0]
+Returns identified sections for the published generation run, enabling document structure inspection in Quality Center.
+Response `200`:
+```json
+{
+  "run_id": "9a1b…",
+  "is_stale": false,
+  "total": 4,
+  "items": [
+    {
+      "id": "sec-1",
+      "paper_id": "paper-123",
+      "run_id": "9a1b…",
+      "section_index": 0,
+      "section": "1. Introduction",
+      "heading": "Introduction",
+      "page_start": 1,
+      "page_end": 2,
+      "text": "...",
+      "block_ids": ["p1_b2", "p1_b3"],
+      "created_at": "…"
+    }
+  ]
+}
+```
+
+### `GET /papers/{paper_id}/chunks` [P0]
+Query parameters:
+- `section` (optional string): Filter chunks by exact section name (e.g. `1. Introduction`, `References`).
+- `page` (optional integer): Filter chunks spanning or containing a specific 1-indexed page.
+- `limit` (optional integer, 1–200, default 50): Page size.
+- `cursor` (optional string): Cursor for opaque forward pagination.
+
+Response `200`:
+```json
+{
+  "run_id": "9a1b…",
+  "is_stale": false,
+  "total": 18,
+  "next_cursor": "ey...",
+  "items": [
+    {
+      "id": "chunk-1",
+      "paper_id": "paper-123",
+      "run_id": "9a1b…",
+      "chunk_index": 0,
+      "page_start": 1,
+      "page_end": 1,
+      "section": "1. Introduction",
+      "text": "Attention mechanisms have revolutionized natural language processing...",
+      "token_count": 185,
+      "block_ids": ["p1_b3", "p1_b4"],
+      "is_excluded": false,
+      "tokenizer_name": "sentence-transformers/all-MiniLM-L6-v2",
+      "tokenizer_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "created_at": "…"
+    }
+  ]
+}
+```
+All chunks strictly adhere to `token_count <= 256` measured with special tokens (`[CLS]`, `[SEP]`). Chunks from reference sections have `is_excluded = true` to omit bibliography noise from default retrieval.
+
 ### `GET /papers/{paper_id}/file`
 Streams the original PDF (`application/pdf`) after the ownership check. Supports HTTP range requests so the viewer can load pages lazily.
 
-### `GET /papers/{paper_id}/chunks` [P1]
-Query: `page`, `section`, `limit`, `cursor`. Lets the Quality Center show chunk counts and token lengths.
-
 ### `POST /papers/{paper_id}/reprocess`
-Starts a fresh processing job without deleting the original PDF. Response `202` with the same shape as `GET …/status`. Errors: `409` if a job is already running.
+Starts a fresh processing job without deleting the original PDF. Older published sections and chunks remain readable until the new generation's chunking stage successfully finishes. Response `202` with the same shape as `GET …/status`. Errors: `409` if an active job is already queued or running.
 
 ### `DELETE /papers/{paper_id}`
 Deletes the PDF file, pages, chunks, experiments, and derived analysis; tombstones its vectors and schedules an index rebuild if needed. Response `204`.

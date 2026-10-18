@@ -1,12 +1,16 @@
 import {
   ApiErrorDetail,
+  ChunksListResponse,
   HealthResponse,
+  PageBlocksResponse,
+  PagesListResponse,
   PaperItem,
   PaperListResponse,
   PaperStatusResponse,
   PaperUploadBatchResponse,
   PublicConfigResponse,
   ReadyResponse,
+  SectionsListResponse,
   WorkspaceCreatePayload,
   WorkspaceDetail,
   WorkspaceItem,
@@ -168,6 +172,33 @@ export const api = {
   getPaper: (id: string) => request<PaperItem>(`/papers/${id}`),
   getPaperStatus: (id: string) =>
     request<PaperStatusResponse>(`/papers/${id}/status`),
+  reprocessPaper: (id: string) =>
+    request<PaperStatusResponse>(`/papers/${id}/reprocess`, {
+      method: "POST",
+    }),
+  getPaperPages: (id: string) => request<PagesListResponse>(`/papers/${id}/pages`),
+  getPaperBlocks: (id: string, pageNumber: number) =>
+    request<PageBlocksResponse>(`/papers/${id}/pages/${pageNumber}/blocks`),
+  getPaperChunks: (
+    id: string,
+    options: {
+      page?: number;
+      section?: string;
+      limit?: number;
+      cursor?: string | null;
+    } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (options.page !== undefined) params.set("page", String(options.page));
+    if (options.section && options.section.trim())
+      params.set("section", options.section.trim());
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.cursor) params.set("cursor", options.cursor);
+    const qs = params.toString();
+    return request<ChunksListResponse>(`/papers/${id}/chunks${qs ? `?${qs}` : ""}`);
+  },
+  getPaperSections: (id: string) =>
+    request<SectionsListResponse>(`/papers/${id}/sections`),
   getPaperFileUrl: (id: string) => `${API_BASE}/papers/${id}/file`,
   deletePaper: (id: string) =>
     request<void>(`/papers/${id}`, {

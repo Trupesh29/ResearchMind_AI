@@ -229,26 +229,49 @@ This table is what makes the Quality Center honest: a flagged page is recorded r
 
 **Design note:** Changing the embedding model or chunk parameters creates a **new version** rather than editing the old one. Vectors from different models are never mixed in one index. Once the new version is `active`, the old one becomes `retired` and can be deleted.
 
-### 3.6 `chunks` [P0]
+### 3.5b `sections` [P0] (Phase 4 Ingestion Sectioning)
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
-| `id` | `TEXT` | `PRIMARY KEY` | |
-| `paper_id` | `TEXT` | `NOT NULL`, `FK` `CASCADE` | |
-| `embedding_index_id` | `TEXT` | `NOT NULL`, `FK` `CASCADE` | Chunks belong to one index version |
-| `chunk_index` | `INTEGER` | `NOT NULL`, `>= 0` | Order within the paper |
-| `page_start`, `page_end` | `INTEGER` | `>= 1`, `page_end >= page_start` | Source location for citations |
-| `section` | `TEXT` | `NOT NULL`, default `unknown` | `abstract`, `introduction`, `methodology`, `results`, `references`, … |
-| `text` | `TEXT` | `NOT NULL` | |
-| `token_count` | `INTEGER` | `NOT NULL`, `> 0` | Counted with the embedder's own tokenizer |
-| `faiss_id` | `INTEGER` | nullable | Vector id inside the FAISS index |
-| `is_deleted` | `INTEGER` | 0/1, default 0 | Tombstone until the index is rebuilt |
-| `created_at` | `TEXT` | default current UTC | |
+| `id` | `TEXT` | `PRIMARY KEY` | UUID string |
+| `paper_id` | `TEXT` | `NOT NULL`, `FK → papers.id` `CASCADE` | Indexed |
+| `run_id` | `TEXT` | `NOT NULL` | Generation run identifier |
+| `section_index` | `INTEGER` | `NOT NULL`, `>= 0` | Sequential order within the generation |
+| `section` | `TEXT` | `NOT NULL` | Normalized section name (`1. Introduction`, `References`, `unknown`) |
+| `heading` | `TEXT` | nullable | Extracted heading text |
+| `page_start`, `page_end` | `INTEGER` | `NOT NULL`, `>= 1`, `page_end >= page_start` | Page span |
+| `text` | `TEXT` | nullable | Section body text |
+| `block_ids_json` | `TEXT` | `NOT NULL`, default `'[]'` | JSON array of constituent block IDs for provenance |
+| `created_at` | `TEXT` | `NOT NULL`, default current UTC | |
 
-**Constraints:** `UNIQUE (embedding_index_id, paper_id, chunk_index)`; `UNIQUE (embedding_index_id, faiss_id)`.
-**Indexes:** `idx_chunks_paper(paper_id, page_start)`, `idx_chunks_section(paper_id, section)`.
+**Constraints:** `UNIQUE (paper_id, run_id, section_index)`.
+**Indexes:** `ix_sections_paper_id(paper_id)`, `ix_sections_run_id(run_id)`, `idx_sections_paper_run(paper_id, run_id)`.
 
-**Retrieval path:** FAISS returns `faiss_id` values; the app maps them to `chunks` rows within the active index, filters out tombstoned rows, and reads `text`, pages, and section for context building and citations. The view `v_active_chunks` encodes that filter.
+### 3.6 `chunks` [P0] (Token-Safe Chunking & Pre-Index Storage)
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | `TEXT` | `PRIMARY KEY` | UUID string |
+| `paper_id` | `TEXT` | `NOT NULL`, `FK → papers.id` `CASCADE` | Indexed |
+| `run_id` | `TEXT` | `NOT NULL` | Generation run identifier |
+| `chunk_index` | `INTEGER` | `NOT NULL`, `>= 0` | Sequential index within the generation |
+| `embedding_index_id` | `TEXT` | nullable, `FK → embedding_indexes.id` | Nullable during pre-index storage; linked during Week 3 indexing |
+| `section` | `TEXT` | `NOT NULL`, default `'unknown'` | Normalized parent section name |
+| `page_start`, `page_end` | `INTEGER` | `NOT NULL`, `>= 1`, `page_end >= page_start` | Source page span |
+| `text` | `TEXT` | `NOT NULL` | Clean token-safe chunk text |
+| `token_count` | `INTEGER` | `NOT NULL`, `> 0` | Measured with pinned MiniLM tokenizer including special tokens ($\le 256$) |
+| `block_ids_json` | `TEXT` | `NOT NULL`, default `'[]'` | JSON list of block IDs |
+| `is_excluded` | `BOOLEAN` | `NOT NULL`, default `0` | Excluded from retrieval (e.g. `1` for reference chunks) |
+| `tokenizer_name` | `TEXT` | nullable | e.g. `sentence-transformers/all-MiniLM-L6-v2` |
+| `tokenizer_revision` | `TEXT` | nullable | Pinned commit `1110a243fdf4706b3f48f1d95db1a4f5529b4d41` |
+| `faiss_id` | `INTEGER` | nullable | Vector ID assigned during Week 3 semantic indexing |
+| `is_deleted` | `INTEGER` | 0/1, default 0 | Tombstone for rebuilding |
+| `created_at` | `TEXT` | `NOT NULL`, default current UTC | |
+
+**Constraints:** `UNIQUE (paper_id, run_id, chunk_index)`.
+**Indexes:** `ix_chunks_paper_id(paper_id)`, `ix_chunks_run_id(run_id)`, `idx_chunks_paper_run(paper_id, run_id)`, `idx_chunks_run_excluded(paper_id, run_id, is_excluded)`.
+
+**Retrieval path:** Chunks are produced and verified before vector index generation. In Week 3, FAISS vectors will map directly to `chunks` rows with `is_excluded = 0`, supporting grounded snippet retrieval and citation verification.
 
 ### 3.7 `processing_jobs` [P0]
 

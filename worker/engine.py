@@ -21,9 +21,9 @@ from sqlalchemy import case, update
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import get_settings
-from backend.app.db.models import Page, Paper, ProcessingJob, utcnow_iso
+from backend.app.db.models import Chunk, Page, Paper, ProcessingJob, Section, utcnow_iso
 from backend.app.db.session import get_session_factory
-from backend.app.services import extraction_service
+from backend.app.services import chunking_service, extraction_service, sectioning_service
 
 logger = logging.getLogger("worker.engine")
 
@@ -249,7 +249,7 @@ class WorkerEngine:
             db.query(ProcessingJob.id, ProcessingJob.paper_id)
             .filter(
                 ProcessingJob.status == "queued",
-                ProcessingJob.stage.in_(["validating", "extracting"]),
+                ProcessingJob.stage.in_(["validating", "extracting", "sectioning", "chunking"]),
             )
             .order_by(ProcessingJob.created_at.asc())
             .limit(10)
@@ -312,6 +312,10 @@ class WorkerEngine:
             self._handle_validating_stage(info)
         elif stage == "extracting":
             self._handle_extracting_stage(info)
+        elif stage == "sectioning":
+            self._handle_sectioning_stage(info)
+        elif stage == "chunking":
+            self._handle_chunking_stage(info)
         else:
             logger.error(f"Unsupported stage '{stage}' claimed by worker.")
 
@@ -555,11 +559,330 @@ class WorkerEngine:
 
                 paper.page_count = extraction_result.page_count
                 paper.quality_json = json.dumps(extraction_result.quality.to_dict())
-                paper.published_run_id = run_id
+
+                # If first upload (no previous published run), publish pages so viewer can render them.
+                # If reprocessing (previous published run exists), preserve previous published_run_id
+                # until chunking succeeds to prevent mixing new pages with older chunks.
+                if not paper.published_run_id:
+                    paper.published_run_id = run_id
+
+                # Enqueue sectioning stage
+                next_job = ProcessingJob(
+                    id=str(uuid.uuid4()),
+                    paper_id=paper_id,
+                    run_id=run_id,
+                    stage="sectioning",
+                    status="queued",
+                    attempt=1,
+                    created_at=now,
+                )
+                db.add(next_job)
                 paper.status = "processing"
                 paper.updated_at = now
 
                 db.commit()
-                logger.info(f"Published extraction output for paper {paper_id} run {run_id} (job {job_id}).")
+                logger.info(f"Extraction succeeded for paper {paper_id} run {run_id}. Enqueued sectioning.")
+        finally:
+            db.close()
+
+    def _handle_sectioning_stage(self, info: dict[str, Any]) -> None:
+        """Perform conservative cleaning and section boundary detection."""
+        job_id = info["job_id"]
+        paper_id = info["paper_id"]
+        token = info["claim_token"]
+        run_id = info["run_id"]
+        storage_path = info["storage_path"]
+
+        factory = get_session_factory()
+        heartbeat = LeaseHeartbeat(factory, job_id, token, interval=max(0.5, self.lease_timeout_seconds / 3.0))
+        heartbeat.start()
+
+        sectioning_error: str | None = None
+        sections_data: list[sectioning_service.SectionResult] = []
+
+        try:
+            db_read: Session = factory()
+            try:
+                page_rows = (
+                    db_read.query(Page)
+                    .filter(Page.paper_id == paper_id, Page.run_id == run_id)
+                    .order_by(Page.page_number.asc())
+                    .all()
+                )
+                if not page_rows:
+                    sectioning_error = "No extracted pages found for sectioning."
+                else:
+                    pages_input = []
+                    for pr in page_rows:
+                        blocks = []
+                        if pr.blocks_json:
+                            try:
+                                blocks = json.loads(pr.blocks_json)
+                            except Exception:
+                                blocks = []
+                        pages_input.append(
+                            {
+                                "page_number": pr.page_number,
+                                "height": pr.height,
+                                "width": pr.width,
+                                "blocks": blocks,
+                            }
+                        )
+                    sections_data = sectioning_service.section_pages(pages_input)
+            finally:
+                db_read.close()
+        except Exception as exc:
+            sectioning_error = sanitize_error_message(exc, storage_path=storage_path)
+        finally:
+            active_lease = heartbeat.stop()
+
+        if not active_lease:
+            logger.warning(f"Sectioning job {job_id} lost lease during execution; aborting publication.")
+            return
+
+        db: Session = factory()
+        try:
+            paper = db.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                logger.info(f"Paper {paper_id} deleted during sectioning; dropping publication.")
+                return
+
+            if paper.current_run_id and paper.current_run_id != run_id:
+                logger.warning(
+                    f"Paper {paper_id} has a newer generation ({paper.current_run_id} != {run_id}); discarding stale sectioning."
+                )
+                return
+
+            now = utcnow_iso()
+
+            if sectioning_error:
+                stmt = (
+                    update(ProcessingJob)
+                    .where(
+                        ProcessingJob.id == job_id,
+                        ProcessingJob.status == "running",
+                        ProcessingJob.claim_token == token,
+                    )
+                    .values(
+                        status="failed",
+                        finished_at=now,
+                        error_message=sectioning_error,
+                    )
+                )
+                res = db.execute(stmt)
+                if res.rowcount == 0:
+                    db.rollback()
+                    raise WorkerFencingViolation(f"Lost claim token on sectioning job {job_id}")
+                paper.status = "failed"
+                paper.updated_at = now
+                db.commit()
+            else:
+                stmt = (
+                    update(ProcessingJob)
+                    .where(
+                        ProcessingJob.id == job_id,
+                        ProcessingJob.status == "running",
+                        ProcessingJob.claim_token == token,
+                    )
+                    .values(
+                        status="succeeded",
+                        finished_at=now,
+                    )
+                )
+                res = db.execute(stmt)
+                if res.rowcount == 0:
+                    db.rollback()
+                    raise WorkerFencingViolation(f"Lost claim token on sectioning job {job_id}")
+
+                # Delete any existing sections for this run_id in case of retry
+                db.query(Section).filter(Section.paper_id == paper_id, Section.run_id == run_id).delete()
+
+                for s in sections_data:
+                    sec_row = Section(
+                        id=str(uuid.uuid4()),
+                        paper_id=paper_id,
+                        run_id=run_id,
+                        section_index=s.section_index,
+                        section=s.section,
+                        heading=s.heading,
+                        page_start=s.page_start,
+                        page_end=s.page_end,
+                        text=s.text,
+                        block_ids_json=json.dumps(s.block_ids),
+                        created_at=now,
+                    )
+                    db.add(sec_row)
+
+                next_job = ProcessingJob(
+                    id=str(uuid.uuid4()),
+                    paper_id=paper_id,
+                    run_id=run_id,
+                    stage="chunking",
+                    status="queued",
+                    attempt=1,
+                    created_at=now,
+                )
+                db.add(next_job)
+                paper.status = "processing"
+                paper.updated_at = now
+                db.commit()
+                logger.info(
+                    f"Sectioning succeeded for paper {paper_id} run {run_id}, generated {len(sections_data)} sections. Enqueued chunking."
+                )
+        finally:
+            db.close()
+
+    def _handle_chunking_stage(self, info: dict[str, Any]) -> None:
+        """Perform token-safe sentence-aware chunking with MiniLM tokenizer."""
+        job_id = info["job_id"]
+        paper_id = info["paper_id"]
+        token = info["claim_token"]
+        run_id = info["run_id"]
+        storage_path = info["storage_path"]
+
+        factory = get_session_factory()
+        heartbeat = LeaseHeartbeat(factory, job_id, token, interval=max(0.5, self.lease_timeout_seconds / 3.0))
+        heartbeat.start()
+
+        chunking_error: str | None = None
+        chunks_data: list[chunking_service.ChunkResult] = []
+
+        try:
+            db_read: Session = factory()
+            try:
+                section_rows = (
+                    db_read.query(Section)
+                    .filter(Section.paper_id == paper_id, Section.run_id == run_id)
+                    .order_by(Section.section_index.asc())
+                    .all()
+                )
+                if not section_rows:
+                    chunking_error = "No document sections found for chunking."
+                else:
+                    sec_results: list[sectioning_service.SectionResult] = []
+                    for sr in section_rows:
+                        block_ids = []
+                        if sr.block_ids_json:
+                            try:
+                                block_ids = json.loads(sr.block_ids_json)
+                            except Exception:
+                                block_ids = []
+                        sec_results.append(
+                            sectioning_service.SectionResult(
+                                section_index=sr.section_index,
+                                section=sr.section,
+                                heading=sr.heading,
+                                page_start=sr.page_start,
+                                page_end=sr.page_end,
+                                text=sr.text or "",
+                                block_ids=block_ids,
+                                is_reference=(sr.section == "references"),
+                            )
+                        )
+                    chunks_data = chunking_service.chunk_document_sections(sec_results)
+            finally:
+                db_read.close()
+        except Exception as exc:
+            chunking_error = sanitize_error_message(exc, storage_path=storage_path)
+        finally:
+            active_lease = heartbeat.stop()
+
+        if not active_lease:
+            logger.warning(f"Chunking job {job_id} lost lease during execution; aborting publication.")
+            return
+
+        db: Session = factory()
+        try:
+            paper = db.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                logger.info(f"Paper {paper_id} deleted during chunking; dropping publication.")
+                return
+
+            if paper.current_run_id and paper.current_run_id != run_id:
+                logger.warning(
+                    f"Paper {paper_id} has a newer generation ({paper.current_run_id} != {run_id}); discarding stale chunking."
+                )
+                return
+
+            now = utcnow_iso()
+
+            if chunking_error:
+                stmt = (
+                    update(ProcessingJob)
+                    .where(
+                        ProcessingJob.id == job_id,
+                        ProcessingJob.status == "running",
+                        ProcessingJob.claim_token == token,
+                    )
+                    .values(
+                        status="failed",
+                        finished_at=now,
+                        error_message=chunking_error,
+                    )
+                )
+                res = db.execute(stmt)
+                if res.rowcount == 0:
+                    db.rollback()
+                    raise WorkerFencingViolation(f"Lost claim token on chunking job {job_id}")
+                paper.status = "failed"
+                paper.updated_at = now
+                db.commit()
+            else:
+                stmt = (
+                    update(ProcessingJob)
+                    .where(
+                        ProcessingJob.id == job_id,
+                        ProcessingJob.status == "running",
+                        ProcessingJob.claim_token == token,
+                    )
+                    .values(
+                        status="succeeded",
+                        finished_at=now,
+                        versions_json=json.dumps(
+                            {
+                                "tokenizer": chunking_service.TOKENIZER_MODEL_NAME,
+                                "revision": chunking_service.TOKENIZER_REVISION,
+                                "max_sequence_limit": chunking_service.MODEL_MAX_SEQUENCE_LIMIT,
+                                "target_tokens": chunking_service.TARGET_CHUNK_TOKENS,
+                                "overlap_tokens": chunking_service.TARGET_OVERLAP_TOKENS,
+                            }
+                        ),
+                    )
+                )
+                res = db.execute(stmt)
+                if res.rowcount == 0:
+                    db.rollback()
+                    raise WorkerFencingViolation(f"Lost claim token on chunking job {job_id}")
+
+                # Delete any previous chunks for this run_id in case of retry
+                db.query(Chunk).filter(Chunk.paper_id == paper_id, Chunk.run_id == run_id).delete()
+
+                for c in chunks_data:
+                    chunk_row = Chunk(
+                        id=str(uuid.uuid4()),
+                        paper_id=paper_id,
+                        run_id=run_id,
+                        chunk_index=c.chunk_index,
+                        page_start=c.page_start,
+                        page_end=c.page_end,
+                        section=c.section,
+                        text=c.text,
+                        token_count=c.token_count,
+                        block_ids_json=json.dumps(c.block_ids),
+                        is_excluded=1 if c.is_excluded else 0,
+                        tokenizer_name=c.tokenizer_name,
+                        tokenizer_revision=c.tokenizer_revision,
+                        created_at=now,
+                    )
+                    db.add(chunk_row)
+
+                # Atomically publish this generation bundle (pages + sections + chunks)
+                paper.published_run_id = run_id
+                paper.status = "processing"
+                paper.updated_at = now
+                db.commit()
+                logger.info(
+                    f"Chunking succeeded for paper {paper_id} run {run_id}, published {len(chunks_data)} chunks. Full bundle published."
+                )
         finally:
             db.close()

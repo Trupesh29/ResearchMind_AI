@@ -11,6 +11,7 @@ import { WorkspaceModal } from "../components/workspace/WorkspaceModal";
 import { UploadDropzone } from "../components/library/UploadDropzone";
 import { PaperList } from "../components/library/PaperList";
 import { PdfViewerModal } from "../components/library/PdfViewerModal";
+import { QualityCenterModal } from "../components/library/QualityCenterModal";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Button } from "../components/ui/Button";
 
@@ -38,6 +39,8 @@ export const LibraryPage: React.FC = () => {
   const [isWsModalOpen, setIsWsModalOpen] = useState(false);
   const [wsModalMode, setWsModalMode] = useState<"create" | "edit">("create");
   const [viewingPaper, setViewingPaper] = useState<PaperItem | null>(null);
+  const [qualityCenterPaper, setQualityCenterPaper] =
+    useState<PaperItem | null>(null);
   const [deletingPaper, setDeletingPaper] = useState<PaperItem | null>(null);
   const [isDeletingWs, setIsDeletingWs] = useState(false);
   const [isActionLoading, setIsActionLoading] = useState(false);
@@ -469,6 +472,7 @@ export const LibraryPage: React.FC = () => {
             onSearchChange={setSearchQuery}
             onViewPaper={setViewingPaper}
             onDeletePaper={setDeletingPaper}
+            onOpenQualityCenter={setQualityCenterPaper}
             isLoading={isLoadingPapers}
             nextCursor={nextCursor}
             onLoadMore={loadMorePapers}
@@ -520,6 +524,17 @@ export const LibraryPage: React.FC = () => {
         isOpen={!!viewingPaper}
         paper={viewingPaper}
         onClose={() => setViewingPaper(null)}
+      />
+
+      {/* Quality Center Modal */}
+      <QualityCenterModal
+        paper={qualityCenterPaper}
+        isOpen={!!qualityCenterPaper}
+        onClose={() => setQualityCenterPaper(null)}
+        onOpenPdfPage={(p) => {
+          setQualityCenterPaper(null);
+          setViewingPaper(p);
+        }}
       />
     </div>
   );

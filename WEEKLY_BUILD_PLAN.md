@@ -70,11 +70,11 @@ Maintain a varied fixture set from Week 1: open-access text PDFs with different 
 
 Continue Week 1's implementation numbering. These numbers are separate from the roadmap's feature phases.
 
-| Phase | Focus | Target |
+| Phase | Focus | Status |
 |---|---|---|
-| 3 | Persistent worker, recovery, page/block extraction, metadata provenance, quality flags, inspection/retry API | Monday–Tuesday |
-| 4 | Sectioning, tokenizer-safe chunks, Quality Center, reprocessing, source inspection | Wednesday–Thursday |
-| Acceptance | Integrated fixture demo, recovery/accessibility checks, SciCite preparation evidence, Week 3 handoff | Friday |
+| 3 | Persistent worker, recovery, page/block extraction, metadata provenance, quality flags, inspection/retry API | **Completed & Verified** (Commit `6de34b3`) |
+| 4 | Sectioning, tokenizer-safe chunks, Quality Center, reprocessing, source inspection | **Completed & Verified** (Local checkpoint) |
+| Acceptance | Integrated fixture demo, recovery/accessibility checks, SciCite preparation evidence, Week 3 handoff | In progress / Ready for Week 3 |
 
 See [Week 2 implementation phases](docs/WEEK_2_PHASES.md) for scope, integration points, schema reconciliation, and acceptance gates. SciCite preparation and the Week 5 labeled extraction sample remain required within this week. All phases are planned until their verification evidence is recorded.
 

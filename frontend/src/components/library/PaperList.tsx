@@ -7,6 +7,7 @@ import {
   Calendar,
   Layers,
   ChevronDown,
+  Sliders,
 } from "lucide-react";
 import { PaperItem } from "../../api/types";
 import { Badge } from "../ui/Badge";
@@ -19,6 +20,7 @@ interface PaperListProps {
   onSearchChange: (query: string) => void;
   onViewPaper: (paper: PaperItem) => void;
   onDeletePaper: (paper: PaperItem) => void;
+  onOpenQualityCenter?: (paper: PaperItem) => void;
   isLoading: boolean;
   nextCursor?: string | null;
   onLoadMore?: () => void;
@@ -53,6 +55,7 @@ export const PaperList: React.FC<PaperListProps> = ({
   onSearchChange,
   onViewPaper,
   onDeletePaper,
+  onOpenQualityCenter,
   isLoading,
   nextCursor,
   onLoadMore,
@@ -317,6 +320,19 @@ export const PaperList: React.FC<PaperListProps> = ({
                   <Eye size={14} />
                   <span>View</span>
                 </Button>
+
+                {onOpenQualityCenter && (
+                  <Button
+                    variant="soft"
+                    size="sm"
+                    onClick={() => onOpenQualityCenter(paper)}
+                    aria-label={`Quality Center for ${paper.original_filename}`}
+                    title="Open Document Quality Center"
+                  >
+                    <Sliders size={14} />
+                    <span>Quality</span>
+                  </Button>
+                )}
 
                 <Button
                   variant="ghost"

@@ -111,11 +111,14 @@ class PaperStageDetail(BaseModel):
 class PaperStatusResponse(BaseModel):
     status: str
     stage: str = "validating"
+    substate: str | None = None
     progress: float = 0.0
     attempt: int = 1
     error: str | None = None
     stages: list[PaperStageDetail] = Field(default_factory=list)
     run_id: str | None = None
+    current_run_id: str | None = None
+    published_run_id: str | None = None
     is_stale: bool = False
 
 
@@ -146,5 +149,51 @@ class PageBlocksResponse(BaseModel):
     height: float | None = None
     rotation: int | None = None
     blocks: list[PageBlockItem] = Field(default_factory=list)
+    run_id: str | None = None
+    is_stale: bool = False
+
+
+class ChunkItem(BaseModel):
+    id: str
+    paper_id: str
+    run_id: str
+    chunk_index: int
+    page_start: int
+    page_end: int
+    section: str
+    text: str
+    token_count: int
+    block_ids: list[str] = Field(default_factory=list)
+    is_excluded: bool = False
+    tokenizer_name: str | None = None
+    tokenizer_revision: str | None = None
+    created_at: str
+
+
+class ChunksListResponse(BaseModel):
+    items: list[ChunkItem] = Field(default_factory=list)
+    total: int = 0
+    run_id: str | None = None
+    is_stale: bool = False
+    next_cursor: str | None = None
+
+
+class SectionItem(BaseModel):
+    id: str
+    paper_id: str
+    run_id: str
+    section_index: int
+    section: str
+    heading: str | None = None
+    page_start: int
+    page_end: int
+    text: str | None = None
+    block_ids: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class SectionsListResponse(BaseModel):
+    items: list[SectionItem] = Field(default_factory=list)
+    total: int = 0
     run_id: str | None = None
     is_stale: bool = False

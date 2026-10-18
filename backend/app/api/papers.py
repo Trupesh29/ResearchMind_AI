@@ -10,12 +10,14 @@ from backend.app.core.errors import AppException, ErrorCode
 from backend.app.db.models import User
 from backend.app.db.session import get_db
 from backend.app.schemas.paper import (
+    ChunksListResponse,
     PageBlocksResponse,
     PagesListResponse,
     PaperListResponse,
     PaperResponse,
     PaperStatusResponse,
     PaperUploadBatchResponse,
+    SectionsListResponse,
 )
 from backend.app.services import paper_service, processing_service
 
@@ -120,6 +122,40 @@ def get_paper_page_blocks(
     current_user: User = Depends(get_current_user),
 ) -> PageBlocksResponse:
     return processing_service.get_paper_page_blocks(db, current_user.id, paper_id, page_number)
+
+
+@router.get("/{paper_id}/chunks", response_model=ChunksListResponse)
+def get_paper_chunks(
+    paper_id: str,
+    page: int | None = Query(default=None, ge=1, description="Filter chunks overlapping page number"),
+    section: str | None = Query(default=None, description="Filter chunks by section name"),
+    limit: int = Query(default=25, ge=1, le=100),
+    cursor: str | None = Query(default=None, description="Opaque cursor for pagination"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ChunksListResponse:
+    return processing_service.get_paper_chunks(
+        db=db,
+        user_id=current_user.id,
+        paper_id=paper_id,
+        page=page,
+        section=section,
+        limit=limit,
+        cursor=cursor,
+    )
+
+
+@router.get("/{paper_id}/sections", response_model=SectionsListResponse)
+def get_paper_sections(
+    paper_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SectionsListResponse:
+    return processing_service.get_paper_sections(
+        db=db,
+        user_id=current_user.id,
+        paper_id=paper_id,
+    )
 
 
 @router.post("/{paper_id}/reprocess", response_model=PaperStatusResponse, status_code=status.HTTP_202_ACCEPTED)
