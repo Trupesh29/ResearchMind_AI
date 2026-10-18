@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import unittest.mock
@@ -862,11 +865,11 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
     w1 = WorkerEngine(worker_id="slow-worker", lease_timeout_seconds=2)
     w1.run_once()  # completes validation -> extracting queued
 
-    # Patch extract_pdf to take 2.5s (longer than lease_timeout_seconds=2)
+    # Patch extract_pdf to take 3.0s (longer than lease_timeout_seconds=2)
     real_extract = extraction_service.extract_pdf
 
     def slow_extract(*args, **kwargs):
-        time.sleep(2.5)
+        time.sleep(3.0)
         return real_extract(*args, **kwargs)
 
     w2 = WorkerEngine(worker_id="polling-worker", lease_timeout_seconds=2)
@@ -877,12 +880,13 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
 
     t = threading.Thread(target=run_slow)
     t.start()
-    time.sleep(1.0)
-    # While slow-worker is running, polling-worker checks for expired leases / claims
+    # Wait 2.2s: the original 2.0s lease duration has expired, but heartbeat actively renewed
+    time.sleep(2.2)
+    # While slow-worker is running past the original lease window, polling-worker checks for expired leases
     w2_worked = w2.run_once()
     t.join()
 
-    # Polling worker could NOT steal the job because heartbeat was actively refreshed
+    # Polling worker could NOT steal the job because heartbeat was actively refreshed past the 2s mark
     assert w2_worked is False
 
     with p3_env["factory"]() as s:
@@ -893,6 +897,116 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
         )
         assert ext_job.status == "succeeded"
         assert ext_job.worker_id == "slow-worker"
+
+    # Part 2: Real worker subprocess kill and recovery with independent worker
+    proc_paper_id = str(uuid.uuid4())
+    proc_pdf = p3_env["data_dir"] / "subprocess_kill.pdf"
+    _create_synthetic_pdf(
+        proc_pdf,
+        [{"width": 612, "height": 792, "blocks": [{"rect": [72, 72, 200, 100], "text": "Subprocess Test"}]}],
+    )
+    with p3_env["factory"]() as s:
+        p2 = Paper(
+            id=proc_paper_id,
+            workspace_id=p3_env["workspace_id"],
+            original_filename="subprocess_kill.pdf",
+            storage_path=str(proc_pdf),
+            sha256=hashlib.sha256(proc_pdf.read_bytes()).hexdigest(),
+            size_bytes=proc_pdf.stat().st_size,
+            status="uploaded",
+        )
+        s.add(p2)
+        job2 = processing_service.enqueue_validation_job(s, proc_paper_id)
+        p2.current_run_id = job2.run_id
+        s.commit()
+
+    root_dir = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["DATABASE_URL"] = p3_env["db_url"]
+    env["PYTHONPATH"] = str(root_dir)
+
+    subproc_cmd = (
+        "import sys, time; "
+        "import backend.app.services.extraction_service as es; "
+        "orig = es.extract_pdf; "
+        "es.extract_pdf = lambda *a, **k: (time.sleep(3.0), orig(*a, **k))[1]; "
+        "from worker.main import main; "
+        "sys.argv = ['worker', '--db-url', sys.argv[1], '--poll-interval', '0.1', '--lease-timeout', '2', '--worker-id', 'subprocess-victim']; "
+        "sys.exit(main())"
+    )
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            subproc_cmd,
+            p3_env["db_url"],
+        ],
+        env=env,
+        cwd=str(root_dir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    try:
+        # Wait until worker subprocess claims the extracting job and is running
+        claimed = False
+        for _ in range(60):
+            time.sleep(0.2)
+            with p3_env["factory"]() as s:
+                running_job = (
+                    s.query(ProcessingJob)
+                    .filter(
+                        ProcessingJob.paper_id == proc_paper_id,
+                        ProcessingJob.stage == "extracting",
+                        ProcessingJob.status == "running",
+                    )
+                    .first()
+                )
+                if running_job:
+                    claimed = True
+                    break
+        if not claimed:
+            proc.kill()
+            out, err = proc.communicate(timeout=3)
+            with p3_env["factory"]() as s:
+                jobs_dump = [(j.stage, j.status, j.attempt) for j in s.query(ProcessingJob).all()]
+            raise AssertionError(
+                f"Worker subprocess did not enter running state for extracting stage. "
+                f"Poll={proc.poll()}, Jobs={jobs_dump}, Stdout={out}, Stderr={err}"
+            )
+
+        # Terminate the worker abruptly while it is actively processing
+        proc.kill()
+        proc.wait(timeout=5)
+
+        # Wait for the lease to expire (2.0s + buffer)
+        time.sleep(2.5)
+
+        # Independent recovery worker recovers expired lease, retrying it
+        recovery_worker = WorkerEngine(worker_id="recovery-worker", lease_timeout_seconds=2)
+        recovery_worker.run_once()  # recovers expired attempt 1 -> queued attempt 2
+        recovery_worker.run_once()  # processes attempt 2
+
+        with p3_env["factory"]() as s:
+            ext_jobs = (
+                s.query(ProcessingJob)
+                .filter(ProcessingJob.paper_id == proc_paper_id, ProcessingJob.stage == "extracting")
+                .order_by(ProcessingJob.attempt.asc())
+                .all()
+            )
+            assert len(ext_jobs) >= 2
+            assert ext_jobs[0].status == "failed"
+            assert ext_jobs[0].attempt == 1
+            assert "Worker lease expired" in (ext_jobs[0].error_message or "")
+            assert ext_jobs[-1].attempt >= 2
+            assert ext_jobs[-1].status in ("running", "succeeded")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 def test_r3_concurrent_reprocess_conflict_and_generation_isolation(p3_env: dict):
@@ -951,7 +1065,7 @@ def test_r3_concurrent_reprocess_conflict_and_generation_isolation(p3_env: dict)
 
 
 def test_r4_public_error_sanitization_no_paths_exposed(p3_env: dict):
-    """R4: Missing file and unexpected errors do not leak internal filesystem paths."""
+    """R4: Missing file and unexpected errors do not leak internal filesystem paths, UNC paths, or tokens."""
     client = p3_env["client"]
     db: Session = p3_env["factory"]()
     paper_id = str(uuid.uuid4())
@@ -991,11 +1105,33 @@ def test_r4_public_error_sanitization_no_paths_exposed(p3_env: dict):
         assert "private" not in st_err
         assert "\\" not in st_err
 
+    # Also test unexpected exceptions containing forward-slash paths, UNC paths, and secret tokens
+    with p3_env["factory"]() as s:
+        j = s.query(ProcessingJob).filter(ProcessingJob.paper_id == paper_id).first()
+        j.error_message = "parser crashed at F:/secret/private.pdf; unc=\\\\storage\\share; token=secret-bearer-999; unix=/var/log/private.log"
+        s.commit()
+
+    res2 = client.get(f"/api/papers/{paper_id}/status")
+    assert res2.status_code == 200
+    data2 = res2.json()
+    assert data2["error"] == "An error occurred during document processing."
+    assert "secret" not in data2["error"]
+    assert "F:" not in data2["error"]
+    assert "/" not in data2["error"]
+    assert "\\" not in data2["error"]
+    for st in data2["stages"]:
+        st_e = st["error"] or ""
+        assert "secret" not in st_e
+        assert "F:" not in st_e
+        assert "/" not in st_e
+        assert "\\" not in st_e
+
 
 def test_r5_rotated_and_cropped_geometry_consistency(p3_env: dict):
-    """R5: 0/90/180/270 rotated and cropped pages have block coords strictly within page bounds."""
+    """R5: 0/90/180/270 rotated and cropped pages have block coords strictly within page bounds and valid overlays."""
     test_dir = p3_env["data_dir"]
 
+    # 1. Test 0, 90, 180, 270 rotations with visual overlay inspection
     for rot in [0, 90, 180, 270]:
         pdf_path = test_dir / f"rot_{rot}.pdf"
         doc = fitz.open()
@@ -1008,10 +1144,60 @@ def test_r5_rotated_and_cropped_geometry_consistency(p3_env: dict):
         result = extraction_service.extract_pdf(str(pdf_path))
         extracted_p = result.pages[0]
         assert extracted_p.rotation == rot
+        assert len(extracted_p.blocks) > 0
+
+        # Visual overlay inspection: draw extracted bounding boxes onto page pixmap
+        render_doc = fitz.open(pdf_path)
+        render_page = render_doc[0]
+        shape = render_page.new_shape()
         for b in extracted_p.blocks:
             x0, y0, x1, y1 = b.bbox
             assert 0.0 <= x0 <= x1 <= extracted_p.width + 0.1
             assert 0.0 <= y0 <= y1 <= extracted_p.height + 0.1
+            shape.draw_rect(fitz.Rect(x0, y0, x1, y1))
+        shape.finish(color=(1, 0, 0), width=1.5)
+        shape.commit()
+
+        pix = render_page.get_pixmap()
+        overlay_path = test_dir / f"overlay_rot_{rot}.png"
+        pix.save(overlay_path)
+        render_doc.close()
+
+        assert overlay_path.exists()
+        assert pix.width > 0 and pix.height > 0
+        assert len(pix.samples) > 0
+
+    # 2. Test cropped page
+    crop_pdf = test_dir / "cropped_page.pdf"
+    crop_doc = fitz.open()
+    cp = crop_doc.new_page(width=612, height=792)
+    cp.insert_text((100, 150), "Cropped content text")
+    cp.set_cropbox(fitz.Rect(50, 50, 500, 600))
+    crop_doc.save(crop_pdf)
+    crop_doc.close()
+
+    crop_result = extraction_service.extract_pdf(str(crop_pdf))
+    crop_p = crop_result.pages[0]
+    assert len(crop_p.blocks) > 0
+    for b in crop_p.blocks:
+        x0, y0, x1, y1 = b.bbox
+        assert 0.0 <= x0 <= x1 <= crop_p.width + 0.1
+        assert 0.0 <= y0 <= y1 <= crop_p.height + 0.1
+
+    render_crop_doc = fitz.open(crop_pdf)
+    rc_page = render_crop_doc[0]
+    crop_shape = rc_page.new_shape()
+    for b in crop_p.blocks:
+        crop_shape.draw_rect(fitz.Rect(b.bbox))
+    crop_shape.finish(color=(0, 0, 1), width=1.5)
+    crop_shape.commit()
+    crop_pix = rc_page.get_pixmap()
+    crop_overlay_path = test_dir / "overlay_crop.png"
+    crop_pix.save(crop_overlay_path)
+    render_crop_doc.close()
+
+    assert crop_overlay_path.exists()
+    assert crop_pix.width > 0 and crop_pix.height > 0
 
 
 def test_r6_metadata_provenance_and_clean_heuristics(p3_env: dict):
@@ -1077,3 +1263,204 @@ def test_r7_attempt_history_preservation(p3_env: dict):
     assert job_att2.status == "queued"
     assert job_att2.id != job.id
     db.close()
+
+
+def test_f1_structured_provenance_and_http_contracts(p3_env: dict):
+    """F1: Uploaded & processed PDF with structured provenance returns 200 on detail and library listing."""
+    client = p3_env["client"]
+    test_dir = p3_env["data_dir"]
+    pdf_path = test_dir / "provenance_paper.pdf"
+    doc = fitz.open()
+    p = doc.new_page(width=612, height=792)
+    p.insert_text((72, 100), "Deep Learning Architectures for Document Reasoning")
+    p.insert_text((72, 140), "Alice Smith and Bob Jones")
+    p.insert_text((72, 180), "Published in 2023. Keywords: deep learning, transformer, pdf")
+    doc.set_metadata(
+        {
+            "title": "Deep Learning Architectures for Document Reasoning",
+            "author": "Alice Smith, Bob Jones",
+            "keywords": "deep learning, transformer",
+        }
+    )
+    doc.save(pdf_path)
+    doc.close()
+
+    # Upload via HTTP endpoint
+    with open(pdf_path, "rb") as f:
+        resp = client.post(
+            "/api/papers",
+            data={"workspace_id": p3_env["workspace_id"]},
+            files={"files": ("provenance_paper.pdf", f, "application/pdf")},
+        )
+    assert resp.status_code == 202
+    paper_id = resp.json()["papers"][0]["id"]
+
+    # Run worker to process validating and extracting
+    worker = WorkerEngine()
+    worker.run_once()  # validating
+    worker.run_once()  # extracting
+
+    # 1. Detail endpoint returns 200 with structured provenance intact
+    detail_res = client.get(f"/api/papers/{paper_id}")
+    assert detail_res.status_code == 200
+    detail = detail_res.json()
+    assert detail["title"] == "Deep Learning Architectures for Document Reasoning"
+    assert "Alice Smith" in detail["authors"]
+    assert detail["metadata_source"] is not None
+    assert isinstance(detail["metadata_source"], dict)
+    title_src = detail["metadata_source"].get("title")
+    assert title_src is not None
+    assert isinstance(title_src, dict)
+    assert title_src["source"] in ("pdf", "text")
+    assert title_src.get("evidence") is not None
+
+    # 2. Library list endpoint returns 200 with structured provenance intact
+    list_res = client.get(f"/api/papers?workspace_id={p3_env['workspace_id']}")
+    assert list_res.status_code == 200
+    items = list_res.json()["items"]
+    found = next((item for item in items if item["id"] == paper_id), None)
+    assert found is not None
+    assert found["metadata_source"]["title"]["source"] in ("pdf", "text")
+
+    # 3. Backward compatibility: legacy paper with string sources returns 200
+    with p3_env["factory"]() as s:
+        legacy_p = Paper(
+            id=str(uuid.uuid4()),
+            workspace_id=p3_env["workspace_id"],
+            original_filename="legacy.pdf",
+            storage_path=str(pdf_path),
+            sha256="f" * 64,
+            size_bytes=100,
+            status="ready",
+            metadata_source_json=json.dumps({"title": "pdf", "authors": "text"}),
+        )
+        s.add(legacy_p)
+        s.commit()
+        legacy_id = legacy_p.id
+
+    legacy_detail = client.get(f"/api/papers/{legacy_id}")
+    assert legacy_detail.status_code == 200
+    assert legacy_detail.json()["metadata_source"] == {"title": "pdf", "authors": "text"}
+
+
+def test_f3_retry_history_and_generation_staleness(p3_env: dict):
+    """F3: Status reflects latest attempt; retries do not permanently fail; pages report staleness."""
+    client = p3_env["client"]
+    paper_id = str(uuid.uuid4())
+    run_1 = str(uuid.uuid4())
+    with p3_env["factory"]() as s:
+        paper = Paper(
+            id=paper_id,
+            workspace_id=p3_env["workspace_id"],
+            original_filename="staleness_test.pdf",
+            storage_path="staleness_test.pdf",
+            sha256="1" * 64,
+            size_bytes=100,
+            status="processing",
+            current_run_id=run_1,
+            published_run_id=None,
+        )
+        s.add(paper)
+        s.flush()
+        # Stage validating succeeded
+        s.add(
+            ProcessingJob(
+                id=str(uuid.uuid4()),
+                paper_id=paper_id,
+                run_id=run_1,
+                stage="validating",
+                status="succeeded",
+                attempt=1,
+            )
+        )
+        # Stage extracting attempt 1 expired / failed
+        s.add(
+            ProcessingJob(
+                id=str(uuid.uuid4()),
+                paper_id=paper_id,
+                run_id=run_1,
+                stage="extracting",
+                status="failed",
+                attempt=1,
+                error_message="Worker lease expired after 30s.",
+            )
+        )
+        # Stage extracting attempt 2 queued
+        s.add(
+            ProcessingJob(
+                id=str(uuid.uuid4()),
+                paper_id=paper_id,
+                run_id=run_1,
+                stage="extracting",
+                status="queued",
+                attempt=2,
+            )
+        )
+        s.commit()
+
+    # While attempt 2 is queued, status is processing attempt 2, error is None
+    res = client.get(f"/api/papers/{paper_id}/status")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "processing"
+    assert data["stage"] == "extracting"
+    assert data["attempt"] == 2
+    assert data["error"] is None
+
+    # When attempt 2 succeeds, status is processing awaiting sectioning (Phase 3 boundary)
+    with p3_env["factory"]() as s:
+        job2 = (
+            s.query(ProcessingJob)
+            .filter(
+                ProcessingJob.paper_id == paper_id,
+                ProcessingJob.stage == "extracting",
+                ProcessingJob.attempt == 2,
+            )
+            .first()
+        )
+        job2.status = "succeeded"
+        paper_db = s.query(Paper).filter(Paper.id == paper_id).first()
+        paper_db.published_run_id = run_1
+        # Add published page
+        s.add(
+            Page(
+                id=str(uuid.uuid4()),
+                paper_id=paper_id,
+                run_id=run_1,
+                page_number=1,
+                char_count=50,
+                extraction_status="ok",
+                blocks_json=json.dumps([{"id": "b1", "bbox": [10, 10, 50, 50], "text": "Hello", "text_hash": "h"}]),
+            )
+        )
+        s.commit()
+
+    res2 = client.get(f"/api/papers/{paper_id}/status")
+    assert res2.status_code == 200
+    assert res2.json()["status"] == "processing"
+    assert res2.json()["progress"] == 0.5
+    assert res2.json()["attempt"] == 2
+
+    # Verify pages: published run, not stale
+    pages_res = client.get(f"/api/papers/{paper_id}/pages")
+    assert pages_res.status_code == 200
+    assert pages_res.json()["is_stale"] is False
+    assert pages_res.json()["run_id"] == run_1
+
+    # Now simulate a reprocess request starting run_2
+    run_2 = str(uuid.uuid4())
+    with p3_env["factory"]() as s:
+        paper_db = s.query(Paper).filter(Paper.id == paper_id).first()
+        paper_db.current_run_id = run_2
+        s.commit()
+
+    # Now pages should report is_stale=True because current_run_id != published_run_id
+    pages_stale_res = client.get(f"/api/papers/{paper_id}/pages")
+    assert pages_stale_res.status_code == 200
+    assert pages_stale_res.json()["is_stale"] is True
+    assert pages_stale_res.json()["run_id"] == run_1
+
+    blocks_stale_res = client.get(f"/api/papers/{paper_id}/pages/1/blocks")
+    assert blocks_stale_res.status_code == 200
+    assert blocks_stale_res.json()["is_stale"] is True
+    assert blocks_stale_res.json()["run_id"] == run_1

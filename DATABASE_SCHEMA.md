@@ -468,8 +468,14 @@ The database only checks that these columns contain **valid JSON** (`json_valid`
   "chunk_count": 214
 }
 
-// metadata_source_json: how each field was obtained
-{ "title": "pdf", "authors": "pdf", "publication_year": "inferred", "keywords": "inferred" }
+// metadata_source_json: how each field was obtained (supports structured provenance + legacy strings)
+{
+  "title": { "source": "pdf", "evidence": "Document Catalog Title", "page_number": 1 },
+  "authors": { "source": "text", "evidence": "Alice Smith, Bob Jones", "page_number": 1 },
+  "publication_year": { "source": "inferred", "evidence": "2023 from header string", "page_number": 1 }
+}
+// Legacy format (also accepted for backward compatibility):
+// { "title": "pdf", "authors": "pdf", "publication_year": "inferred" }
 ```
 
 ### 5.2 `pages.flags_json`, `pages.blocks_json`

@@ -480,3 +480,156 @@ def test_upgrade_populated_database_preserves_records(temp_test_dir):
         session.rollback()
 
     engine.dispose()
+
+
+def test_migration_0003_to_0004_data_preservation_and_reconciliation(temp_test_dir):
+    """
+    Verifies upgrade of a database at historical 0003_add_processing_jobs_and_pages
+    (from 2ef4ec2) to head (0004_add_generation_and_fencing_controls):
+    - papers.current_run_id and published_run_id are backfilled consistently
+    - pages.run_id is backfilled
+    - duplicate active jobs are reconciled to exactly 1 active job before partial unique index
+    - unique constraints and indexes are enforced
+    - downgrade to 0003 functions cleanly
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, inspect, text
+    from sqlalchemy.orm import sessionmaker
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    db_file = temp_test_dir / "migration_0003_0004_test.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+
+    # Setup isolated migrations directory containing historical 0003
+    hist_migrations = temp_test_dir / "test_migrations"
+    shutil.copytree(PROJECT_ROOT / "backend" / "migrations", hist_migrations)
+    rev_0003 = "0003_add_processing_jobs_and_pages.py"
+    original_0003 = subprocess.check_output(
+        ["git", "show", f"2ef4ec2:backend/migrations/versions/{rev_0003}"],
+        cwd=PROJECT_ROOT,
+    )
+    (hist_migrations / "versions" / rev_0003).write_bytes(original_0003)
+
+    # 1. Migrate to historical 0003 (before 0004 existed)
+    cfg = Config(str(PROJECT_ROOT / "backend" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(hist_migrations))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    command.upgrade(cfg, "0003_add_processing_jobs_and_pages")
+
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    SessionCls = sessionmaker(bind=engine)
+
+    # 2. Insert pre-existing records: paper with duplicate active jobs and page without run_id
+    paper_id = str(uuid.uuid4())
+    run_1 = str(uuid.uuid4())
+    now = utcnow_iso()
+    with SessionCls() as session:
+        user = User(email="hist_p3@test.org", password_hash="h1", display_name="Hist P3")
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+        ws = Workspace(user_id=user.id, name="Hist P3 WS")
+        session.add(ws)
+        session.commit()
+        session.refresh(ws)
+
+        # Paper in historical 0003 schema (no current_run_id column yet)
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, created_at, updated_at) "
+                "VALUES (:id, :ws_id, 'hist.pdf', 'hist.pdf', 'hist_sha_123', 500, 'processing', :now, :now)"
+            ),
+            {"id": paper_id, "ws_id": ws.id, "now": now},
+        )
+        # Duplicate active jobs for the same paper (allowed in 0003)
+        job1_id = str(uuid.uuid4())
+        job2_id = str(uuid.uuid4())
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES (:id, :paper_id, :run_id, 'validating', 'queued', 1, '2026-10-18T10:00:00+00:00')"
+            ),
+            {"id": job1_id, "paper_id": paper_id, "run_id": run_1},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES (:id, :paper_id, :run_id, 'validating', 'running', 2, '2026-10-18T10:05:00+00:00')"
+            ),
+            {"id": job2_id, "paper_id": paper_id, "run_id": run_1},
+        )
+        # Page in historical 0003 schema (had paper_id, page_number, but NO run_id)
+        page1_id = str(uuid.uuid4())
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, page_number, char_count, extraction_status, flags_json, created_at) "
+                "VALUES (:id, :paper_id, 1, 100, 'ok', '[]', :now)"
+            ),
+            {"id": page1_id, "paper_id": paper_id, "now": now},
+        )
+        session.commit()
+
+    engine.dispose()
+
+    # 3. Upgrade to head (0004 forward migration)
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "backend" / "migrations"))
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    SessionCls = sessionmaker(bind=engine)
+
+    # 4. Verify data preservation and backfilling
+    with SessionCls() as session:
+        # Check papers columns
+        cols = {c["name"] for c in inspect(engine).get_columns("papers")}
+        assert "current_run_id" in cols
+        assert "published_run_id" in cols
+
+        paper_row = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"),
+            {"id": paper_id},
+        ).fetchone()
+        assert paper_row[0] == run_1  # Backfilled from jobs
+        assert paper_row[1] == run_1  # Backfilled from pages
+
+        # Check pages run_id
+        page_cols = {c["name"] for c in inspect(engine).get_columns("pages")}
+        assert "run_id" in page_cols
+        page_row = session.execute(
+            text("SELECT run_id FROM pages WHERE id = :id"),
+            {"id": page1_id},
+        ).fetchone()
+        assert page_row[0] == run_1
+
+        # Check duplicate active jobs reconciliation:
+        # job1 (older) marked failed, job2 (newer) remained running
+        j1 = session.execute(text("SELECT status FROM processing_jobs WHERE id = :id"), {"id": job1_id}).fetchone()
+        j2 = session.execute(text("SELECT status FROM processing_jobs WHERE id = :id"), {"id": job2_id}).fetchone()
+        assert j1[0] == "failed"
+        assert j2[0] == "running"
+
+        # Check partial unique index: cannot insert another active job for this paper
+        with pytest.raises(IntegrityError):
+            session.execute(
+                text(
+                    "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                    "VALUES (:id, :paper_id, 'run_dup', 'validating', 'queued', 1, :now)"
+                ),
+                {"id": str(uuid.uuid4()), "paper_id": paper_id, "now": now},
+            )
+            session.commit()
+        session.rollback()
+
+    # 5. Verify downgrade to 0003 works cleanly
+    command.downgrade(cfg, "0003_add_processing_jobs_and_pages")
+    with engine.connect() as c:
+        rev = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        assert rev == "0003_add_processing_jobs_and_pages"
+
+    engine.dispose()

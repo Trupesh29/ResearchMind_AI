@@ -106,7 +106,12 @@ Exceeded limits return `429` with a `Retry-After` header in seconds.
   "authors": ["A. Author", "B. Author"],
   "publication_year": 2024,
   "keywords": ["RAM", "DDR5"],
-  "metadata_source": { "title": "pdf", "authors": "pdf", "publication_year": "inferred", "keywords": "inferred" },
+  "metadata_source": {
+    "title": { "source": "pdf", "evidence": "Performance Analysis of DDR4 and DDR5 RAM", "page_number": 1 },
+    "authors": { "source": "text", "evidence": "A. Author, B. Author", "page_number": 1 },
+    "publication_year": { "source": "inferred", "evidence": "Published in 2024", "page_number": 1 },
+    "keywords": { "source": "inferred", "evidence": "Keywords: RAM, DDR5", "page_number": 1 }
+  },
   "page_count": 18,
   "size_bytes": 2516582,
   "status": "ready",
@@ -121,7 +126,8 @@ Exceeded limits return `429` with a `Retry-After` header in seconds.
 }
 ```
 
-`status` is one of `uploaded | processing | ready | failed`. `metadata_source` lets the UI label inferred fields differently from fields read directly from the PDF.
+`status` is one of `uploaded | processing | ready | failed`.
+`metadata_source` maps field names to `ProvenanceDetail` objects (`source`, `page_number`, `evidence`). For backward compatibility with previously stored records, simple string values (e.g. `{"title": "pdf"}`) remain fully supported and serializable across API endpoints.
 
 ### 3.2 `Citation`
 
@@ -257,30 +263,38 @@ Response `200`: `{ "items": [Paper], "next_cursor": null }`
 Response `200`: `Paper`.
 
 ### `GET /papers/{paper_id}/status`
-Cheap endpoint for polling (every 2 seconds is fine).
+Cheap endpoint for polling (every 2 seconds is fine). Status is computed from the latest attempt per pipeline stage.
 ```json
 {
   "status": "processing",
-  "stage": "embedding",
-  "progress": 0.65,
+  "stage": "extracting",
+  "progress": 0.5,
   "attempt": 1,
+  "run_id": "9a1b…",
+  "current_run_id": "9a1b…",
+  "published_run_id": null,
   "error": null,
   "stages": [
-    { "stage": "extracting", "status": "succeeded", "finished_at": "…" },
-    { "stage": "embedding",  "status": "running",   "started_at": "…" }
+    { "stage": "validating", "status": "succeeded", "finished_at": "…" },
+    { "stage": "extracting", "status": "running", "started_at": "…" }
   ]
 }
 ```
-`progress` is an estimate from completed stages, not a promise. When `status = failed`, `error` holds a readable message.
+`progress` is an estimate from completed stages, not a promise. When `status = failed`, `error` holds a sanitized public message.
 
 ### `GET /papers/{paper_id}/pages`
 Response `200`:
 ```json
-{ "items": [
-  { "page_number": 1, "char_count": 3120, "extraction_status": "ok", "flags": [] },
-  { "page_number": 3, "char_count": 12,   "extraction_status": "partial", "flags": ["possible_scan"] }
-] }
+{
+  "run_id": "9a1b…",
+  "is_stale": false,
+  "items": [
+    { "page_number": 1, "char_count": 3120, "extraction_status": "ok", "flags": [] },
+    { "page_number": 3, "char_count": 12,   "extraction_status": "partial", "flags": ["possible_scan"] }
+  ]
+}
 ```
+`is_stale` is `true` if a newer generation is actively processing or failed, preventing outdated pages from being silently treated as current output.
 
 ### `GET /papers/{paper_id}/pages/{page_number}/blocks`
 Returns page dimensions, rotation, and block coordinates for citation highlighting and inspection. `404` if the page does not exist.
@@ -291,6 +305,8 @@ Response `200`:
   "width": 612.0,
   "height": 792.0,
   "rotation": 0,
+  "run_id": "9a1b…",
+  "is_stale": false,
   "blocks": [
     {
       "id": "p1_b0",

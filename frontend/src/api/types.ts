@@ -87,6 +87,14 @@ export interface WorkspaceUpdatePayload {
   description?: string;
 }
 
+export interface ProvenanceDetail {
+  source: string;
+  file_property?: string;
+  page_number?: number;
+  block_id?: string;
+  evidence?: string;
+}
+
 export interface PaperItem {
   id: string;
   workspace_id: string;
@@ -95,12 +103,14 @@ export interface PaperItem {
   authors: string[];
   publication_year: number | null;
   keywords: string[];
-  metadata_source: Record<string, string> | null;
+  metadata_source: Record<string, ProvenanceDetail | string> | null;
   page_count: number | null;
   size_bytes: number;
   status: "uploaded" | "processing" | "ready" | "failed";
   quality: Record<string, any> | null;
   created_at: string;
+  current_run_id?: string | null;
+  published_run_id?: string | null;
 }
 
 export interface PaperListResponse {
@@ -132,10 +142,53 @@ export interface PaperUploadBatchResponse {
   rejected: PaperUploadRejectedItem[];
 }
 
+export interface PaperStageDetail {
+  stage: string;
+  status: string;
+  attempt: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+}
+
 export interface PaperStatusResponse {
   status: string;
   stage: string;
   progress: number;
   attempt: number;
   error?: string | null;
+  stages?: PaperStageDetail[];
+  run_id?: string | null;
+  is_stale?: boolean;
+}
+
+export interface PageSummaryItem {
+  page_number: number;
+  char_count: number;
+  extraction_status: string;
+  flags: string[];
+}
+
+export interface PagesListResponse {
+  items: PageSummaryItem[];
+  total_pages: number;
+  run_id?: string | null;
+  is_stale?: boolean;
+}
+
+export interface PageBlockItem {
+  id: string;
+  bbox: [number, number, number, number];
+  text: string;
+  text_hash: string;
+}
+
+export interface PageBlocksResponse {
+  page_number: number;
+  width?: number | null;
+  height?: number | null;
+  rotation?: number | null;
+  blocks: PageBlockItem[];
+  run_id?: string | null;
+  is_stale?: boolean;
 }

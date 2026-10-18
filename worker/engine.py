@@ -37,16 +37,19 @@ class WorkerFencingViolation(Exception):
 def sanitize_error_message(err: Exception | str, storage_path: str | None = None) -> str:
     """Sanitize error messages to eliminate private server paths, drive letters, or internals."""
     msg = str(err) if not isinstance(err, str) else err
+    if not msg:
+        return "An error occurred during document processing."
+
+    low = msg.lower()
 
     # Check for known categories with standard public strings
-    low = msg.lower()
     if "not found" in low or "no such file" in low or "does not exist" in low:
         return "PDF storage file could not be found or opened."
     if "permission denied" in low:
         return "PDF storage file cannot be accessed due to file permissions."
     if "encrypted" in low:
         return "PDF is encrypted and cannot be processed."
-    if "unsupported_text" in low or "no selectable text" in low:
+    if "unsupported_text" in low or "no selectable text" in low or "zero extractable pages" in low:
         return "Document contains no selectable text (scanned or image-only PDF without OCR). OCR is not supported in Phase 3."
     if "magic bytes" in low or "not a valid pdf" in low or "cannot open broken document" in low:
         return "File is not a valid PDF or has corrupted structure."
@@ -57,14 +60,14 @@ def sanitize_error_message(err: Exception | str, storage_path: str | None = None
     if "lost lease" in low or "fencing" in low or "superseded" in low:
         return "Worker lease expired or was superseded by another worker."
 
-    # Scrub paths matching Windows drive letters or standard Unix paths
-    cleaned = re.sub(r"[A-Za-z]:\\[^:\s,;\"']+", "[storage path]", msg)
-    cleaned = re.sub(r"/(?:tmp|var|home|usr|dev)/[^\s,;\"']+", "[storage path]", cleaned)
-    if storage_path:
-        cleaned = cleaned.replace(storage_path, "[storage path]")
-        cleaned = cleaned.replace(os.path.basename(storage_path), "[file]")
+    lease_match = re.search(r"worker lease expired after (\d+)s\.", low)
+    if lease_match:
+        return f"Worker lease expired after {lease_match.group(1)}s."
+    if "lease expired" in low:
+        return "Worker lease expired."
 
-    return cleaned[:255].strip()
+    # Return safe generic fallback for unknown exceptions instead of leaking arbitrary paths or tokens
+    return "An error occurred during document processing."
 
 
 class LeaseHeartbeat:
@@ -211,6 +214,7 @@ class WorkerEngine:
                     ProcessingJob.id == job.id,
                     ProcessingJob.status == "running",
                     ProcessingJob.claim_token == job.claim_token,
+                    ProcessingJob.heartbeat_at < threshold_iso,
                 )
                 .values(
                     status="failed",

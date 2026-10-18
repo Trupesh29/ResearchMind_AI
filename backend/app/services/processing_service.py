@@ -126,7 +126,7 @@ def get_paper_status_details(
         )
 
     # Target the active / current generation run
-    effective_run_id = paper.current_run_id or all_jobs[-1].run_id
+    effective_run_id = paper.current_run_id or (all_jobs[-1].run_id if all_jobs else None)
     run_jobs = [j for j in all_jobs if j.run_id == effective_run_id]
     if not run_jobs:
         run_jobs = all_jobs
@@ -143,71 +143,120 @@ def get_paper_status_details(
         for j in run_jobs
     ]
 
-    # Compute status, active stage, and progress
-    failing_jobs = [j for j in run_jobs if j.status == "failed"]
-    if failing_jobs or paper.status == "failed":
-        last_failed = failing_jobs[-1] if failing_jobs else run_jobs[-1]
-        raw_err = last_failed.error_message or "Processing failed."
-        return PaperStatusResponse(
-            status="failed",
-            stage=last_failed.stage,
-            progress=0.0,
-            attempt=last_failed.attempt,
-            error=sanitize_error_message(raw_err),
-            stages=stage_details,
-        )
+    is_stale = bool(paper.published_run_id and effective_run_id and paper.published_run_id != effective_run_id)
 
-    # Check stages in progress / completed
-    extracting_job = next((j for j in run_jobs if j.stage == "extracting"), None)
-    validating_job = next((j for j in run_jobs if j.stage == "validating"), None)
+    # Group by stage to evaluate latest attempt per stage
+    validating_jobs = [j for j in run_jobs if j.stage == "validating"]
+    extracting_jobs = [j for j in run_jobs if j.stage == "extracting"]
 
-    if extracting_job and extracting_job.status == "succeeded":
-        # Phase 3 boundary: extraction succeeded, holding in processing state awaiting sectioning
-        return PaperStatusResponse(
-            status="processing",
-            stage="extracting",
-            progress=0.5,
-            attempt=extracting_job.attempt,
-            error=None,
-            stages=stage_details,
-        )
-    elif extracting_job and extracting_job.status == "running":
-        return PaperStatusResponse(
-            status="processing",
-            stage="extracting",
-            progress=0.3,
-            attempt=extracting_job.attempt,
-            error=None,
-            stages=stage_details,
-        )
-    elif extracting_job and extracting_job.status == "queued":
-        return PaperStatusResponse(
-            status="processing",
-            stage="extracting",
-            progress=0.2,
-            attempt=extracting_job.attempt,
-            error=None,
-            stages=stage_details,
-        )
-    elif validating_job and validating_job.status == "running":
-        return PaperStatusResponse(
-            status="processing",
-            stage="validating",
-            progress=0.1,
-            attempt=validating_job.attempt,
-            error=None,
-            stages=stage_details,
-        )
-    else:
-        # Default / validating queued
-        return PaperStatusResponse(
-            status=paper.status,
-            stage="validating",
-            progress=0.05,
-            attempt=validating_job.attempt if validating_job else 1,
-            error=None,
-            stages=stage_details,
-        )
+    latest_val = max(validating_jobs, key=lambda j: j.attempt) if validating_jobs else None
+    latest_ext = max(extracting_jobs, key=lambda j: j.attempt) if extracting_jobs else None
+
+    # 1. Check extracting stage first if present
+    if latest_ext:
+        if latest_ext.status == "running":
+            return PaperStatusResponse(
+                status="processing",
+                stage="extracting",
+                progress=0.3,
+                attempt=latest_ext.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_ext.status == "queued":
+            return PaperStatusResponse(
+                status="processing",
+                stage="extracting",
+                progress=0.2,
+                attempt=latest_ext.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_ext.status == "succeeded":
+            return PaperStatusResponse(
+                status="ready" if paper.status == "ready" else "processing",
+                stage="extracting",
+                progress=1.0 if paper.status == "ready" else 0.5,
+                attempt=latest_ext.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_ext.status == "failed":
+            return PaperStatusResponse(
+                status="failed",
+                stage="extracting",
+                progress=0.0,
+                attempt=latest_ext.attempt,
+                error=sanitize_error_message(latest_ext.error_message or "Processing failed."),
+                stages=stage_details,
+                run_id=effective_run_id,
+                is_stale=is_stale,
+            )
+
+    # 2. Check validating stage
+    if latest_val:
+        if latest_val.status == "running":
+            return PaperStatusResponse(
+                status="processing",
+                stage="validating",
+                progress=0.1,
+                attempt=latest_val.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_val.status == "queued":
+            return PaperStatusResponse(
+                status="uploaded" if paper.status == "uploaded" else "processing",
+                stage="validating",
+                progress=0.05,
+                attempt=latest_val.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_val.status == "failed":
+            return PaperStatusResponse(
+                status="failed",
+                stage="validating",
+                progress=0.0,
+                attempt=latest_val.attempt,
+                error=sanitize_error_message(latest_val.error_message or "Validation failed."),
+                stages=stage_details,
+                run_id=effective_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_val.status == "succeeded":
+            return PaperStatusResponse(
+                status="processing",
+                stage="validating",
+                progress=0.15,
+                attempt=latest_val.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                is_stale=is_stale,
+            )
+
+    # 3. Fallback
+    return PaperStatusResponse(
+        status=paper.status,
+        stage="validating",
+        progress=0.0,
+        attempt=1,
+        error=None,
+        stages=stage_details,
+        run_id=effective_run_id,
+        is_stale=is_stale,
+    )
 
 
 def get_paper_pages(
@@ -219,7 +268,7 @@ def get_paper_pages(
     paper = paper_service.get_paper_or_404(db, user_id, paper_id)
 
     if not paper.published_run_id:
-        return PagesListResponse(items=[], total_pages=0)
+        return PagesListResponse(items=[], total_pages=0, run_id=None, is_stale=False)
 
     pages = (
         db.query(Page)
@@ -246,7 +295,13 @@ def get_paper_pages(
             )
         )
 
-    return PagesListResponse(items=items, total_pages=len(items))
+    is_stale = bool(paper.current_run_id and paper.current_run_id != paper.published_run_id)
+    return PagesListResponse(
+        items=items,
+        total_pages=len(items),
+        run_id=paper.published_run_id,
+        is_stale=is_stale,
+    )
 
 
 def get_paper_page_blocks(
@@ -298,10 +353,13 @@ def get_paper_page_blocks(
         except Exception as exc:
             logger.error(f"Error parsing blocks_json for page {page.id}: {exc}")
 
+    is_stale = bool(paper.current_run_id and paper.current_run_id != paper.published_run_id)
     return PageBlocksResponse(
         page_number=page.page_number,
         width=page.width,
         height=page.height,
         rotation=page.rotation,
         blocks=blocks,
+        run_id=page.run_id,
+        is_stale=is_stale,
     )

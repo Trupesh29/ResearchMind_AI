@@ -4,6 +4,16 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 
+class ProvenanceDetail(BaseModel):
+    source: str
+    file_property: str | None = None
+    page_number: int | None = None
+    block_id: str | None = None
+    evidence: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class PaperResponse(BaseModel):
     id: str
     workspace_id: str
@@ -12,12 +22,14 @@ class PaperResponse(BaseModel):
     authors: list[str] = Field(default_factory=list)
     publication_year: int | None = None
     keywords: list[str] = Field(default_factory=list)
-    metadata_source: dict[str, str] | None = None
+    metadata_source: dict[str, ProvenanceDetail | str] | None = None
     page_count: int | None = None
     size_bytes: int
     status: str
     quality: dict[str, Any] | None = None
     created_at: str
+    current_run_id: str | None = None
+    published_run_id: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -52,6 +64,8 @@ class PaperResponse(BaseModel):
                 "status": data.status,
                 "quality": quality,
                 "created_at": data.created_at,
+                "current_run_id": getattr(data, "current_run_id", None),
+                "published_run_id": getattr(data, "published_run_id", None),
             }
         return data
 
@@ -101,6 +115,8 @@ class PaperStatusResponse(BaseModel):
     attempt: int = 1
     error: str | None = None
     stages: list[PaperStageDetail] = Field(default_factory=list)
+    run_id: str | None = None
+    is_stale: bool = False
 
 
 class PageSummaryItem(BaseModel):
@@ -113,6 +129,8 @@ class PageSummaryItem(BaseModel):
 class PagesListResponse(BaseModel):
     items: list[PageSummaryItem]
     total_pages: int = 0
+    run_id: str | None = None
+    is_stale: bool = False
 
 
 class PageBlockItem(BaseModel):
@@ -128,3 +146,5 @@ class PageBlocksResponse(BaseModel):
     height: float | None = None
     rotation: int | None = None
     blocks: list[PageBlockItem] = Field(default_factory=list)
+    run_id: str | None = None
+    is_stale: bool = False

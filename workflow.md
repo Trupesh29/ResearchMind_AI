@@ -6,7 +6,7 @@ Guide implementation and review with less redundant agent context, while preserv
 
 ## 1. Establish scope
 
-Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 1 Phase 2: workspace CRUD, safe PDF upload/storage, library search/list/delete, original PDF viewing, related tests, and documentation. Preserve Phase 1 behavior and defer ingestion, retrieval, and analysis to their scheduled weeks. Keep incomplete changes local. After independent completion acceptance, follow the authorized publication order in section 5.
+Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 2 Phase 3 Follow-up Review repair: structured provenance, immutable migration history (0003 restored, 0004 added), latest attempt status computation, atomic recovery with expiration predicate, category allowlist error sanitization, and real subprocess recovery. Keep Phase 3 local for independent review; do not push or advance to Phase 4.
 
 Gravitas policy equivalent:
 

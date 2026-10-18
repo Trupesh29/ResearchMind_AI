@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 from typing import Any
@@ -55,6 +56,12 @@ def main() -> int:
         help="Run a single claim-and-process pass, then exit immediately",
     )
     parser.add_argument(
+        "--db-url",
+        type=str,
+        default=None,
+        help="Database connection URL (overrides default database)",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -63,6 +70,20 @@ def main() -> int:
 
     args = parser.parse_args()
     setup_logging(args.verbose)
+
+    effective_db_url = args.db_url or os.environ.get("DATABASE_URL")
+    if effective_db_url:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from backend.app.db.session import set_session_factory
+
+        connect_args = {}
+        if effective_db_url.startswith("sqlite"):
+            connect_args["check_same_thread"] = False
+        custom_engine = create_engine(effective_db_url, connect_args=connect_args)
+        factory = sessionmaker(autocommit=False, autoflush=False, bind=custom_engine)
+        set_session_factory(factory)
 
     engine = WorkerEngine(
         worker_id=args.worker_id,
