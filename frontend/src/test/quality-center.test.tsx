@@ -180,11 +180,7 @@ describe("QualityCenterModal Component", () => {
 
   it("renders modal with paper details and token metrics", async () => {
     render(
-      <QualityCenterModal
-        paper={mockPaper}
-        isOpen={true}
-        onClose={vi.fn()}
-      />
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
     );
 
     expect(screen.getByText("Quality Center")).toBeInTheDocument();
@@ -199,11 +195,7 @@ describe("QualityCenterModal Component", () => {
 
   it("navigates tabs and displays stage history in pipeline tab", async () => {
     render(
-      <QualityCenterModal
-        paper={mockPaper}
-        isOpen={true}
-        onClose={vi.fn()}
-      />
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
     );
 
     // Wait for initial load to settle
@@ -215,10 +207,18 @@ describe("QualityCenterModal Component", () => {
     fireEvent.click(stageTab);
 
     await waitFor(() => {
-      expect(screen.getByText("Ingestion Generation Pipeline")).toBeInTheDocument();
-      expect(screen.getAllByText("validating").length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText("extracting").length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText("sectioning").length).toBeGreaterThanOrEqual(1);
+      expect(
+        screen.getByText("Ingestion Generation Pipeline"),
+      ).toBeInTheDocument();
+      expect(screen.getAllByText("validating").length).toBeGreaterThanOrEqual(
+        1,
+      );
+      expect(screen.getAllByText("extracting").length).toBeGreaterThanOrEqual(
+        1,
+      );
+      expect(screen.getAllByText("sectioning").length).toBeGreaterThanOrEqual(
+        1,
+      );
       expect(screen.getAllByText("chunking").length).toBeGreaterThanOrEqual(1);
     });
   });
@@ -231,7 +231,7 @@ describe("QualityCenterModal Component", () => {
         isOpen={true}
         onClose={vi.fn()}
         onOpenPdfPage={onOpenPdfPage}
-      />
+      />,
     );
 
     const viewButtons = await screen.findAllByText("View Page");
@@ -248,37 +248,35 @@ describe("QualityCenterModal Component", () => {
         message: "Paper has an active processing job in progress.",
         details: {},
       },
-      409
+      409,
     );
     vi.spyOn(client.api, "reprocessPaper").mockRejectedValue(error409);
 
     render(
-      <QualityCenterModal
-        paper={mockPaper}
-        isOpen={true}
-        onClose={vi.fn()}
-      />
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /reprocess document/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /reprocess document/i }),
+      ).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /reprocess document/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /reprocess document/i }),
+    );
 
     await waitFor(() => {
-      expect(screen.getByText(/Paper has an active processing job in progress/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Paper has an active processing job in progress/i),
+      ).toBeInTheDocument();
     });
   });
 
   it("calls onClose when Close button or Escape is pressed", async () => {
     const onClose = vi.fn();
     render(
-      <QualityCenterModal
-        paper={mockPaper}
-        isOpen={true}
-        onClose={onClose}
-      />
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={onClose} />,
     );
 
     await waitFor(() => {
@@ -290,5 +288,89 @@ describe("QualityCenterModal Component", () => {
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("supports pagination beyond 100 chunks and displays loaded counts", async () => {
+    vi.spyOn(client.api, "getPaperChunks").mockResolvedValueOnce({
+      items: mockChunks,
+      total: 120,
+      run_id: "run-gen-1",
+      is_stale: false,
+      next_cursor: "cursor-pg2",
+    });
+
+    render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Loaded 2 of 120 chunks/i)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /Load More Chunks/i }),
+      ).toBeInTheDocument();
+    });
+
+    vi.spyOn(client.api, "getPaperChunks").mockResolvedValueOnce({
+      items: [
+        {
+          id: "chunk-3",
+          paper_id: "paper-123",
+          run_id: "run-gen-1",
+          chunk_index: 2,
+          section: "3. Results",
+          page_start: 3,
+          page_end: 3,
+          block_ids: ["b3"],
+          text: "Results show significant improvement in BLEU score across WMT tasks.",
+          token_count: 150,
+          is_excluded: false,
+          created_at: "2026-10-18T10:00:08Z",
+        },
+      ],
+      total: 120,
+      run_id: "run-gen-1",
+      is_stale: false,
+      next_cursor: null,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Load More Chunks/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("3. Results")).toBeInTheDocument();
+      expect(screen.getByText(/Loaded 3 of 120 chunks/i)).toBeInTheDocument();
+    });
+  });
+
+  it("resets previous state when switching papers", async () => {
+    const { rerender } = render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("1. Introduction")).toBeInTheDocument();
+    });
+
+    const secondPaper: PaperItem = {
+      ...mockPaper,
+      id: "paper-999",
+      title: "Second Document For Testing",
+      original_filename: "second.pdf",
+    };
+
+    rerender(
+      <QualityCenterModal
+        paper={secondPaper}
+        isOpen={true}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // Verify it loads data for paper-999
+    await waitFor(() => {
+      expect(client.api.getPaperStatus).toHaveBeenCalledWith(
+        "paper-999",
+        expect.anything(),
+      );
+    });
   });
 });

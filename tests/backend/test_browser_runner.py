@@ -1354,3 +1354,76 @@ def test_cli_passes_search_delay_argument(tmp_path):
             mock_run.assert_called_once()
             _, kwargs = mock_run.call_args
             assert kwargs.get("search_delay_ms") == 750
+
+
+# ==============================================================================
+# Phase 4 Quality Center Acceptance Evaluation Tests
+# ==============================================================================
+
+
+def test_evaluate_acceptance_with_phase4_passes(valid_browser_results):
+    """Phase 4: evaluate_acceptance passes when phase4_quality_center criteria are satisfied."""
+    results = copy.deepcopy(valid_browser_results)
+    results["phase4_quality_center"] = {
+        "planned_routes_available": True,
+        "quality_route_guidance": True,
+        "quality_modal_opened": True,
+        "quality_tabs_present": True,
+        "quality_modal_escape_closed": True,
+    }
+
+    passed, failures, criteria = evaluate_acceptance(results, require_phase4=True)
+    assert passed is True
+    assert len(failures) == 0
+    assert criteria["phase4_quality_center"] is True
+
+
+def test_evaluate_acceptance_fails_on_phase4_missing_when_required(valid_browser_results):
+    """Phase 4: evaluate_acceptance fails when require_phase4 is True but results lack phase4_quality_center."""
+    results = copy.deepcopy(valid_browser_results)
+    passed, failures, criteria = evaluate_acceptance(results, require_phase4=True)
+    assert passed is False
+    assert criteria["phase4_quality_center"] is False
+    assert any("Phase 4 Quality Center verification is required but missing" in f for f in failures)
+
+
+def test_evaluate_acceptance_fails_on_phase4_modal_not_opened(valid_browser_results):
+    """Phase 4: evaluate_acceptance fails when quality_modal_opened is False."""
+    results = copy.deepcopy(valid_browser_results)
+    results["phase4_quality_center"] = {
+        "planned_routes_available": True,
+        "quality_route_guidance": True,
+        "quality_modal_opened": False,
+        "quality_tabs_present": True,
+        "quality_modal_escape_closed": True,
+    }
+
+    passed, failures, criteria = evaluate_acceptance(results, require_phase4=True)
+    assert passed is False
+    assert criteria["phase4_quality_center"] is False
+    assert any("Phase 4 Quality Center criteria failed" in f for f in failures)
+
+
+def test_cli_passes_require_phase4_argument(tmp_path):
+    """Phase 4: run_browser_verification.py CLI passes --require-phase4 to run_checks."""
+    summary_path = tmp_path / "summary.json"
+    output_dir = tmp_path / "artifacts"
+
+    with patch("run_browser_verification.run_checks", return_value=({}, True)) as mock_run:
+        with patch(
+            "sys.argv",
+            [
+                "run_browser_verification.py",
+                "--output-dir",
+                str(output_dir),
+                "--summary-path",
+                str(summary_path),
+                "--require-phase4",
+            ],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+            mock_run.assert_called_once()
+            _, kwargs = mock_run.call_args
+            assert kwargs.get("require_phase4") is True

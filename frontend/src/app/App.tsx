@@ -3,6 +3,7 @@ import { AppShell } from "../components/layout/AppShell";
 import { LandingPage } from "../pages/LandingPage";
 import { DashboardPage } from "../pages/DashboardPage";
 import { LibraryPage } from "../pages/LibraryPage";
+import { PlannedFeaturePage } from "../pages/PlannedFeaturePage";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import { api, ApiClientError } from "../api/client";
 import { ReadyResponse, PublicConfigResponse } from "../api/types";
@@ -84,6 +85,35 @@ export const App: React.FC = () => {
         );
       case "/library":
         return <LibraryPage />;
+      case "/quality":
+        return <LibraryPage initialQualityMode={true} />;
+      case "/explorer":
+        return (
+          <PlannedFeaturePage
+            featureName="Research Explorer"
+            roadmapPhase={5}
+            description="Graph-based citation exploration, literature clustering, and co-citation discovery."
+            onNavigate={handleNavigate}
+          />
+        );
+      case "/assistant":
+        return (
+          <PlannedFeaturePage
+            featureName="Research Assistant"
+            roadmapPhase={4}
+            description="Conversational synthesis, multi-paper QA, grounded claims, and counter-argument retrieval."
+            onNavigate={handleNavigate}
+          />
+        );
+      case "/model-lab":
+        return (
+          <PlannedFeaturePage
+            featureName="Model Lab"
+            roadmapPhase={6}
+            description="Fine-tuning evaluation, custom prompt ablation, and embedding model benchmarking."
+            onNavigate={handleNavigate}
+          />
+        );
       default:
         return <NotFoundPage onGoHome={() => handleNavigate("/dashboard")} />;
     }

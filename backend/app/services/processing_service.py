@@ -6,6 +6,7 @@ and page/block inspection.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import uuid
@@ -537,6 +538,27 @@ def get_paper_chunks(
     if not target_run_id:
         return ChunksListResponse(items=[], total=0, run_id=None, is_stale=False, next_cursor=None)
 
+    # Decode generation-bound or legacy integer cursor
+    cursor_val: int | None = None
+    if cursor is not None and cursor.strip():
+        raw_c = cursor.strip()
+        try:
+            padded = raw_c + "=" * (-len(raw_c) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+            if isinstance(decoded, dict):
+                c_run_id = decoded.get("run_id")
+                if c_run_id:
+                    # Bind target generation to the cursor's generation to prevent cross-generation mixing
+                    target_run_id = str(c_run_id)
+                if "chunk_index" in decoded:
+                    cursor_val = int(decoded["chunk_index"])
+        except Exception:
+            # Fallback for plain integer string cursor
+            try:
+                cursor_val = int(raw_c)
+            except ValueError:
+                cursor_val = None
+
     query = db.query(Chunk).filter(
         Chunk.paper_id == paper_id,
         Chunk.run_id == target_run_id,
@@ -552,19 +574,20 @@ def get_paper_chunks(
     total = query.count()
 
     # Cursor pagination on chunk_index
-    if cursor is not None and cursor.strip():
-        try:
-            cursor_val = int(cursor.strip())
-            query = query.filter(Chunk.chunk_index > cursor_val)
-        except ValueError:
-            pass
+    if cursor_val is not None:
+        query = query.filter(Chunk.chunk_index > cursor_val)
 
     query = query.order_by(Chunk.chunk_index.asc())
     rows = query.limit(limit + 1).all()
 
     has_more = len(rows) > limit
     items_rows = rows[:limit]
-    next_cursor = str(items_rows[-1].chunk_index) if has_more and items_rows else None
+    if has_more and items_rows:
+        last_idx = items_rows[-1].chunk_index
+        payload = json.dumps({"run_id": target_run_id, "chunk_index": last_idx}, separators=(",", ":"))
+        next_cursor = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    else:
+        next_cursor = None
 
     items: list[ChunkItem] = []
     for c in items_rows:
@@ -593,7 +616,9 @@ def get_paper_chunks(
             )
         )
 
-    is_stale = bool(paper.current_run_id and paper.current_run_id != target_run_id)
+    is_stale = bool(
+        paper.published_run_id != target_run_id or (paper.current_run_id and paper.current_run_id != target_run_id)
+    )
     return ChunksListResponse(
         items=items,
         total=total,

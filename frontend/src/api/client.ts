@@ -170,15 +170,18 @@ export const api = {
     return request<PaperListResponse>(`/papers?${params.toString()}`);
   },
   getPaper: (id: string) => request<PaperItem>(`/papers/${id}`),
-  getPaperStatus: (id: string) =>
-    request<PaperStatusResponse>(`/papers/${id}/status`),
+  getPaperStatus: (id: string, signal?: AbortSignal) =>
+    request<PaperStatusResponse>(`/papers/${id}/status`, { signal }),
   reprocessPaper: (id: string) =>
     request<PaperStatusResponse>(`/papers/${id}/reprocess`, {
       method: "POST",
     }),
-  getPaperPages: (id: string) => request<PagesListResponse>(`/papers/${id}/pages`),
-  getPaperBlocks: (id: string, pageNumber: number) =>
-    request<PageBlocksResponse>(`/papers/${id}/pages/${pageNumber}/blocks`),
+  getPaperPages: (id: string, signal?: AbortSignal) =>
+    request<PagesListResponse>(`/papers/${id}/pages`, { signal }),
+  getPaperBlocks: (id: string, pageNumber: number, signal?: AbortSignal) =>
+    request<PageBlocksResponse>(`/papers/${id}/pages/${pageNumber}/blocks`, {
+      signal,
+    }),
   getPaperChunks: (
     id: string,
     options: {
@@ -186,6 +189,7 @@ export const api = {
       section?: string;
       limit?: number;
       cursor?: string | null;
+      signal?: AbortSignal;
     } = {},
   ) => {
     const params = new URLSearchParams();
@@ -195,10 +199,13 @@ export const api = {
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     if (options.cursor) params.set("cursor", options.cursor);
     const qs = params.toString();
-    return request<ChunksListResponse>(`/papers/${id}/chunks${qs ? `?${qs}` : ""}`);
+    return request<ChunksListResponse>(
+      `/papers/${id}/chunks${qs ? `?${qs}` : ""}`,
+      { signal: options.signal },
+    );
   },
-  getPaperSections: (id: string) =>
-    request<SectionsListResponse>(`/papers/${id}/sections`),
+  getPaperSections: (id: string, signal?: AbortSignal) =>
+    request<SectionsListResponse>(`/papers/${id}/sections`, { signal }),
   getPaperFileUrl: (id: string) => `${API_BASE}/papers/${id}/file`,
   deletePaper: (id: string) =>
     request<void>(`/papers/${id}`, {

@@ -26,6 +26,7 @@ class SectionResult:
     text: str
     block_ids: list[str]
     is_reference: bool = False
+    block_spans: list[tuple[str, int, int, int]] = dataclasses.field(default_factory=list)
 
 
 # Known section title patterns mapped to canonical section identifiers
@@ -195,18 +196,44 @@ def section_pages(pages_data: list[dict[str, Any]]) -> list[SectionResult]:
     current_section = "unknown"
     current_heading: str | None = None
     current_blocks: list[str] = []
-    current_text_parts: list[str] = []
+    current_items: list[tuple[str, int, str]] = []  # (b_id, page_num, text)
     current_page_start: int | None = None
     current_page_end: int | None = None
 
     sections: list[SectionResult] = []
 
     def flush_current():
-        nonlocal current_section, current_heading, current_blocks, current_text_parts
+        nonlocal current_section, current_heading, current_blocks, current_items
         nonlocal current_page_start, current_page_end
 
-        joined = "\n\n".join(part for part in current_text_parts if part.strip()).strip()
+        parts: list[str] = []
+        block_spans: list[tuple[str, int, int, int]] = []
+        curr_offset = 0
+
+        for b_id, p_num, b_text in current_items:
+            t = b_text.strip()
+            if not t:
+                continue
+            if parts:
+                curr_offset += 2  # for separator "\n\n"
+            start_c = curr_offset
+            end_c = start_c + len(t)
+            block_spans.append((b_id, p_num, start_c, end_c))
+            parts.append(t)
+            curr_offset = end_c
+
+        joined = "\n\n".join(parts)
         cleaned = dehyphenate_text(joined)
+
+        # Scale offsets if dehyphenation altered character length
+        if len(joined) > 0 and len(cleaned) != len(joined):
+            scale = len(cleaned) / len(joined)
+            adjusted_spans: list[tuple[str, int, int, int]] = []
+            for b_id, p_num, s_c, e_c in block_spans:
+                adj_s = int(s_c * scale)
+                adj_e = int(e_c * scale)
+                adjusted_spans.append((b_id, p_num, adj_s, max(adj_s + 1, adj_e)))
+            block_spans = adjusted_spans
 
         if cleaned or current_blocks:
             sec_idx = len(sections)
@@ -221,11 +248,12 @@ def section_pages(pages_data: list[dict[str, Any]]) -> list[SectionResult]:
                     text=cleaned,
                     block_ids=list(current_blocks),
                     is_reference=is_ref,
+                    block_spans=block_spans,
                 )
             )
 
         current_blocks = []
-        current_text_parts = []
+        current_items = []
         current_page_start = None
         current_page_end = None
 
@@ -263,14 +291,13 @@ def section_pages(pages_data: list[dict[str, Any]]) -> list[SectionResult]:
                 current_page_start = page_num
                 current_page_end = page_num
                 current_blocks.append(b_id)
-                # Heading text is retained in current_text_parts for context
-                current_text_parts.append(heading_text)
+                current_items.append((b_id, page_num, heading_text))
             else:
                 if current_page_start is None:
                     current_page_start = page_num
                 current_page_end = page_num
                 current_blocks.append(b_id)
-                current_text_parts.append(raw_b_text)
+                current_items.append((b_id, page_num, raw_b_text))
 
     flush_current()
 

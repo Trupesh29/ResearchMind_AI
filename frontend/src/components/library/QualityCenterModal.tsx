@@ -39,12 +39,19 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
   const previouslyFocusedElement = useRef<HTMLElement | null>(null);
 
   // Active Tab
-  const [activeTab, setActiveTab] = useState<"pipeline" | "chunks" | "metadata">("chunks");
+  const [activeTab, setActiveTab] = useState<
+    "pipeline" | "chunks" | "metadata"
+  >("chunks");
 
   // Inspection Data
-  const [statusData, setStatusData] = useState<PaperStatusResponse | null>(null);
+  const [statusData, setStatusData] = useState<PaperStatusResponse | null>(
+    null,
+  );
   const [chunks, setChunks] = useState<ChunkItem[]>([]);
   const [totalChunks, setTotalChunks] = useState<number>(0);
+  const [nextChunkCursor, setNextChunkCursor] = useState<string | null>(null);
+  const [isLoadingMoreChunks, setIsLoadingMoreChunks] =
+    useState<boolean>(false);
   const [sections, setSections] = useState<SectionItem[]>([]);
   const [pages, setPages] = useState<PageSummaryItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -57,11 +64,29 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
 
   // Action state
   const [isReprocessing, setIsReprocessing] = useState<boolean>(false);
-  const [reprocessMsg, setReprocessMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [reprocessMsg, setReprocessMsg] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
   // Request & Polling guards
   const activeReqRef = useRef<number>(0);
   const pollTimerRef = useRef<any>(null);
+  const retryCountRef = useRef<number>(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Reset state when active paper changes
+  useEffect(() => {
+    setStatusData(null);
+    setChunks([]);
+    setTotalChunks(0);
+    setSections([]);
+    setPages([]);
+    setNextChunkCursor(null);
+    setErrorMsg(null);
+    setReprocessMsg(null);
+    retryCountRef.current = 0;
+  }, [paper?.id]);
 
   // Focus trap & Escape key
   useEffect(() => {
@@ -69,7 +94,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
       previouslyFocusedElement.current = document.activeElement as HTMLElement;
 
       const timer = setTimeout(() => {
-        const closeBtn = modalRef.current?.querySelector<HTMLButtonElement>('[data-action="close"]');
+        const closeBtn = modalRef.current?.querySelector<HTMLButtonElement>(
+          '[data-action="close"]',
+        );
         closeBtn?.focus();
       }, 50);
 
@@ -80,7 +107,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
         }
         if (e.key === "Tab" && modalRef.current) {
           const focusable = modalRef.current.querySelectorAll<HTMLElement>(
-            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
           );
           if (focusable.length === 0) return;
           const first = focusable[0];
@@ -111,41 +138,62 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
   }, [isOpen, paper, onClose]);
 
   // Load All Quality Data
-  const loadData = useCallback(async (isPolling: boolean = false) => {
-    if (!paper) return;
-    const reqId = ++activeReqRef.current;
-    if (!isPolling) setIsLoading(true);
-    setErrorMsg(null);
+  const loadData = useCallback(
+    async (isPolling: boolean = false) => {
+      if (!paper) return;
+      const reqId = ++activeReqRef.current;
+      if (!isPolling) setIsLoading(true);
+      setErrorMsg(null);
 
-    try {
-      const [statusRes, chunksRes, sectionsRes, pagesRes] = await Promise.all([
-        api.getPaperStatus(paper.id),
-        api.getPaperChunks(paper.id, {
-          section: sectionFilter || undefined,
-          page: pageFilter ? parseInt(pageFilter, 10) : undefined,
-          limit: 100,
-        }),
-        api.getPaperSections(paper.id),
-        api.getPaperPages(paper.id),
-      ]);
+      // Cancel in-flight request if present
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const abortCtrl = new AbortController();
+      abortControllerRef.current = abortCtrl;
 
-      if (reqId === activeReqRef.current) {
-        setStatusData(statusRes);
-        setChunks(chunksRes.items);
-        setTotalChunks(chunksRes.total ?? chunksRes.items.length);
-        setSections(sectionsRes.items);
-        setPages(pagesRes.items);
+      try {
+        const [statusRes, chunksRes, sectionsRes, pagesRes] = await Promise.all(
+          [
+            api.getPaperStatus(paper.id, abortCtrl.signal),
+            api.getPaperChunks(paper.id, {
+              section: sectionFilter || undefined,
+              page: pageFilter ? parseInt(pageFilter, 10) : undefined,
+              limit: 100,
+              signal: abortCtrl.signal,
+            }),
+            api.getPaperSections(paper.id, abortCtrl.signal),
+            api.getPaperPages(paper.id, abortCtrl.signal),
+          ],
+        );
+
+        if (reqId === activeReqRef.current) {
+          setStatusData(statusRes);
+          setChunks(chunksRes.items);
+          setTotalChunks(chunksRes.total ?? chunksRes.items.length);
+          setNextChunkCursor(chunksRes.next_cursor ?? null);
+          setSections(sectionsRes.items);
+          setPages(pagesRes.items);
+          retryCountRef.current = 0;
+        }
+      } catch (err: any) {
+        if (abortCtrl.signal.aborted) return;
+        if (reqId === activeReqRef.current) {
+          if (!isPolling) {
+            setErrorMsg(err?.message || "Failed to load quality metrics.");
+          } else {
+            // Transient polling failure: record retry attempt so polling backoff increases
+            retryCountRef.current += 1;
+          }
+        }
+      } finally {
+        if (reqId === activeReqRef.current && !isPolling) {
+          setIsLoading(false);
+        }
       }
-    } catch (err: any) {
-      if (reqId === activeReqRef.current) {
-        setErrorMsg(err?.message || "Failed to load quality metrics.");
-      }
-    } finally {
-      if (reqId === activeReqRef.current && !isPolling) {
-        setIsLoading(false);
-      }
-    }
-  }, [paper, sectionFilter, pageFilter]);
+    },
+    [paper, sectionFilter, pageFilter],
+  );
 
   // Initial load and filter change trigger
   useEffect(() => {
@@ -154,7 +202,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     }
   }, [isOpen, paper, loadData]);
 
-  // Adaptive polling: poll every 2s ONLY while actively running/queued in Week 2 pipeline
+  // Adaptive polling: poll while queued (uploaded) or actively processing
   useEffect(() => {
     if (!isOpen || !paper) return;
 
@@ -163,15 +211,20 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
       pollTimerRef.current = null;
     }
 
+    const currentStatus = statusData?.status || paper.status;
+    const currentSubstate = statusData?.substate;
+
+    // Continue polling if uploaded (queued) or processing without awaiting_indexing
     const shouldPoll =
-      statusData &&
-      statusData.status === "processing" &&
-      statusData.substate !== "awaiting_indexing";
+      currentStatus === "uploaded" ||
+      (currentStatus === "processing" &&
+        currentSubstate !== "awaiting_indexing");
 
     if (shouldPoll) {
+      const delay = Math.min(2000 * Math.pow(1.5, retryCountRef.current), 8000);
       pollTimerRef.current = setTimeout(() => {
         loadData(true);
-      }, 2000);
+      }, delay);
     }
 
     return () => {
@@ -179,8 +232,34 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
         clearTimeout(pollTimerRef.current);
         pollTimerRef.current = null;
       }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, [isOpen, paper, statusData, loadData]);
+
+  // Load More Chunks handler for pagination beyond 100
+  const handleLoadMoreChunks = async () => {
+    if (!paper || !nextChunkCursor || isLoadingMoreChunks) return;
+    setIsLoadingMoreChunks(true);
+    try {
+      const res = await api.getPaperChunks(paper.id, {
+        section: sectionFilter || undefined,
+        page: pageFilter ? parseInt(pageFilter, 10) : undefined,
+        cursor: nextChunkCursor,
+        limit: 100,
+      });
+      setChunks((prev) => [...prev, ...res.items]);
+      setNextChunkCursor(res.next_cursor ?? null);
+      if (res.total !== undefined) {
+        setTotalChunks(res.total);
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to load more chunks.");
+    } finally {
+      setIsLoadingMoreChunks(false);
+    }
+  };
 
   // Reprocess Handler
   const handleReprocess = async () => {
@@ -199,7 +278,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
       if (err instanceof ApiClientError && err.statusCode === 409) {
         setReprocessMsg({
           type: "error",
-          text: err.message || "A processing job is already running for this document.",
+          text:
+            err.message ||
+            "A processing job is already running for this document.",
         });
       } else {
         setReprocessMsg({
@@ -271,7 +352,14 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
             gap: "16px",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              minWidth: 0,
+            }}
+          >
             <div
               style={{
                 width: "36px",
@@ -288,7 +376,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               <Layers size={20} />
             </div>
             <div style={{ minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <div
+                style={{ display: "flex", alignItems: "center", gap: "8px" }}
+              >
                 <h2
                   style={{
                     fontSize: "17px",
@@ -300,7 +390,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                   Quality Center
                 </h2>
                 {statusData?.is_stale && (
-                  <Badge variant="warning">Reprocessing in Progress (Old Bundle Shown)</Badge>
+                  <Badge variant="warning">
+                    Reprocessing in Progress (Old Bundle Shown)
+                  </Badge>
                 )}
               </div>
               <p
@@ -328,7 +420,10 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               aria-label="Reprocess document"
               title="Trigger a fresh ingestion generation"
             >
-              <RefreshCw size={14} className={isReprocessing ? "animate-spin" : ""} />
+              <RefreshCw
+                size={14}
+                className={isReprocessing ? "animate-spin" : ""}
+              />
               <span>{isReprocessing ? "Enqueueing..." : "Reprocess"}</span>
             </Button>
 
@@ -377,9 +472,13 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
             style={{
               padding: "10px 24px",
               background:
-                reprocessMsg.type === "success" ? "var(--green-surface)" : "var(--red-surface)",
+                reprocessMsg.type === "success"
+                  ? "var(--green-surface)"
+                  : "var(--red-surface)",
               color:
-                reprocessMsg.type === "success" ? "var(--green-text)" : "var(--red-text)",
+                reprocessMsg.type === "success"
+                  ? "var(--green-text)"
+                  : "var(--red-text)",
               fontSize: "13px",
               display: "flex",
               alignItems: "center",
@@ -387,7 +486,11 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               borderBottom: "1px solid var(--hairline)",
             }}
           >
-            {reprocessMsg.type === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+            {reprocessMsg.type === "success" ? (
+              <CheckCircle2 size={16} />
+            ) : (
+              <AlertTriangle size={16} />
+            )}
             <span>{reprocessMsg.text}</span>
           </div>
         )}
@@ -405,9 +508,18 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
             gap: "12px",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              flexWrap: "wrap",
+            }}
+          >
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Stage:</span>
+              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                Stage:
+              </span>
               <Badge variant="info">{statusData?.stage || "validating"}</Badge>
             </div>
 
@@ -450,7 +562,8 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
             )}
 
             <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-              Progress: <strong>{Math.round((statusData?.progress || 0) * 100)}%</strong>
+              Progress:{" "}
+              <strong>{Math.round((statusData?.progress || 0) * 100)}%</strong>
             </div>
           </div>
 
@@ -465,8 +578,14 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 cursor: "pointer",
                 fontSize: "13px",
                 fontWeight: activeTab === "chunks" ? 600 : 400,
-                background: activeTab === "chunks" ? "var(--surface-soft)" : "transparent",
-                color: activeTab === "chunks" ? "var(--blue)" : "var(--text-secondary)",
+                background:
+                  activeTab === "chunks"
+                    ? "var(--surface-soft)"
+                    : "transparent",
+                color:
+                  activeTab === "chunks"
+                    ? "var(--blue)"
+                    : "var(--text-secondary)",
                 boxShadow: activeTab === "chunks" ? "var(--raise-1)" : "none",
               }}
             >
@@ -481,8 +600,14 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 cursor: "pointer",
                 fontSize: "13px",
                 fontWeight: activeTab === "pipeline" ? 600 : 400,
-                background: activeTab === "pipeline" ? "var(--surface-soft)" : "transparent",
-                color: activeTab === "pipeline" ? "var(--blue)" : "var(--text-secondary)",
+                background:
+                  activeTab === "pipeline"
+                    ? "var(--surface-soft)"
+                    : "transparent",
+                color:
+                  activeTab === "pipeline"
+                    ? "var(--blue)"
+                    : "var(--text-secondary)",
                 boxShadow: activeTab === "pipeline" ? "var(--raise-1)" : "none",
               }}
             >
@@ -497,8 +622,14 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 cursor: "pointer",
                 fontSize: "13px",
                 fontWeight: activeTab === "metadata" ? 600 : 400,
-                background: activeTab === "metadata" ? "var(--surface-soft)" : "transparent",
-                color: activeTab === "metadata" ? "var(--blue)" : "var(--text-secondary)",
+                background:
+                  activeTab === "metadata"
+                    ? "var(--surface-soft)"
+                    : "transparent",
+                color:
+                  activeTab === "metadata"
+                    ? "var(--blue)"
+                    : "var(--text-secondary)",
                 boxShadow: activeTab === "metadata" ? "var(--raise-1)" : "none",
               }}
             >
@@ -529,11 +660,22 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 gap: "12px",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", flex: "1 1 200px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  flex: "1 1 200px",
+                }}
+              >
                 <Filter size={14} style={{ color: "var(--text-muted)" }} />
                 <input
                   type="text"
-                  placeholder="Search chunk text or section..."
+                  placeholder={
+                    chunks.length < totalChunks
+                      ? `Filter loaded chunks (${chunks.length} of ${totalChunks} loaded)...`
+                      : "Search chunk text or section..."
+                  }
                   value={searchFilter}
                   onChange={(e) => setSearchFilter(e.target.value)}
                   style={{
@@ -548,8 +690,12 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 />
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>Section:</label>
+              <div
+                style={{ display: "flex", alignItems: "center", gap: "8px" }}
+              >
+                <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                  Section:
+                </label>
                 <select
                   value={sectionFilter}
                   onChange={(e) => setSectionFilter(e.target.value)}
@@ -571,8 +717,12 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 </select>
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>Page:</label>
+              <div
+                style={{ display: "flex", alignItems: "center", gap: "8px" }}
+              >
+                <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                  Page:
+                </label>
                 <input
                   type="number"
                   min={1}
@@ -590,6 +740,18 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                   aria-label="Filter by page"
                 />
               </div>
+
+              <span
+                style={{
+                  fontSize: "12px",
+                  color: "var(--text-muted)",
+                  marginLeft: "auto",
+                }}
+              >
+                Loaded {chunks.length} of {totalChunks} chunks
+                {searchFilter.trim() &&
+                  ` (${displayChunks.length} match filter)`}
+              </span>
             </div>
 
             {/* Chunk List Container */}
@@ -604,8 +766,18 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               }}
             >
               {isLoading ? (
-                <div style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)" }}>
-                  <RefreshCw className="animate-spin" size={24} style={{ margin: "0 auto 12px" }} />
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "40px",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <RefreshCw
+                    className="animate-spin"
+                    size={24}
+                    style={{ margin: "0 auto 12px" }}
+                  />
                   <p>Loading document chunks and section bounds...</p>
                 </div>
               ) : displayChunks.length === 0 ? (
@@ -618,11 +790,26 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                     border: "1px dashed var(--border-control)",
                   }}
                 >
-                  <Info size={28} style={{ color: "var(--text-muted)", margin: "0 auto 8px" }} />
-                  <p style={{ margin: 0, fontWeight: 600, color: "var(--text-primary)" }}>
+                  <Info
+                    size={28}
+                    style={{ color: "var(--text-muted)", margin: "0 auto 8px" }}
+                  />
+                  <p
+                    style={{
+                      margin: 0,
+                      fontWeight: 600,
+                      color: "var(--text-primary)",
+                    }}
+                  >
                     No chunks available for this view
                   </p>
-                  <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--text-muted)" }}>
+                  <p
+                    style={{
+                      margin: "4px 0 0",
+                      fontSize: "13px",
+                      color: "var(--text-muted)",
+                    }}
+                  >
                     {statusData?.stage !== "chunking"
                       ? "Ingestion is currently processing earlier stages."
                       : "Try clearing filters to display all chunks."}
@@ -653,7 +840,14 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                         gap: "8px",
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          flexWrap: "wrap",
+                        }}
+                      >
                         <span
                           style={{
                             fontFamily: "var(--font-mono)",
@@ -671,7 +865,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                         <Badge variant="neutral">{chunk.section}</Badge>
 
                         {chunk.is_excluded && (
-                          <Badge variant="warning">Excluded from Retrieval (Reference)</Badge>
+                          <Badge variant="warning">
+                            Excluded from Retrieval (Reference)
+                          </Badge>
                         )}
 
                         <span
@@ -684,12 +880,24 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                           }}
                         >
                           <Hash size={12} />
-                          <strong>{chunk.token_count}</strong> tokens (MiniLM limit: 256)
+                          <strong>{chunk.token_count}</strong> tokens (MiniLM
+                          limit: 256)
                         </span>
                       </div>
 
-                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                        <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "10px",
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: "12px",
+                            color: "var(--text-secondary)",
+                          }}
+                        >
                           Pages {chunk.page_start}–{chunk.page_end}
                         </span>
 
@@ -697,7 +905,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => onOpenPdfPage(paper, chunk.page_start)}
+                            onClick={() =>
+                              onOpenPdfPage(paper, chunk.page_start)
+                            }
                             title={`Jump to page ${chunk.page_start} in PDF viewer`}
                             style={{ padding: "4px 8px", fontSize: "12px" }}
                           >
@@ -758,6 +968,28 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                   </div>
                 ))
               )}
+
+              {/* Load More Button for pagination beyond 100 chunks */}
+              {nextChunkCursor && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    padding: "16px 0",
+                  }}
+                >
+                  <Button
+                    variant="soft"
+                    size="sm"
+                    onClick={handleLoadMoreChunks}
+                    isLoading={isLoadingMoreChunks}
+                  >
+                    <span>
+                      Load More Chunks ({chunks.length} of {totalChunks} loaded)
+                    </span>
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -774,12 +1006,25 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               gap: "16px",
             }}
           >
-            <h3 style={{ fontSize: "15px", fontWeight: 700, margin: 0, color: "var(--text-primary)" }}>
+            <h3
+              style={{
+                fontSize: "15px",
+                fontWeight: 700,
+                margin: 0,
+                color: "var(--text-primary)",
+              }}
+            >
               Ingestion Generation Pipeline
             </h3>
 
             {statusData?.stages && statusData.stages.length > 0 ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "10px",
+                }}
+              >
                 {statusData.stages.map((st, idx) => (
                   <div
                     key={`${st.stage}-${st.attempt}-${idx}`}
@@ -794,46 +1039,106 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                       boxShadow: "var(--raise-1)",
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "12px",
+                      }}
+                    >
                       {st.status === "succeeded" && (
-                        <CheckCircle2 size={18} style={{ color: "var(--green-strong)" }} />
+                        <CheckCircle2
+                          size={18}
+                          style={{ color: "var(--green-strong)" }}
+                        />
                       )}
                       {st.status === "running" && (
-                        <RefreshCw size={18} className="animate-spin" style={{ color: "var(--blue)" }} />
+                        <RefreshCw
+                          size={18}
+                          className="animate-spin"
+                          style={{ color: "var(--blue)" }}
+                        />
                       )}
                       {st.status === "failed" && (
-                        <AlertTriangle size={18} style={{ color: "var(--red-strong)" }} />
+                        <AlertTriangle
+                          size={18}
+                          style={{ color: "var(--red-strong)" }}
+                        />
                       )}
                       {st.status === "queued" && (
-                        <Clock size={18} style={{ color: "var(--orange-strong)" }} />
+                        <Clock
+                          size={18}
+                          style={{ color: "var(--orange-strong)" }}
+                        />
                       )}
 
                       <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <strong style={{ fontSize: "14px", textTransform: "capitalize" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                          }}
+                        >
+                          <strong
+                            style={{
+                              fontSize: "14px",
+                              textTransform: "capitalize",
+                            }}
+                          >
                             {st.stage}
                           </strong>
-                          <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                          <span
+                            style={{
+                              fontSize: "12px",
+                              color: "var(--text-muted)",
+                            }}
+                          >
                             Attempt #{st.attempt}
                           </span>
                         </div>
                         {st.error && (
-                          <p style={{ margin: "4px 0 0", fontSize: "12px", color: "var(--red-text)" }}>
+                          <p
+                            style={{
+                              margin: "4px 0 0",
+                              fontSize: "12px",
+                              color: "var(--red-text)",
+                            }}
+                          >
                             {st.error}
                           </p>
                         )}
                       </div>
                     </div>
 
-                    <div style={{ textAlign: "right", fontSize: "12px", color: "var(--text-muted)" }}>
-                      <div>Status: <strong>{st.status}</strong></div>
-                      {st.finished_at && <div>Finished: {new Date(st.finished_at).toLocaleTimeString()}</div>}
+                    <div
+                      style={{
+                        textAlign: "right",
+                        fontSize: "12px",
+                        color: "var(--text-muted)",
+                      }}
+                    >
+                      <div>
+                        Status: <strong>{st.status}</strong>
+                      </div>
+                      {st.finished_at && (
+                        <div>
+                          Finished:{" "}
+                          {new Date(st.finished_at).toLocaleTimeString()}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div style={{ padding: "20px", color: "var(--text-muted)", textAlign: "center" }}>
+              <div
+                style={{
+                  padding: "20px",
+                  color: "var(--text-muted)",
+                  textAlign: "center",
+                }}
+              >
                 No stage history recorded yet.
               </div>
             )}
@@ -862,21 +1167,44 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 boxShadow: "var(--raise-1)",
               }}
             >
-              <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: 700 }}>
+              <h4
+                style={{
+                  margin: "0 0 12px",
+                  fontSize: "14px",
+                  fontWeight: 700,
+                }}
+              >
                 Metadata Provenance
               </h4>
-              <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: "10px", fontSize: "13px" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "140px 1fr",
+                  gap: "10px",
+                  fontSize: "13px",
+                }}
+              >
                 <span style={{ color: "var(--text-muted)" }}>Title:</span>
                 <span>{paper.title || "Not extracted"}</span>
 
                 <span style={{ color: "var(--text-muted)" }}>Authors:</span>
-                <span>{paper.authors && paper.authors.length > 0 ? paper.authors.join(", ") : "None detected"}</span>
+                <span>
+                  {paper.authors && paper.authors.length > 0
+                    ? paper.authors.join(", ")
+                    : "None detected"}
+                </span>
 
-                <span style={{ color: "var(--text-muted)" }}>Publication Year:</span>
+                <span style={{ color: "var(--text-muted)" }}>
+                  Publication Year:
+                </span>
                 <span>{paper.publication_year || "Unknown"}</span>
 
                 <span style={{ color: "var(--text-muted)" }}>Keywords:</span>
-                <span>{paper.keywords && paper.keywords.length > 0 ? paper.keywords.join(", ") : "None"}</span>
+                <span>
+                  {paper.keywords && paper.keywords.length > 0
+                    ? paper.keywords.join(", ")
+                    : "None"}
+                </span>
               </div>
             </div>
 
@@ -890,11 +1218,19 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 boxShadow: "var(--raise-1)",
               }}
             >
-              <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: 700 }}>
+              <h4
+                style={{
+                  margin: "0 0 12px",
+                  fontSize: "14px",
+                  fontWeight: 700,
+                }}
+              >
                 Page Extraction & Quality Flags ({pages.length} Pages)
               </h4>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: "8px" }}
+              >
                 {pages.map((p) => (
                   <div
                     key={p.page_number}
@@ -908,12 +1244,26 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                       fontSize: "12px",
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <span style={{ fontWeight: 600 }}>Page {p.page_number}</span>
-                      <Badge variant={p.extraction_status === "ok" ? "success" : "warning"}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                      }}
+                    >
+                      <span style={{ fontWeight: 600 }}>
+                        Page {p.page_number}
+                      </span>
+                      <Badge
+                        variant={
+                          p.extraction_status === "ok" ? "success" : "warning"
+                        }
+                      >
                         {p.extraction_status}
                       </Badge>
-                      <span style={{ color: "var(--text-muted)" }}>{p.char_count} chars</span>
+                      <span style={{ color: "var(--text-muted)" }}>
+                        {p.char_count} chars
+                      </span>
                     </div>
 
                     <div style={{ display: "flex", gap: "6px" }}>
@@ -924,7 +1274,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                           </Badge>
                         ))
                       ) : (
-                        <span style={{ color: "var(--text-muted)" }}>No quality warnings</span>
+                        <span style={{ color: "var(--text-muted)" }}>
+                          No quality warnings
+                        </span>
                       )}
                     </div>
                   </div>

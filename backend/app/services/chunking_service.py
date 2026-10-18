@@ -43,28 +43,39 @@ def get_tokenizer() -> AutoTokenizer:
     """Retrieve or initialize the cached MiniLM AutoTokenizer instance.
 
     Raises RuntimeError with actionable message if tokenizer assets cannot be loaded.
+    Never silently falls back to an unpinned revision.
     """
     global _tokenizer_instance
     if _tokenizer_instance is None:
         model_name = getattr(settings, "EMBEDDING_MODEL_NAME", TOKENIZER_MODEL_NAME) or TOKENIZER_MODEL_NAME
+        revision = getattr(settings, "EMBEDDING_MODEL_REVISION", TOKENIZER_REVISION) or TOKENIZER_REVISION
         try:
+            # First try loading locally with the pinned revision
             _tokenizer_instance = AutoTokenizer.from_pretrained(
                 model_name,
-                revision=TOKENIZER_REVISION,
-                local_files_only=False,
+                revision=revision,
+                local_files_only=True,
             )
-        except Exception as exc:
-            # Fallback to local cache without revision if offline or network restricted
+        except Exception:
             try:
+                # If not present in local cache with pinned revision, load with revision
                 _tokenizer_instance = AutoTokenizer.from_pretrained(
                     model_name,
-                    local_files_only=True,
+                    revision=revision,
+                    local_files_only=False,
                 )
-            except Exception:
+            except Exception as exc:
                 raise RuntimeError(
-                    f"Actionable Error: Could not load tokenizer '{model_name}'. "
-                    f"Ensure local Hugging Face cache contains model assets or network access is available: {exc}"
+                    f"Actionable Error: Could not load tokenizer '{model_name}' at pinned revision '{revision}'. "
+                    f"Ensure model assets for revision '{revision}' are cached or network access is available: {exc}"
                 ) from exc
+
+        # Verify model / tokenizer configuration and sequence limit
+        model_max = getattr(_tokenizer_instance, "model_max_length", None)
+        if model_max is not None and model_max < MODEL_MAX_SEQUENCE_LIMIT:
+            raise ValueError(
+                f"Configured tokenizer sequence limit {model_max} is less than required limit {MODEL_MAX_SEQUENCE_LIMIT}."
+            )
     return _tokenizer_instance
 
 
@@ -110,53 +121,75 @@ def split_oversized_sentence(
     tokenizer: AutoTokenizer,
     max_tokens: int = TARGET_CHUNK_TOKENS - 20,
 ) -> list[str]:
-    """Progressively split an oversized sentence that exceeds the token threshold.
+    """Losslessly and progressively split an oversized sentence that exceeds max_tokens.
 
-    Splits by clauses (semicolons, colons, commas, dashes, and finally words)
-    ensuring each piece is <= max_tokens and forward progress is guaranteed.
+    Splits by clauses (semicolons, colons, commas, dashes, words), and falls back
+    to guaranteed-progress binary bisection for giant continuous tokens, unbroken CJK,
+    or uninterrupted identifiers. Zero truncation or character loss.
     """
     enc = tokenizer.encode(sentence, add_special_tokens=False)
     if len(enc) <= max_tokens:
         return [sentence]
 
+    if len(sentence) <= 1:
+        return [sentence]
+
     # Try splitting by semicolons or colons
     parts = re.split(r"(?<=[;:])\s+", sentence)
-    if len(parts) > 1:
+    if len(parts) > 1 and all(len(p) < len(sentence) for p in parts):
         result: list[str] = []
         for part in parts:
             result.extend(split_oversized_sentence(part, tokenizer, max_tokens))
         return result
 
     # Try splitting by commas or dashes
-    parts = re.split(r"(?<=[,\—])\s+", sentence)
-    if len(parts) > 1:
+    parts = re.split(r"(?<=[,\—\–])\s+", sentence)
+    if len(parts) > 1 and all(len(p) < len(sentence) for p in parts):
         result = []
         for part in parts:
             result.extend(split_oversized_sentence(part, tokenizer, max_tokens))
         return result
 
-    # Word-level fallback for giant uninterrupted runs
+    # Try splitting by words
     words = sentence.split()
-    if len(words) <= 1:
-        # Single giant token/word: slice string
-        return [sentence[:1000]]
+    if len(words) > 1:
+        chunks: list[str] = []
+        current_words: list[str] = []
 
-    chunks: list[str] = []
-    current_words: list[str] = []
+        for word in words:
+            candidate = " ".join(current_words + [word])
+            cand_tokens = len(tokenizer.encode(candidate, add_special_tokens=False))
+            if cand_tokens > max_tokens and current_words:
+                sub_res = split_oversized_sentence(" ".join(current_words), tokenizer, max_tokens)
+                chunks.extend(sub_res)
+                # Word itself might exceed max_tokens
+                word_tokens = len(tokenizer.encode(word, add_special_tokens=False))
+                if word_tokens > max_tokens:
+                    chunks.extend(split_oversized_sentence(word, tokenizer, max_tokens))
+                    current_words = []
+                else:
+                    current_words = [word]
+            else:
+                current_words.append(word)
 
-    for word in words:
-        candidate = " ".join(current_words + [word])
-        cand_tokens = len(tokenizer.encode(candidate, add_special_tokens=False))
-        if cand_tokens > max_tokens and current_words:
-            chunks.append(" ".join(current_words))
-            current_words = [word]
-        else:
-            current_words.append(word)
+        if current_words:
+            sub_res = split_oversized_sentence(" ".join(current_words), tokenizer, max_tokens)
+            chunks.extend(sub_res)
 
-    if current_words:
-        chunks.append(" ".join(current_words))
+        if len(chunks) > 1 or (len(chunks) == 1 and chunks[0] != sentence):
+            return chunks
 
-    return chunks
+    # Guaranteed-progress binary bisection for continuous strings (CJK, DNA, uninterrupted runs)
+    # Strictly reduces length on each branch, preserving all characters losslessly.
+    mid = len(sentence) // 2
+    if mid > 0:
+        left = sentence[:mid]
+        right = sentence[mid:]
+        return split_oversized_sentence(left, tokenizer, max_tokens) + split_oversized_sentence(
+            right, tokenizer, max_tokens
+        )
+
+    return [sentence]
 
 
 def chunk_section(
@@ -170,15 +203,32 @@ def chunk_section(
     - Overlap: ~40 tokens (20%)
     - Strict ceiling: measured tokens with special tokens <= 256
     - Never silently truncates.
+    - True fine-grained provenance: maps each chunk only to contributing blocks and pages.
     """
     text = section.text.strip()
     if not text:
         return []
 
-    # 1. Split into base sentences
+    # 1. Resolve block spans for provenance
+    block_spans = list(section.block_spans)
+    if not block_spans and section.block_ids:
+        # Synthesize proportional spans from block_ids across text length and page range
+        n_blocks = len(section.block_ids)
+        total_len = len(text)
+        block_spans = []
+        for b_i, b_id in enumerate(section.block_ids):
+            s_c = int(b_i * total_len / n_blocks)
+            e_c = int((b_i + 1) * total_len / n_blocks) if b_i < n_blocks - 1 else total_len
+            if n_blocks > 1:
+                p_num = section.page_start + int(b_i * (section.page_end - section.page_start) / (n_blocks - 1))
+            else:
+                p_num = section.page_start
+            block_spans.append((b_id, p_num, s_c, e_c))
+
+    # 2. Split into base sentences
     raw_sentences = split_into_sentences(text)
 
-    # 2. Decompose oversized sentences into token-safe units
+    # 3. Decompose oversized sentences into token-safe units
     safe_units: list[str] = []
     for s in raw_sentences:
         # Leave headroom for special tokens ([CLS] and [SEP] = 2 tokens) + sentence assembly
@@ -187,8 +237,22 @@ def chunk_section(
     if not safe_units:
         return []
 
-    # Pre-calculate token counts for units (without special tokens)
+    # Pre-calculate token counts for units (without special tokens) and map character spans
     unit_token_counts = [len(tokenizer.encode(u, add_special_tokens=False)) for u in safe_units]
+    safe_unit_spans: list[tuple[int, int]] = []
+    search_pos = 0
+    for u in safe_units:
+        u_clean = u.strip()
+        idx = text.find(u_clean, search_pos)
+        if idx != -1:
+            u_start = idx
+            u_end = idx + len(u_clean)
+            search_pos = u_end
+        else:
+            u_start = search_pos
+            u_end = min(len(text), search_pos + len(u_clean))
+            search_pos = u_end
+        safe_unit_spans.append((u_start, u_end))
 
     chunks: list[ChunkResult] = []
     chunk_idx = start_chunk_index
@@ -210,20 +274,28 @@ def chunk_section(
             # Must strictly obey hard limit <= MODEL_MAX_SEQUENCE_LIMIT (256)
             if candidate_total > MODEL_MAX_SEQUENCE_LIMIT:
                 if not current_chunk_units:
-                    # Single unit too large for limit: this should not happen due to split_oversized_sentence,
-                    # but if it does, split further
+                    # Single unit too large for limit: bisect further
                     further_split = split_oversized_sentence(u_text, tokenizer, max_tokens=150)
                     safe_units[end_idx : end_idx + 1] = further_split
                     unit_token_counts[end_idx : end_idx + 1] = [
                         len(tokenizer.encode(fu, add_special_tokens=False)) for fu in further_split
                     ]
+                    # Update spans for split units
+                    orig_span = safe_unit_spans[end_idx]
+                    split_spans: list[tuple[int, int]] = []
+                    sub_pos = orig_span[0]
+                    for fu in further_split:
+                        fu_len = len(fu.strip())
+                        split_spans.append((sub_pos, min(orig_span[1], sub_pos + fu_len)))
+                        sub_pos += fu_len
+                    safe_unit_spans[end_idx : end_idx + 1] = split_spans
                     total_units = len(safe_units)
                     continue
                 break
 
             # If we've reached target 200 tokens and have at least 1 unit, stop accumulating
             if candidate_total >= TARGET_CHUNK_TOKENS and current_chunk_units:
-                # Add this unit if candidate_total <= TARGET_CHUNK_TOKENS + 10, else break
+                # Add this unit if candidate_total <= TARGET_CHUNK_TOKENS + 15, else break
                 if candidate_total <= TARGET_CHUNK_TOKENS + 15 and candidate_total <= MODEL_MAX_SEQUENCE_LIMIT:
                     current_chunk_units.append(u_text)
                     end_idx += 1
@@ -241,22 +313,44 @@ def chunk_section(
                 f"Chunk token count {final_measured_tokens} strictly exceeds model limit {MODEL_MAX_SEQUENCE_LIMIT}!"
             )
 
-        # Attribute block IDs
-        # To preserve provenance, map blocks from the section
-        block_ids = [b for b in section.block_ids if b]
+        # Attribute contributing block IDs and page spans based on chunk character coverage
+        chunk_c_start = safe_unit_spans[i][0]
+        chunk_c_end = safe_unit_spans[end_idx - 1][1]
 
+        chunk_blocks: list[str] = []
+        chunk_pages: list[int] = []
+
+        if block_spans:
+            for b_id, p_num, b_start, b_end in block_spans:
+                if max(chunk_c_start, b_start) < min(chunk_c_end, b_end):
+                    chunk_blocks.append(b_id)
+                    chunk_pages.append(p_num)
+
+            if not chunk_blocks:
+                closest = min(
+                    block_spans,
+                    key=lambda s: min(abs(chunk_c_start - s[2]), abs(chunk_c_end - s[3])),
+                )
+                chunk_blocks.append(closest[0])
+                chunk_pages.append(closest[1])
+
+        distinct_blocks = list(dict.fromkeys(chunk_blocks)) if chunk_blocks else [b for b in section.block_ids if b]
+        page_start = min(chunk_pages) if chunk_pages else section.page_start
+        page_end = max(chunk_pages) if chunk_pages else section.page_end
+
+        revision = getattr(settings, "EMBEDDING_MODEL_REVISION", TOKENIZER_REVISION) or TOKENIZER_REVISION
         chunks.append(
             ChunkResult(
                 chunk_index=chunk_idx,
-                page_start=section.page_start,
-                page_end=section.page_end,
+                page_start=page_start,
+                page_end=page_end,
                 section=section.section,
                 text=chunk_text,
                 token_count=final_measured_tokens,
-                block_ids=block_ids,
+                block_ids=distinct_blocks,
                 is_excluded=section.is_reference,
                 tokenizer_name=TOKENIZER_MODEL_NAME,
-                tokenizer_revision=TOKENIZER_REVISION,
+                tokenizer_revision=revision,
             )
         )
         chunk_idx += 1

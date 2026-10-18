@@ -577,10 +577,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </strong>
               <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                 Multi-file drag-and-drop, PDF validation, SHA-256 deduplication,
-                and viewer activate in Week 1 Phase 2.
+                PDF viewer, and Quality Center are currently active.
               </div>
             </div>
-            <Badge variant="info">Phase 2 Target</Badge>
+            <Badge variant="success">Active</Badge>
           </div>
         </div>
       </Card>

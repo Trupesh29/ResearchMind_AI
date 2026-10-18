@@ -345,3 +345,13 @@ def test_reprocess_conflict_and_generation_preservation(p4_env):
     final_chunks = client.get(f"/api/papers/{paper_id}/chunks").json()
     assert final_chunks["run_id"] == gen2_run_id
     assert final_chunks["is_stale"] is False
+
+    # Verify P4-07: Using a cursor bound to Generation 1 prevents generation mixing
+    import base64
+    import json
+
+    gen1_cursor = base64.urlsafe_b64encode(json.dumps({"run_id": gen1_run_id, "chunk_index": -1}).encode()).decode()
+    bound_res = client.get(f"/api/papers/{paper_id}/chunks?cursor={gen1_cursor}").json()
+    assert bound_res["run_id"] == gen1_run_id
+    assert bound_res["is_stale"] is True
+    assert all(c["run_id"] == gen1_run_id for c in bound_res["items"])

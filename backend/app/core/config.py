@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     # Embedding / Retrieval Baseline (Week 3)
     EMBEDDING_MODEL_NAME: str = Field(default="sentence-transformers/all-MiniLM-L6-v2")
+    EMBEDDING_MODEL_REVISION: str = Field(default="1110a243fdf4706b3f48f1d95db1a4f5529b4d41")
     EMBEDDING_DEVICE: str = Field(default="auto")
 
     # Generator Configuration (Week 4)

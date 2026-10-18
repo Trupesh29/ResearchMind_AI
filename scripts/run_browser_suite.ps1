@@ -6,6 +6,7 @@
 param(
     [switch]$Attach,
     [switch]$RequirePhase2,
+    [switch]$RequirePhase4,
     [string]$BackendCommand = "",
     [string]$FrontendCommand = "",
     [string]$RunnerCommand = "",
@@ -201,6 +202,9 @@ try {
         $p2Args = @()
         if ($RequirePhase2 -or (-not $Attach)) {
             $p2Args += "--require-phase2"
+        }
+        if ($RequirePhase4 -or (-not $Attach)) {
+            $p2Args += "--require-phase4"
         }
         if ($SearchDelayMs -gt 0) {
             $p2Args += "--search-delay-ms"

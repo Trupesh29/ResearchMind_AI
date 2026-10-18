@@ -69,16 +69,20 @@ def test_chunk_section_bounds_and_no_silent_truncation():
         assert c.token_count <= MODEL_MAX_SEQUENCE_LIMIT
         assert c.token_count >= 50
         assert c.section == "methodology"
-        assert c.page_start == 2
-        assert c.page_end == 3
+        assert c.page_start >= 2
+        assert c.page_end <= 3
         assert c.is_excluded is False
         assert c.tokenizer_name == TOKENIZER_MODEL_NAME
         assert c.tokenizer_revision == TOKENIZER_REVISION
-        assert "p2_b1" in c.block_ids
+        assert any(b in ["p2_b1", "p2_b2", "p3_b0"] for b in c.block_ids)
 
         # Verify token count assertion
         re_encoded = len(tokenizer.encode(c.text, add_special_tokens=True))
         assert re_encoded == c.token_count
+
+    # The entire section page range [2, 3] is covered across chunks
+    assert min(c.page_start for c in chunks) == 2
+    assert max(c.page_end for c in chunks) == 3
 
 
 def test_references_chunk_exclusion():
@@ -154,3 +158,114 @@ def test_full_document_sequential_chunking():
     assert chunks[1].is_excluded is False
     assert chunks[2].section == "references"
     assert chunks[2].is_excluded is True
+
+
+def test_lossless_bounded_bisection_cjk_and_unbroken_text():
+    """Verify P4-01: No character truncation, termination guaranteed on continuous text."""
+    tokenizer = get_tokenizer()
+
+    # 400 continuous CJK characters
+    text400 = "研" * 400
+    pieces400 = split_oversized_sentence(text400, tokenizer, max_tokens=150)
+    assert len(pieces400) > 1
+    assert sum(map(len, pieces400)) == len(text400)
+    for p in pieces400:
+        tokens = len(tokenizer.encode(p, add_special_tokens=False))
+        assert tokens <= 150
+
+    # 1200 continuous CJK characters (previously truncated to 1000)
+    text1200 = "研" * 1200
+    pieces1200 = split_oversized_sentence(text1200, tokenizer, max_tokens=150)
+    assert len(pieces1200) > 1
+    assert sum(map(len, pieces1200)) == len(text1200)
+    for p in pieces1200:
+        tokens = len(tokenizer.encode(p, add_special_tokens=False))
+        assert tokens <= 150
+
+    # Unbroken identifier sequence without spaces or clause punctuation (300 tokens)
+    unbroken = "alpha_beta_gamma_" * 50  # 850 chars
+    pieces_unbroken = split_oversized_sentence(unbroken, tokenizer, max_tokens=50)
+    assert len(pieces_unbroken) > 1
+    assert sum(map(len, pieces_unbroken)) == len(unbroken)
+    for p in pieces_unbroken:
+        tokens = len(tokenizer.encode(p, add_special_tokens=False))
+        assert tokens <= 50
+
+
+def test_chunk_fine_grained_provenance():
+    """Verify P4-02: Chunks attribute only contributing pages and blocks."""
+    tokenizer = get_tokenizer()
+
+    # Two-page synthetic section
+    alpha_text = "Alpha evidence appears only on the first page. " * 35
+    beta_text = "Beta evidence appears only on the second page. " * 35
+    full_text = alpha_text + beta_text
+
+    section = SectionResult(
+        section_index=0,
+        section="unknown",
+        heading=None,
+        page_start=1,
+        page_end=2,
+        text=full_text,
+        block_ids=["page1-alpha", "page2-beta"],
+    )
+
+    chunks = chunk_section(section, tokenizer)
+    assert len(chunks) >= 2
+
+    # First chunk must belong only to page 1 and block page1-alpha
+    assert "Beta" not in chunks[0].text
+    assert chunks[0].page_start == 1
+    assert chunks[0].page_end == 1
+    assert chunks[0].block_ids == ["page1-alpha"]
+
+    # Last chunk must belong only to page 2 and block page2-beta
+    assert "Alpha" not in chunks[-1].text
+    assert chunks[-1].page_start == 2
+    assert chunks[-1].page_end == 2
+    assert chunks[-1].block_ids == ["page2-beta"]
+
+    # Test explicit block_spans
+    explicit_section = SectionResult(
+        section_index=1,
+        section="methodology",
+        heading="Methods",
+        page_start=5,
+        page_end=6,
+        text=full_text,
+        block_ids=["blk_5", "blk_6"],
+        block_spans=[
+            ("blk_5", 5, 0, len(alpha_text)),
+            ("blk_6", 6, len(alpha_text), len(full_text)),
+        ],
+    )
+    explicit_chunks = chunk_section(explicit_section, tokenizer)
+    assert explicit_chunks[0].page_start == 5
+    assert explicit_chunks[0].page_end == 5
+    assert explicit_chunks[0].block_ids == ["blk_5"]
+    assert explicit_chunks[-1].page_start == 6
+    assert explicit_chunks[-1].page_end == 6
+    assert explicit_chunks[-1].block_ids == ["blk_6"]
+
+
+def test_strict_tokenizer_verification_and_sequence_limit():
+    """Verify P4-03: Model limits and tokenizer configuration are strictly verified."""
+    tokenizer = get_tokenizer()
+    assert tokenizer.name_or_path == TOKENIZER_MODEL_NAME
+
+    # Strict token limit enforcement on chunks
+    long_text = "Continuous token safety measurement. " * 80
+    sec = SectionResult(
+        section_index=0,
+        section="discussion",
+        heading=None,
+        page_start=1,
+        page_end=1,
+        text=long_text,
+        block_ids=["b_disc"],
+    )
+    chunks = chunk_section(sec, tokenizer)
+    for c in chunks:
+        assert c.token_count <= MODEL_MAX_SEQUENCE_LIMIT
+        assert c.tokenizer_revision == TOKENIZER_REVISION

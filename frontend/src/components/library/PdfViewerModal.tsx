@@ -8,12 +8,14 @@ interface PdfViewerModalProps {
   paper: PaperItem | null;
   isOpen: boolean;
   onClose: () => void;
+  initialPage?: number;
 }
 
 export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
   paper,
   isOpen,
   onClose,
+  initialPage = 1,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedElement = useRef<HTMLElement | null>(null);
@@ -72,7 +74,9 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
 
   if (!isOpen || !paper) return null;
 
-  const fileUrl = api.getPaperFileUrl(paper.id);
+  const baseUrl = api.getPaperFileUrl(paper.id);
+  const fileUrl =
+    initialPage && initialPage > 1 ? `${baseUrl}#page=${initialPage}` : baseUrl;
 
   return (
     <div

@@ -25,7 +25,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 
-def evaluate_acceptance(results: dict, require_phase2: bool = False) -> tuple[bool, list[str], dict[str, bool]]:
+def evaluate_acceptance(
+    results: dict, require_phase2: bool = False, require_phase4: bool = False
+) -> tuple[bool, list[str], dict[str, bool]]:
     """
     Evaluates runner results against explicit acceptance criteria.
 
@@ -222,6 +224,23 @@ def evaluate_acceptance(results: dict, require_phase2: bool = False) -> tuple[bo
         failures.append("Phase 2 Library Lifecycle verification is required but missing from results.")
         criteria["phase2_library_lifecycle"] = False
 
+    # 9. Phase 4 Quality Center & Planned Routes
+    if "phase4_quality_center" in results:
+        p4 = results["phase4_quality_center"]
+        p4_passed = (
+            p4.get("planned_routes_available") is True
+            and p4.get("quality_route_guidance") is True
+            and p4.get("quality_modal_opened") is True
+            and p4.get("quality_tabs_present") is True
+            and p4.get("quality_modal_escape_closed") is True
+        )
+        if not p4_passed:
+            failures.append(f"Phase 4 Quality Center criteria failed: {p4}")
+        criteria["phase4_quality_center"] = p4_passed
+    elif require_phase4:
+        failures.append("Phase 4 Quality Center verification is required but missing from results.")
+        criteria["phase4_quality_center"] = False
+
     overall_passed = len(failures) == 0
     return overall_passed, failures, criteria
 
@@ -258,6 +277,7 @@ def run_checks(
     summary_path: Path,
     headless: bool = True,
     require_phase2: bool = False,
+    require_phase4: bool = False,
     search_delay_ms: int = 0,
 ) -> tuple[dict, bool]:
     """
@@ -410,6 +430,31 @@ def run_checks(
                 "back_link_present": back_btn_present,
                 "recovery_action_navigates_to_dashboard": recovery_navigates,
             }
+
+            # 1e. Planned Feature Routes & Quality Center Guidance
+            print("[1e] Verifying Planned Routes and Quality Center guidance...")
+            page.goto(f"{base_url}/explorer", wait_until="networkidle")
+            time.sleep(0.3)
+            explorer_heading = page.locator("h1").inner_text() if page.locator("h1").count() > 0 else ""
+            page.goto(f"{base_url}/assistant", wait_until="networkidle")
+            time.sleep(0.3)
+            assistant_heading = page.locator("h1").inner_text() if page.locator("h1").count() > 0 else ""
+            page.goto(f"{base_url}/model-lab", wait_until="networkidle")
+            time.sleep(0.3)
+            model_lab_heading = page.locator("h1").inner_text() if page.locator("h1").count() > 0 else ""
+            page.goto(f"{base_url}/quality", wait_until="networkidle")
+            time.sleep(0.3)
+            quality_banner = page.locator("text='Quality Center · Inspection Mode'").count() > 0
+
+            planned_routes_ok = (
+                "Explorer" in explorer_heading
+                and "Assistant" in assistant_heading
+                and "Model" in model_lab_heading
+                and quality_banner
+            )
+            p4_dict = results.setdefault("phase4_quality_center", {})
+            p4_dict["planned_routes_available"] = planned_routes_ok
+            p4_dict["quality_route_guidance"] = quality_banner
 
             # ------------------------------------------------------------------
             # 2. Navigation, History & Refresh Behavior
@@ -1052,6 +1097,35 @@ def run_checks(
                 p2_results["viewer_pdf_loaded"] = pdf_response_status in (200, 206)
                 p2_results["viewer_escape_closed"] = viewer_closed
 
+                # 10f-2. Open Document Quality Center
+                print("[10f-2] Inspecting Quality Center modal...")
+                qc_btn = (
+                    page.locator(".paper-row")
+                    .filter(has_text=valid_pdf_a_name)
+                    .locator("button:has-text('Quality')")
+                    .first
+                )
+                qc_opened = False
+                qc_tabs_present = False
+                qc_closed = False
+                if qc_btn.count() > 0:
+                    qc_btn.click()
+                    time.sleep(0.8)
+                    qc_dialog = page.locator("[role='dialog']")
+                    qc_opened = qc_dialog.count() > 0 and qc_dialog.is_visible()
+                    chunks_tab = page.locator("button[role='tab']:has-text('Chunks')")
+                    history_tab = page.locator("button[role='tab']:has-text('Stage History')")
+                    qc_tabs_present = chunks_tab.count() > 0 and history_tab.count() > 0
+                    page.screenshot(path=str(screenshots_dir / "desktop_quality_center_modal.png"))
+                    page.keyboard.press("Escape")
+                    time.sleep(0.4)
+                    qc_closed = not qc_dialog.is_visible()
+
+                p4_results = results.setdefault("phase4_quality_center", {})
+                p4_results["quality_modal_opened"] = qc_opened
+                p4_results["quality_tabs_present"] = qc_tabs_present
+                p4_results["quality_modal_escape_closed"] = qc_closed
+
                 # 10g. Cancel Paper Deletion
                 del_paper_btn = page.locator(f"button[aria-label^='Delete {valid_pdf_a_name}']").first
                 del_paper_btn.click()
@@ -1127,7 +1201,9 @@ def run_checks(
         print(f"\n[EXCEPTION] Browser runner encountered error: {exc}", file=sys.stderr)
 
     # Acceptance Evaluation
-    passed, failure_reasons, criteria_status = evaluate_acceptance(results, require_phase2=require_phase2)
+    passed, failure_reasons, criteria_status = evaluate_acceptance(
+        results, require_phase2=require_phase2, require_phase4=require_phase4
+    )
     results["acceptance_evaluation"] = {
         "passed": passed,
         "failure_reasons": failure_reasons,
@@ -1196,6 +1272,12 @@ def main():
         help="Require Phase 2 Library Lifecycle acceptance criteria to pass",
     )
     parser.add_argument(
+        "--require-phase4",
+        action="store_true",
+        default=False,
+        help="Require Phase 4 Quality Center acceptance criteria to pass",
+    )
+    parser.add_argument(
         "--search-delay-ms",
         type=int,
         default=int(os.environ.get("SEARCH_DELAY_MS", "0")),
@@ -1214,6 +1296,7 @@ def main():
         summary_path=summary_path,
         headless=not args.no_headless,
         require_phase2=args.require_phase2,
+        require_phase4=args.require_phase4,
         search_delay_ms=args.search_delay_ms,
     )
 

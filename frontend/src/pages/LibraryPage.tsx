@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Folder, Plus, AlertCircle, RefreshCw } from "lucide-react";
+import {
+  Folder,
+  Plus,
+  AlertCircle,
+  RefreshCw,
+  CheckCircle2,
+} from "lucide-react";
 import { api, ApiClientError } from "../api/client";
 import {
   WorkspaceItem,
@@ -17,7 +23,13 @@ import { Button } from "../components/ui/Button";
 
 const STORAGE_KEY_SELECTED_WS = "researchmind_selected_workspace_id";
 
-export const LibraryPage: React.FC = () => {
+interface LibraryPageProps {
+  initialQualityMode?: boolean;
+}
+
+export const LibraryPage: React.FC<LibraryPageProps> = ({
+  initialQualityMode = false,
+}) => {
   // Workspaces state
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] =
@@ -39,6 +51,7 @@ export const LibraryPage: React.FC = () => {
   const [isWsModalOpen, setIsWsModalOpen] = useState(false);
   const [wsModalMode, setWsModalMode] = useState<"create" | "edit">("create");
   const [viewingPaper, setViewingPaper] = useState<PaperItem | null>(null);
+  const [selectedViewerPage, setSelectedViewerPage] = useState<number>(1);
   const [qualityCenterPaper, setQualityCenterPaper] =
     useState<PaperItem | null>(null);
   const [deletingPaper, setDeletingPaper] = useState<PaperItem | null>(null);
@@ -392,6 +405,33 @@ export const LibraryPage: React.FC = () => {
         </div>
       )}
 
+      {/* Quality Center Inspection Guidance Banner */}
+      {initialQualityMode && (
+        <div
+          style={{
+            padding: "12px 18px",
+            borderRadius: "var(--r-lg)",
+            background: "var(--blue-surface)",
+            border: "1px solid rgba(0, 113, 227, 0.25)",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            color: "var(--blue-text)",
+            fontSize: "13px",
+            fontWeight: 500,
+          }}
+          role="region"
+          aria-label="Quality Center Inspection Guidance"
+        >
+          <CheckCircle2 size={18} color="var(--blue-action)" />
+          <span>
+            <strong>Quality Center:</strong> Select any ingested paper below and
+            click <strong>Inspect Quality</strong> to examine sections, chunks,
+            tokens, and page boundaries.
+          </span>
+        </div>
+      )}
+
       {/* No Workspace State */}
       {!isLoadingWorkspaces && workspaces.length === 0 ? (
         <div
@@ -470,7 +510,10 @@ export const LibraryPage: React.FC = () => {
             totalCount={totalPaperCount}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            onViewPaper={setViewingPaper}
+            onViewPaper={(p) => {
+              setSelectedViewerPage(1);
+              setViewingPaper(p);
+            }}
             onDeletePaper={setDeletingPaper}
             onOpenQualityCenter={setQualityCenterPaper}
             isLoading={isLoadingPapers}
@@ -523,7 +566,11 @@ export const LibraryPage: React.FC = () => {
       <PdfViewerModal
         isOpen={!!viewingPaper}
         paper={viewingPaper}
-        onClose={() => setViewingPaper(null)}
+        initialPage={selectedViewerPage}
+        onClose={() => {
+          setViewingPaper(null);
+          setSelectedViewerPage(1);
+        }}
       />
 
       {/* Quality Center Modal */}
@@ -531,8 +578,9 @@ export const LibraryPage: React.FC = () => {
         paper={qualityCenterPaper}
         isOpen={!!qualityCenterPaper}
         onClose={() => setQualityCenterPaper(null)}
-        onOpenPdfPage={(p) => {
+        onOpenPdfPage={(p, pageNum) => {
           setQualityCenterPaper(null);
+          setSelectedViewerPage(pageNum || 1);
           setViewingPaper(p);
         }}
       />
