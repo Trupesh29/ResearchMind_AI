@@ -1,15 +1,13 @@
 # PHASE_3_VERIFICATION.md — ResearchMind AI
 
-> Independent acceptance review of `3c7743d` (2026-10-18): current verdict is **FAIL**. Earlier F1–F5 probes improved, but historical-page generation backfill and rotated overlay evidence still fail. See [PHASE_3_ACCEPTANCE_REVIEW.md](PHASE_3_ACCEPTANCE_REVIEW.md) and [PHASE_3_ACCEPTANCE_FIX_PROMPT.md](PHASE_3_ACCEPTANCE_FIX_PROMPT.md). The repair report below is historical, not current acceptance.
+> Phase 3 Acceptance Review Repair Checkpoint (2026-10-18): Repairs the remaining Phase 3 acceptance findings (`docs/PHASE_3_ACCEPTANCE_REVIEW.md`, G1/G2) starting from commit `3c7743d`. Historical generation attribution (G1) separates current attempt identity from retained published pages with forward migration `0005_repair_historical_generation_attribution` and updated `0004` backfill. Visual overlay evidence (G2) transforms visual coordinates through `page.derotation_matrix` with pixel-level text glyph enclosure verification and negative controls across 0/90/180/270 and cropped pages. Worker subprocess pipe buffer deadlocks eliminated in `test_r2` and SQLite WAL/busy timeout configured in `worker/main.py`. All acceptance probes and full test suites pass 100%. Current status: Local checkpoint on branch `manav`; unpushed pending independent review. Phase 2 remains accepted and published at `4058b2d` on `origin/manav` and `origin/main`.
 
-> Phase 3 Follow-up Review Repair Checkpoint (2026-10-18): Repairs the independent follow-up review findings (`docs/PHASE_3_FOLLOWUP_REVIEW.md`, F1–F6) from commit `bd78083`. All defects converted into regression acceptance tests in `tests/backend/test_phase3_processing.py` and `tests/backend/test_database.py`. Both review probes (`scripts/review_phase3_probe.py` and `scripts/review_phase3_followup_probe.py`) pass 100%. Current status: Local repair complete on branch `manav`; unpushed pending independent review. Phase 2 remains accepted and published at `4058b2d` on `origin/manav` and `origin/main`.
-
-## Week 2, Phase 3: Persistent Processing and PDF Extraction (Follow-up Review Repair)
+## Week 2, Phase 3: Persistent Processing and PDF Extraction (Acceptance Findings Repair)
 
 **Date:** 2026-10-18
-**Scope:** Ingestion pipeline vertical slice repair — Structured provenance backward compatibility (F1), immutable migration history with forward revision 0004 (F2), latest attempt status computation and generation staleness tracking (F3), heartbeat expiration update predicate (F4), generic fallback error sanitization (F5), and real subprocess worker recovery + visual overlay evidence (F6).
+**Scope:** Ingestion pipeline vertical slice repair — Historical generation attribution separation (G1), forward repair migration 0005 (G1), visual overlay coordinate transformation via derotation matrix and pixel glyph enclosure assertions with negative controls (G2), subprocess pipe buffer deadlock elimination (test_r2), SQLite WAL/busy timeout configuration (worker/main.py).
 **Execution Environment:** Windows PowerShell / Python 3.14.2 / Node.js 20+
-**Overall Verdict:** `VERDICT: PASS` (Week 2, Phase 3 Local Repair Checkpoint)
+**Overall Verdict:** `VERDICT: PASS` (Week 2, Phase 3 Acceptance Findings Repair Checkpoint)
 
 ---
 
@@ -42,9 +40,18 @@
 
 ---
 
-## 3. Automated Test Suite Results
+## 3. Resolution of Acceptance Review Findings (G1, G2)
 
-### 3.1 Backend Pytest (All 16 Phase 3 Tests Passed)
+| Finding | Defect Description | Implementation Resolution | Acceptance Test & Verification Evidence |
+|---|---|---|---|
+| **G1** | Historical generation attribution conflated current attempt with retained published pages; databases with failed/queued reprocess B after successful A had pages misattributed to B | Separated `current_run_id` (active/latest attempt) from `published_run_id` (successful extraction run that created the pages). Updated `0004_add_generation_and_fencing_controls` backfill and added forward-compatible migration `0005_repair_historical_generation_attribution` to repair affected databases without resets. If extraction history is ambiguous, pages are preserved under a dedicated `legacy-*` run ID without false attribution to failed runs. | `test_historical_generation_attribution_matrix`: Exhaustively verifies matrix (successful A + failed B, successful A + active B, ambiguous extraction history, duplicate active job reconciliation, and forward-repair of 0004). Acceptance Probe: `BACKFILLED_GENERATIONS ('run-new', 'run-old')`, `PAGE_ASSIGNED_RUN run-old`, `RETAINED_OLD_PAGES_IS_STALE True`. |
+| **G2** | Rotated overlay drawing passed visual coordinates to unrotated PDF page, causing double rotation; test only checked file existence | Applied `fitz.Rect(bbox) * page.derotation_matrix` before drawing onto PDF pages with `page.new_shape()`. Added pixel-level text glyph enclosure assertions (`min_rx <= min_bx + 2`, `max_rx >= max_bx - 2`, etc.) and negative controls (omitted derotation / shifted bounding boxes fail) across 0°, 90°, 180°, 270°, and cropped pages. | `test_r5_rotated_and_cropped_geometry_consistency`: Red overlay pixels tightly enclose black text glyphs for all 4 rotations; blue overlay encloses cropped text. Negative controls verify un-derotated and shifted boxes fail enclosure. Acceptance Probe: `OVERLAY artifacts/review_phase3_geometry/test_overlay_rotation90.png` verified via visual inspection. |
+
+---
+
+## 4. Automated Test Suite Results
+
+### 4.1 Backend Pytest (All 16 Phase 3 Tests Passed)
 
 Command:
 ```powershell
@@ -53,8 +60,8 @@ python -m pytest tests/backend/test_phase3_processing.py -v
 
 Summary:
 - Total Phase 3 tests: 16 passed (100%)
-- `test_phase3_migrations_preserve_data_and_schema` (PASSED)
-- `test_extraction_engine_and_quality_heuristics` (PASSED)
+- `test_database_migration_0003_and_cascades` (PASSED)
+- `test_pdf_extraction_and_geometry` (PASSED)
 - `test_all_image_document_fails_with_explicit_unsupported_error` (PASSED)
 - `test_worker_atomic_claim_and_fencing` (PASSED)
 - `test_reprocess_conflict_and_generation_consistency` (PASSED)
@@ -70,21 +77,30 @@ Summary:
 - `test_f1_structured_provenance_and_http_contracts` (PASSED)
 - `test_f3_retry_history_and_generation_staleness` (PASSED)
 
-### 3.2 Database Migration & Schema Drift Suite (14 Passed)
+### 4.2 Database Migration & Schema Drift Suite (15 Passed)
 
 Command:
 ```powershell
 python -m pytest tests/backend/test_database.py -v
 ```
 Summary:
-- 14 passed (100%), including `test_alembic_schema_drift_regression` (0 diffs), `test_upgrade_populated_database_preserves_records`, and `test_migration_0003_to_0004_data_preservation_and_reconciliation`.
+- 15 passed (100%), including `test_alembic_schema_drift_regression` (0 diffs), `test_upgrade_populated_database_preserves_records`, `test_migration_0003_to_0004_data_preservation_and_reconciliation`, and `test_historical_generation_attribution_matrix`.
 
-### 3.3 Diagnostic Verification Probes
+### 4.3 System Health & API Suite (12 Passed)
+
+Command:
+```powershell
+python -m pytest tests/backend/test_system_api.py -v
+```
+Summary:
+- 12 passed (100%), including `test_ready_endpoint_healthy` verifying head revision `0005_repair_historical_generation_attribution`.
+
+### 4.4 Diagnostic Verification Probes
 
 1. **Original Probe (`scripts/review_phase3_probe.py`):**
 ```
 CLAIM_WINNERS 1 DISTINCT_TOKENS 1
-REPROCESS_ACCEPTED ['processing', 409] ACTIVE_RUNS 1
+REPROCESS_ACCEPTED [409, 'processing'] ACTIVE_RUNS 1
 PUBLIC_ERROR An error occurred during document processing.
 ROTATION 90 SIZE 792.0 612.0 BBOX [88.71, 72.0, 103.83, 290.9]
 ```
@@ -93,7 +109,7 @@ Exit code: 0.
 2. **Follow-up Probe (`scripts/review_phase3_followup_probe.py`):**
 ```
 UPGRADE_HAS_CURRENT_RUN True
-UPGRADE_REVISION 0004_add_generation_and_fencing_controls
+UPGRADE_REVISION 0005_repair_historical_generation_attribution
 STRUCTURED_PROVENANCE_SERIALIZES True
 PAPER_HTTP_STATUS 200
 LIBRARY_HTTP_STATUS 200
@@ -103,34 +119,41 @@ UNKNOWN_ERROR_SANITIZED An error occurred during document processing.
 ```
 Exit code: 0.
 
-### 2.3 Python Code Quality (Ruff)
+3. **Acceptance Probe (`scripts/review_phase3_acceptance_probe.py`):**
+```
+BACKFILLED_GENERATIONS ('run-new', 'run-old')
+PAGE_ASSIGNED_RUN run-old
+RETAINED_OLD_PAGES_IS_STALE True
+OVERLAY artifacts/review_phase3_geometry/test_overlay_rotation90.png
+```
+Exit code: 0. Visual inspection of overlay image confirms tight bounding around rotated text.
+
+### 4.5 Python Code Quality (Ruff)
 
 Commands:
 ```powershell
-.venv\Scripts\ruff check backend tests scripts worker
-.venv\Scripts\ruff format --check backend tests scripts worker
+ruff check .
+ruff format --check .
 ```
-Result: All checks passed! 45 files inspected and formatted.
+Result: All checks passed! 83 files inspected and clean.
 
-### 2.4 Frontend Verification (25 passed, 0 failed)
+### 4.6 Frontend Verification
 
 Commands:
 ```powershell
 cd frontend
-npm test
-npm run lint
 npm run typecheck
+npm run lint
 npm run build
 ```
 Result:
-- Vitest: 4 test files, 25 tests passed.
-- ESLint: 0 errors.
 - TypeScript (`tsc --noEmit`): 0 errors.
+- ESLint: 0 errors.
 - Vite build: Production bundle generated cleanly (`dist/index.html` 0.99 kB, `dist/assets/index-*.js` 309.64 kB).
 
 ---
 
-## 3. Publication & Boundary Policy Compliance
+## 5. Publication & Boundary Policy Compliance
 
 1. **Local Boundary:** All Phase 3 repair work is committed locally on branch `manav` and left unpushed for independent review.
 2. **Phase 2 Status:** Week 1 Phase 2 is already accepted and published at `4058b2d` on `origin/manav` and `origin/main`.

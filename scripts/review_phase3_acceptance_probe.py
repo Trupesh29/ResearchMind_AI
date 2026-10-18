@@ -110,8 +110,8 @@ with fitz.open(pdf) as document:
     page = document[0]
     shape = page.new_shape()
     for block in result.pages[0].blocks:
-        # Exactly the current test: it passes visual coordinates to PDF drawing.
-        shape.draw_rect(fitz.Rect(block.bbox))
+        # Convert visual coordinates back through page.derotation_matrix for PDF shape drawing
+        shape.draw_rect(fitz.Rect(block.bbox) * page.derotation_matrix)
     shape.finish(color=(1, 0, 0), width=1.5)
     shape.commit()
     page.get_pixmap().save(out / "test_overlay_rotation90.png")

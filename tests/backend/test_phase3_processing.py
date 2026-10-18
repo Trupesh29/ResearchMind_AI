@@ -935,6 +935,8 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
         "sys.exit(main())"
     )
 
+    subproc_log = p3_env["data_dir"] / "subprocess_victim.log"
+    log_fp = open(subproc_log, "w", encoding="utf-8")
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -945,8 +947,8 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
         ],
         env=env,
         cwd=str(root_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_fp,
+        stderr=subprocess.STDOUT,
         text=True,
     )
 
@@ -970,12 +972,14 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
                     break
         if not claimed:
             proc.kill()
-            out, err = proc.communicate(timeout=3)
+            proc.wait(timeout=3)
+            log_fp.close()
+            log_content = subproc_log.read_text(encoding="utf-8", errors="replace")
             with p3_env["factory"]() as s:
                 jobs_dump = [(j.stage, j.status, j.attempt) for j in s.query(ProcessingJob).all()]
             raise AssertionError(
                 f"Worker subprocess did not enter running state for extracting stage. "
-                f"Poll={proc.poll()}, Jobs={jobs_dump}, Stdout={out}, Stderr={err}"
+                f"Poll={proc.poll()}, Jobs={jobs_dump}, Output={log_content}"
             )
 
         # Terminate the worker abruptly while it is actively processing
@@ -1007,6 +1011,8 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        if not log_fp.closed:
+            log_fp.close()
 
 
 def test_r3_concurrent_reprocess_conflict_and_generation_isolation(p3_env: dict):
@@ -1147,6 +1153,7 @@ def test_r5_rotated_and_cropped_geometry_consistency(p3_env: dict):
         assert len(extracted_p.blocks) > 0
 
         # Visual overlay inspection: draw extracted bounding boxes onto page pixmap
+        # Derotate visual coordinates back through page.derotation_matrix for PDF shape drawing
         render_doc = fitz.open(pdf_path)
         render_page = render_doc[0]
         shape = render_page.new_shape()
@@ -1154,7 +1161,8 @@ def test_r5_rotated_and_cropped_geometry_consistency(p3_env: dict):
             x0, y0, x1, y1 = b.bbox
             assert 0.0 <= x0 <= x1 <= extracted_p.width + 0.1
             assert 0.0 <= y0 <= y1 <= extracted_p.height + 0.1
-            shape.draw_rect(fitz.Rect(x0, y0, x1, y1))
+            unrot_rect = fitz.Rect(x0, y0, x1, y1) * render_page.derotation_matrix
+            shape.draw_rect(unrot_rect)
         shape.finish(color=(1, 0, 0), width=1.5)
         shape.commit()
 
@@ -1166,6 +1174,62 @@ def test_r5_rotated_and_cropped_geometry_consistency(p3_env: dict):
         assert overlay_path.exists()
         assert pix.width > 0 and pix.height > 0
         assert len(pix.samples) > 0
+
+        # Validate that red overlay pixels precisely enclose black text glyphs
+        red_pts = [
+            (x, y)
+            for y in range(pix.height)
+            for x in range(pix.width)
+            if pix.pixel(x, y)[0] > 200 and pix.pixel(x, y)[1] < 50 and pix.pixel(x, y)[2] < 50
+        ]
+        black_pts = [
+            (x, y)
+            for y in range(pix.height)
+            for x in range(pix.width)
+            if pix.pixel(x, y)[0] < 50 and pix.pixel(x, y)[1] < 50 and pix.pixel(x, y)[2] < 50
+        ]
+        assert len(red_pts) > 0, f"No red overlay pixels found for rot {rot}"
+        assert len(black_pts) > 0, f"No black text pixels found for rot {rot}"
+
+        min_rx, max_rx = min(p[0] for p in red_pts), max(p[0] for p in red_pts)
+        min_ry, max_ry = min(p[1] for p in red_pts), max(p[1] for p in red_pts)
+        min_bx, max_bx = min(p[0] for p in black_pts), max(p[0] for p in black_pts)
+        min_by, max_by = min(p[1] for p in black_pts), max(p[1] for p in black_pts)
+
+        # Enclosure check with 2px stroke tolerance
+        assert min_rx <= min_bx + 2, f"Red box left {min_rx} does not enclose text left {min_bx} for rot {rot}"
+        assert max_rx >= max_bx - 2, f"Red box right {max_rx} does not enclose text right {max_bx} for rot {rot}"
+        assert min_ry <= min_by + 2, f"Red box top {min_ry} does not enclose text top {min_by} for rot {rot}"
+        assert max_ry >= max_by - 2, f"Red box bottom {max_ry} does not enclose text bottom {max_by} for rot {rot}"
+
+        # Negative control: intentionally omitting derotation on rotated pages (rot != 0)
+        # proves that raw visual coordinates without derotation fail the enclosure assertion
+        if rot in (90, 270):
+            neg_doc = fitz.open(pdf_path)
+            neg_page = neg_doc[0]
+            neg_shape = neg_page.new_shape()
+            for b in extracted_p.blocks:
+                neg_shape.draw_rect(fitz.Rect(b.bbox))
+            neg_shape.finish(color=(1, 0, 0), width=1.5)
+            neg_shape.commit()
+            neg_pix = neg_page.get_pixmap()
+            neg_doc.close()
+
+            neg_red_pts = [
+                (x, y)
+                for y in range(neg_pix.height)
+                for x in range(neg_pix.width)
+                if neg_pix.pixel(x, y)[0] > 200 and neg_pix.pixel(x, y)[1] < 50 and neg_pix.pixel(x, y)[2] < 50
+            ]
+            if len(neg_red_pts) == 0:
+                # Shape was drawn outside unrotated page bounds and clipped entirely
+                misaligned = True
+            else:
+                neg_min_rx, neg_max_rx = min(p[0] for p in neg_red_pts), max(p[0] for p in neg_red_pts)
+                neg_min_ry, neg_max_ry = min(p[1] for p in neg_red_pts), max(p[1] for p in neg_red_pts)
+
+                misaligned = neg_min_rx > min_bx or neg_max_rx < max_bx or neg_min_ry > min_by or neg_max_ry < max_by
+            assert misaligned is True, f"Negative control failed to detect misalignment for rot {rot}"
 
     # 2. Test cropped page
     crop_pdf = test_dir / "cropped_page.pdf"
@@ -1198,6 +1262,48 @@ def test_r5_rotated_and_cropped_geometry_consistency(p3_env: dict):
 
     assert crop_overlay_path.exists()
     assert crop_pix.width > 0 and crop_pix.height > 0
+
+    # Verify blue box encloses text on cropped page
+    blue_pts = [
+        (x, y)
+        for y in range(crop_pix.height)
+        for x in range(crop_pix.width)
+        if crop_pix.pixel(x, y)[2] > 200 and crop_pix.pixel(x, y)[0] < 50 and crop_pix.pixel(x, y)[1] < 50
+    ]
+    crop_black_pts = [
+        (x, y)
+        for y in range(crop_pix.height)
+        for x in range(crop_pix.width)
+        if crop_pix.pixel(x, y)[0] < 50 and crop_pix.pixel(x, y)[1] < 50 and crop_pix.pixel(x, y)[2] < 50
+    ]
+    assert len(blue_pts) > 0
+    assert len(crop_black_pts) > 0
+    assert min(p[0] for p in blue_pts) <= min(p[0] for p in crop_black_pts) + 2
+    assert max(p[0] for p in blue_pts) >= max(p[0] for p in crop_black_pts) - 2
+    assert min(p[1] for p in blue_pts) <= min(p[1] for p in crop_black_pts) + 2
+    assert max(p[1] for p in blue_pts) >= max(p[1] for p in crop_black_pts) - 2
+
+    # Negative control for cropped page: shifted box (+100px) must fail enclosure
+    neg_crop_doc = fitz.open(crop_pdf)
+    neg_cpage = neg_crop_doc[0]
+    neg_cshape = neg_cpage.new_shape()
+    for b in crop_p.blocks:
+        neg_cshape.draw_rect(fitz.Rect(b.bbox[0] + 100, b.bbox[1] + 100, b.bbox[2] + 100, b.bbox[3] + 100))
+    neg_cshape.finish(color=(0, 0, 1), width=1.5)
+    neg_cshape.commit()
+    neg_cpix = neg_cpage.get_pixmap()
+    neg_crop_doc.close()
+
+    neg_blue_pts = [
+        (x, y)
+        for y in range(neg_cpix.height)
+        for x in range(neg_cpix.width)
+        if neg_cpix.pixel(x, y)[2] > 200 and neg_cpix.pixel(x, y)[0] < 50 and neg_cpix.pixel(x, y)[1] < 50
+    ]
+    neg_crop_misaligned = min(p[0] for p in neg_blue_pts) > min(p[0] for p in crop_black_pts) or min(
+        p[1] for p in neg_blue_pts
+    ) > min(p[1] for p in crop_black_pts)
+    assert neg_crop_misaligned is True
 
 
 def test_r6_metadata_provenance_and_clean_heuristics(p3_env: dict):

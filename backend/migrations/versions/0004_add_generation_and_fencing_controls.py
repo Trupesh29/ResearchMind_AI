@@ -43,22 +43,62 @@ def upgrade() -> None:
         p_cur = row[2]
         p_pub = row[3]
 
-        job_row = conn.execute(
-            sa.text("SELECT run_id FROM processing_jobs WHERE paper_id = :pid ORDER BY created_at DESC LIMIT 1"),
+        active_job = conn.execute(
+            sa.text(
+                "SELECT run_id FROM processing_jobs WHERE paper_id = :pid AND status IN ('queued', 'running') "
+                "ORDER BY created_at DESC, attempt DESC LIMIT 1"
+            ),
             {"pid": p_id},
         ).fetchone()
 
-        assigned_run = job_row[0] if job_row else str(uuid.uuid4())
-        cur_run = p_cur or assigned_run
-        pub_run = p_pub
+        latest_job = conn.execute(
+            sa.text(
+                "SELECT run_id FROM processing_jobs WHERE paper_id = :pid "
+                "ORDER BY created_at DESC, attempt DESC LIMIT 1"
+            ),
+            {"pid": p_id},
+        ).fetchone()
 
-        if pub_run is None:
-            has_pages = conn.execute(
+        if p_cur:
+            cur_run = p_cur
+        elif active_job:
+            cur_run = active_job[0]
+        elif latest_job:
+            cur_run = latest_job[0]
+        else:
+            cur_run = str(uuid.uuid4())
+
+        has_pages = (
+            conn.execute(
                 sa.text("SELECT 1 FROM pages WHERE paper_id = :pid LIMIT 1"),
                 {"pid": p_id},
             ).fetchone()
-            if has_pages or p_status == "ready":
+            is not None
+        )
+
+        pub_run = p_pub
+        if pub_run is None:
+            if has_pages:
+                succ_extract_job = conn.execute(
+                    sa.text(
+                        "SELECT run_id FROM processing_jobs WHERE paper_id = :pid "
+                        "AND stage = 'extracting' AND status = 'succeeded' "
+                        "ORDER BY created_at DESC, attempt DESC LIMIT 1"
+                    ),
+                    {"pid": p_id},
+                ).fetchone()
+
+                if succ_extract_job:
+                    pub_run = succ_extract_job[0]
+                else:
+                    if p_status == "ready" and not active_job:
+                        pub_run = cur_run
+                    else:
+                        pub_run = f"legacy-{uuid.uuid4()}"
+            elif p_status == "ready":
                 pub_run = cur_run
+            else:
+                pub_run = None
 
         conn.execute(
             sa.text("UPDATE papers SET current_run_id = :cur, published_run_id = :pub WHERE id = :pid"),

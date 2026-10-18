@@ -547,7 +547,17 @@ def test_migration_0003_to_0004_data_preservation_and_reconciliation(temp_test_d
             ),
             {"id": paper_id, "ws_id": ws.id, "now": now},
         )
-        # Duplicate active jobs for the same paper (allowed in 0003)
+        # Earlier extraction job that produced the page:
+        job0_id = str(uuid.uuid4())
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES (:id, :paper_id, :run_id, 'extracting', 'succeeded', 1, '2026-10-18T09:00:00+00:00')"
+            ),
+            {"id": job0_id, "paper_id": paper_id, "run_id": run_1},
+        )
+        # Duplicate active jobs for the same paper in a subsequent reprocess attempt
+        run_2 = str(uuid.uuid4())
         job1_id = str(uuid.uuid4())
         job2_id = str(uuid.uuid4())
         session.execute(
@@ -555,14 +565,14 @@ def test_migration_0003_to_0004_data_preservation_and_reconciliation(temp_test_d
                 "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
                 "VALUES (:id, :paper_id, :run_id, 'validating', 'queued', 1, '2026-10-18T10:00:00+00:00')"
             ),
-            {"id": job1_id, "paper_id": paper_id, "run_id": run_1},
+            {"id": job1_id, "paper_id": paper_id, "run_id": run_2},
         )
         session.execute(
             text(
                 "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
                 "VALUES (:id, :paper_id, :run_id, 'validating', 'running', 2, '2026-10-18T10:05:00+00:00')"
             ),
-            {"id": job2_id, "paper_id": paper_id, "run_id": run_1},
+            {"id": job2_id, "paper_id": paper_id, "run_id": run_2},
         )
         # Page in historical 0003 schema (had paper_id, page_number, but NO run_id)
         page1_id = str(uuid.uuid4())
@@ -577,7 +587,7 @@ def test_migration_0003_to_0004_data_preservation_and_reconciliation(temp_test_d
 
     engine.dispose()
 
-    # 3. Upgrade to head (0004 forward migration)
+    # 3. Upgrade to head (0004 forward migration and 0005 repair)
     cfg.set_main_option("script_location", str(PROJECT_ROOT / "backend" / "migrations"))
     command.upgrade(cfg, "head")
 
@@ -595,8 +605,8 @@ def test_migration_0003_to_0004_data_preservation_and_reconciliation(temp_test_d
             text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"),
             {"id": paper_id},
         ).fetchone()
-        assert paper_row[0] == run_1  # Backfilled from jobs
-        assert paper_row[1] == run_1  # Backfilled from pages
+        assert paper_row[0] == run_2  # Backfilled from active reprocess job
+        assert paper_row[1] == run_1  # Backfilled from successful extraction job
 
         # Check pages run_id
         page_cols = {c["name"] for c in inspect(engine).get_columns("pages")}
@@ -631,5 +641,271 @@ def test_migration_0003_to_0004_data_preservation_and_reconciliation(temp_test_d
     with engine.connect() as c:
         rev = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
         assert rev == "0003_add_processing_jobs_and_pages"
+
+    engine.dispose()
+
+
+def test_historical_generation_attribution_matrix(temp_test_dir):
+    """
+    Exhaustively verifies G1 generation attribution across the historical matrix:
+    1. Successful A followed by failed B:
+       - current_run_id = B, published_run_id = A, pages.run_id = A
+       - get_paper_pages() returns is_stale=True and displays retained pages from A.
+    2. Successful A followed by active B (queued/running):
+       - current_run_id = B, published_run_id = A, pages.run_id = A.
+    3. Ambiguous / missing extraction history:
+       - pages exist, but no successful extracting jobs exist.
+       - published_run_id is assigned a dedicated legacy run id, pages.run_id = legacy ID.
+       - pages and records are preserved, not falsely claimed by a failed run.
+    4. Competing runs (duplicate active jobs):
+       - reconciled to exactly 1 active job, with current_run_id matching that active job.
+    5. Forward-repair from already-applied 0004:
+       - simulates a database where 0004 misattributed published_run_id to run-new.
+       - 0005 upgrade repairs published_run_id and pages.run_id back to run-old.
+    6. Clean install / empty database upgrade to head.
+    """
+    import subprocess
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.app.services.processing_service import get_paper_pages
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    db_file = temp_test_dir / "migration_g1_matrix.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+
+    # Setup isolated migrations directory containing historical 0003
+    hist_migrations = temp_test_dir / "test_migrations_g1"
+    import shutil
+
+    shutil.copytree(PROJECT_ROOT / "backend" / "migrations", hist_migrations)
+    rev_0003 = "0003_add_processing_jobs_and_pages.py"
+    original_0003 = subprocess.check_output(
+        ["git", "show", f"2ef4ec2:backend/migrations/versions/{rev_0003}"],
+        cwd=PROJECT_ROOT,
+    )
+    (hist_migrations / "versions" / rev_0003).write_bytes(original_0003)
+
+    cfg = Config(str(PROJECT_ROOT / "backend" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(hist_migrations))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    command.upgrade(cfg, "0003_add_processing_jobs_and_pages")
+
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    SessionCls = sessionmaker(bind=engine)
+
+    user_id = "user_g1"
+    ws_id = "ws_g1"
+    p1_id = "paper_succ_then_failed"
+    p2_id = "paper_succ_then_active"
+    p3_id = "paper_ambiguous"
+    p4_id = "paper_competing"
+
+    now = "2026-10-18T10:00:00+00:00"
+    later = "2026-10-18T11:00:00+00:00"
+
+    with SessionCls() as session:
+        session.execute(
+            text("INSERT INTO users (id, email, password_hash, created_at) VALUES (:u, 'g1@test.org', 'h', :now)"),
+            {"u": user_id, "now": now},
+        )
+        session.execute(
+            text("INSERT INTO workspaces (id, user_id, name, created_at) VALUES (:w, :u, 'G1 WS', :now)"),
+            {"w": ws_id, "u": user_id, "now": now},
+        )
+
+        # 1. Paper 1: Successful A followed by failed B
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, created_at, updated_at) "
+                "VALUES (:id, :w, 'p1.pdf', 'p1.pdf', 'sha1', 100, 'failed', :now, :later)"
+            ),
+            {"id": p1_id, "w": ws_id, "now": now, "later": later},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('j1_old', :pid, 'run-A1', 'extracting', 'succeeded', 1, :now)"
+            ),
+            {"pid": p1_id, "now": now},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('j1_new', :pid, 'run-B1', 'extracting', 'failed', 1, :later)"
+            ),
+            {"pid": p1_id, "later": later},
+        )
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                "VALUES ('pg1', :pid, 1, 20, 'ok', '[]', 'Page text from run A1', :now)"
+            ),
+            {"pid": p1_id, "now": now},
+        )
+
+        # 2. Paper 2: Successful A followed by active B (running)
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, created_at, updated_at) "
+                "VALUES (:id, :w, 'p2.pdf', 'p2.pdf', 'sha2', 100, 'processing', :now, :later)"
+            ),
+            {"id": p2_id, "w": ws_id, "now": now, "later": later},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('j2_old', :pid, 'run-A2', 'extracting', 'succeeded', 1, :now)"
+            ),
+            {"pid": p2_id, "now": now},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('j2_active', :pid, 'run-B2', 'validating', 'running', 1, :later)"
+            ),
+            {"pid": p2_id, "later": later},
+        )
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                "VALUES ('pg2', :pid, 1, 20, 'ok', '[]', 'Page text from run A2', :now)"
+            ),
+            {"pid": p2_id, "now": now},
+        )
+
+        # 3. Paper 3: Ambiguous / missing extraction history (pages exist, but only failed job recorded)
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, created_at, updated_at) "
+                "VALUES (:id, :w, 'p3.pdf', 'p3.pdf', 'sha3', 100, 'failed', :now, :now)"
+            ),
+            {"id": p3_id, "w": ws_id, "now": now},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('j3_fail', :pid, 'run-fail3', 'extracting', 'failed', 1, :now)"
+            ),
+            {"pid": p3_id, "now": now},
+        )
+        session.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, page_number, char_count, extraction_status, flags_json, raw_text, created_at) "
+                "VALUES ('pg3', :pid, 1, 20, 'ok', '[]', 'Orphan page text', :now)"
+            ),
+            {"pid": p3_id, "now": now},
+        )
+
+        # 4. Paper 4: Competing runs (duplicate active jobs)
+        session.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, created_at, updated_at) "
+                "VALUES (:id, :w, 'p4.pdf', 'p4.pdf', 'sha4', 100, 'processing', :now, :now)"
+            ),
+            {"id": p4_id, "w": ws_id, "now": now},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('j4_1', :pid, 'run-comp1', 'validating', 'queued', 1, :now)"
+            ),
+            {"pid": p4_id, "now": now},
+        )
+        session.execute(
+            text(
+                "INSERT INTO processing_jobs (id, paper_id, run_id, stage, status, attempt, created_at) "
+                "VALUES ('j4_2', :pid, 'run-comp2', 'validating', 'running', 2, :later)"
+            ),
+            {"pid": p4_id, "later": later},
+        )
+
+        session.commit()
+
+    engine.dispose()
+
+    # Upgrade to head through 0004 and 0005
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "backend" / "migrations"))
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    SessionCls = sessionmaker(bind=engine)
+
+    with SessionCls() as session:
+        # 1. Paper 1 Verification:
+        # current_run_id = run-B1 (failed attempt), published_run_id = run-A1, pages.run_id = run-A1
+        p1_row = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"), {"id": p1_id}
+        ).fetchone()
+        assert p1_row[0] == "run-B1"
+        assert p1_row[1] == "run-A1"
+        pg1_row = session.execute(text("SELECT run_id FROM pages WHERE id = 'pg1'")).fetchone()
+        assert pg1_row[0] == "run-A1"
+
+        pages_result1 = get_paper_pages(session, user_id, p1_id)
+        assert pages_result1.is_stale is True
+        assert pages_result1.run_id == "run-A1"
+        assert len(pages_result1.items) == 1
+        pg1_text = session.execute(text("SELECT raw_text FROM pages WHERE id = 'pg1'")).scalar()
+        assert pg1_text == "Page text from run A1"
+
+        # 2. Paper 2 Verification:
+        # current_run_id = run-B2 (active reprocess), published_run_id = run-A2, pages.run_id = run-A2
+        p2_row = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"), {"id": p2_id}
+        ).fetchone()
+        assert p2_row[0] == "run-B2"
+        assert p2_row[1] == "run-A2"
+        pg2_row = session.execute(text("SELECT run_id FROM pages WHERE id = 'pg2'")).fetchone()
+        assert pg2_row[0] == "run-A2"
+
+        pages_result2 = get_paper_pages(session, user_id, p2_id)
+        assert pages_result2.is_stale is True
+
+        # 3. Paper 3 Verification:
+        # Ambiguous history: pages preserved with isolated legacy run ID, not falsely tied to run-fail3
+        p3_row = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"), {"id": p3_id}
+        ).fetchone()
+        assert p3_row[0] == "run-fail3"
+        assert p3_row[1].startswith("legacy-")
+        pg3_row = session.execute(text("SELECT run_id FROM pages WHERE id = 'pg3'")).fetchone()
+        assert pg3_row[0] == p3_row[1]
+
+        # 4. Paper 4 Verification:
+        # Duplicate active jobs reconciled: j4_1 marked failed, j4_2 preserved as running
+        j4_1_st = session.execute(text("SELECT status FROM processing_jobs WHERE id = 'j4_1'")).scalar()
+        j4_2_st = session.execute(text("SELECT status FROM processing_jobs WHERE id = 'j4_2'")).scalar()
+        assert j4_1_st == "failed"
+        assert j4_2_st == "running"
+        p4_row = session.execute(text("SELECT current_run_id FROM papers WHERE id = :id"), {"id": p4_id}).fetchone()
+        assert p4_row[0] == "run-comp2"
+
+    # 5. Forward-repair verification:
+    # Downgrade to 0004, simulate misattributed published_run_id (as produced by buggy 0004),
+    # then upgrade to 0005 to prove the forward repair corrects it:
+    command.downgrade(cfg, "0004_add_generation_and_fencing_controls")
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE papers SET published_run_id = 'run-B1' WHERE id = :id"),
+            {"id": p1_id},
+        )
+        conn.execute(
+            text("UPDATE pages SET run_id = 'run-B1' WHERE id = 'pg1'"),
+        )
+    command.upgrade(cfg, "0005_repair_historical_generation_attribution")
+
+    with SessionCls() as session:
+        repaired_p1 = session.execute(
+            text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"), {"id": p1_id}
+        ).fetchone()
+        assert repaired_p1[0] == "run-B1"
+        assert repaired_p1[1] == "run-A1"  # Repaired to successful run A1!
+        repaired_pg1 = session.execute(text("SELECT run_id FROM pages WHERE id = 'pg1'")).fetchone()
+        assert repaired_pg1[0] == "run-A1"  # Pages repaired to run A1!
 
     engine.dispose()

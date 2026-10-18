@@ -6,7 +6,7 @@ Guide implementation and review with less redundant agent context, while preserv
 
 ## 1. Establish scope
 
-Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 2 Phase 3 Follow-up Review repair: structured provenance, immutable migration history (0003 restored, 0004 added), latest attempt status computation, atomic recovery with expiration predicate, category allowlist error sanitization, and real subprocess recovery. Keep Phase 3 local for independent review; do not push or advance to Phase 4.
+Read applicable instructions, `git status --short`, the relevant diff, and the current task. Preserve existing uncommitted work. Current authorized implementation scope is Week 2 Phase 3 Acceptance Findings repair (from 3c7743d): historical generation attribution (G1) with separated current attempt vs published pages and forward migration 0005, and visual overlay evidence (G2) with derotation matrix transformation, sub-pixel glyph enclosure assertions, and negative controls. Keep Phase 3 local for independent review; do not push or advance to Phase 4.
 
 Gravitas policy equivalent:
 

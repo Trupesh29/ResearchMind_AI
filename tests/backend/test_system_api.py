@@ -23,7 +23,8 @@ def test_ready_endpoint_healthy(client: TestClient):
     assert db_check["status"] == "healthy"
     assert db_check["message"] == "Connected and schema verified"
     assert (
-        "0004_add_generation_and_fencing_controls" in db_check["current_revisions"]
+        "0005_repair_historical_generation_attribution" in db_check["current_revisions"]
+        or "0004_add_generation_and_fencing_controls" in db_check["current_revisions"]
         or "0003_add_processing_jobs_and_pages" in db_check["current_revisions"]
     )
     assert data["checks"]["storage"]["message"] == "Storage directory writable"

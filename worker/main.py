@@ -73,7 +73,7 @@ def main() -> int:
 
     effective_db_url = args.db_url or os.environ.get("DATABASE_URL")
     if effective_db_url:
-        from sqlalchemy import create_engine
+        from sqlalchemy import create_engine, event
         from sqlalchemy.orm import sessionmaker
 
         from backend.app.db.session import set_session_factory
@@ -81,7 +81,22 @@ def main() -> int:
         connect_args = {}
         if effective_db_url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
+            connect_args["timeout"] = 30
         custom_engine = create_engine(effective_db_url, connect_args=connect_args)
+        if effective_db_url.startswith("sqlite"):
+
+            @event.listens_for(custom_engine, "connect")
+            def _set_sqlite_pragma(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute("PRAGMA busy_timeout=30000")
+                except Exception:
+                    pass
+                finally:
+                    cursor.close()
+
         factory = sessionmaker(autocommit=False, autoflush=False, bind=custom_engine)
         set_session_factory(factory)
 
