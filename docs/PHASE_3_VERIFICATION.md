@@ -1,5 +1,7 @@
 # PHASE_3_VERIFICATION.md — ResearchMind AI
 
+> Independent follow-up review of `bd78083` (2026-10-18): current acceptance is **FAIL**. The repair report below is historical. See [PHASE_3_FOLLOWUP_REVIEW.md](PHASE_3_FOLLOWUP_REVIEW.md) for reproduced API, migration, retry-state, lease-recovery, and error-privacy defects, and [PHASE_3_FOLLOWUP_PROMPT.md](PHASE_3_FOLLOWUP_PROMPT.md) for the next repair.
+
 > Phase 3 Repair Verification Checkpoint (2026-10-18): Repairs the independent review findings (`docs/PHASE_3_REVIEW.md`, R1–R7) starting from `fea8fce`. All defects converted into regression acceptance tests in `tests/backend/test_phase3_processing.py`. Current status: Local repair complete on branch `manav`; unpushed pending completion review. Phase 2 remains accepted and published at `4058b2d` on `origin/manav` and `origin/main`.
 
 ## Week 2, Phase 3: Persistent Processing and PDF Extraction (Repair Checkpoint)

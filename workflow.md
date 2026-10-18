@@ -72,7 +72,13 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
-## Phase 3 Repair Status (2026-10-18)
+## Current Phase 3 follow-up review (2026-10-18)
+
+Independent review of `bd78083` confirms narrow claim/reprocess/geometry improvements but reproduces HTTP 500 paper responses, missing schema upgrades from original 0003, incorrect status after retries, refreshed-lease retirement, and unsafe unknown-error fallback. Process-recovery and visual evidence remain incomplete. See `docs/PHASE_3_FOLLOWUP_REVIEW.md` and `docs/PHASE_3_FOLLOWUP_PROMPT.md`. Keep Phase 3 local pending corrections and acceptance.
+
+VERDICT: FAIL -- follow-up findings F1–F6 remain open.
+
+## Historical Phase 3 Repair Status (2026-10-18)
 
 Repaired Phase 3 implementation resolving findings R1–R7 from `docs/PHASE_3_REVIEW.md`:
 - R1: Atomic single-query claims with rowcount check, atomic lease recovery, and fencing token validation.
