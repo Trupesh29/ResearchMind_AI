@@ -1,5 +1,7 @@
 # ResearchMind AI agent workflow
 
+Latest independent review of `5e168f1` (2026-10-18): Phase 3 remains local. Existing suites pass, but H1 blocks populated upgrades with multiple successful retained page generations. See `docs/PHASE_3_MULTIRUN_REVIEW.md` and `docs/PHASE_3_MULTIRUN_FIX_PROMPT.md`. This finding supersedes earlier acceptance status below. VERDICT: FAIL -- migration preservation repair required.
+
 ## Purpose
 
 Guide implementation and review with less redundant agent context, while preserving correctness. This is a development-agent workflow, not application runtime functionality. Read `decision.md` for current scope and `docs/PHASE_2_PROMPT.md` for the Week 1 Phase 2 handoff.

@@ -1,5 +1,7 @@
 # PHASE_3_VERIFICATION.md — ResearchMind AI
 
+> Latest independent review (2026-10-18, application `5e168f1`): **FAIL** — 151 backend and 25 frontend tests pass, but 0005 fails on valid retained pages from two successful generations. See `docs/PHASE_3_MULTIRUN_REVIEW.md` and `docs/PHASE_3_MULTIRUN_FIX_PROMPT.md`. The implementation report below is historical checkpoint evidence, not current acceptance.
+
 > Phase 3 Acceptance Review Repair Checkpoint (2026-10-18): Repairs the remaining Phase 3 acceptance findings (`docs/PHASE_3_ACCEPTANCE_REVIEW.md`, G1/G2) starting from commit `3c7743d`. Historical generation attribution (G1) separates current attempt identity from retained published pages with forward migration `0005_repair_historical_generation_attribution` and updated `0004` backfill. Visual overlay evidence (G2) transforms visual coordinates through `page.derotation_matrix` with pixel-level text glyph enclosure verification and negative controls across 0/90/180/270 and cropped pages. Worker subprocess pipe buffer deadlocks eliminated in `test_r2` and SQLite WAL/busy timeout configured in `worker/main.py`. All acceptance probes and full test suites pass 100%. Current status: Local checkpoint on branch `manav`; unpushed pending independent review. Phase 2 remains accepted and published at `4058b2d` on `origin/manav` and `origin/main`.
 
 ## Week 2, Phase 3: Persistent Processing and PDF Extraction (Acceptance Findings Repair)
