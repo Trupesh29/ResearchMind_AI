@@ -1,5 +1,7 @@
 # PHASE_3_VERIFICATION.md — ResearchMind AI
 
+> Independent acceptance review of `3c7743d` (2026-10-18): current verdict is **FAIL**. Earlier F1–F5 probes improved, but historical-page generation backfill and rotated overlay evidence still fail. See [PHASE_3_ACCEPTANCE_REVIEW.md](PHASE_3_ACCEPTANCE_REVIEW.md) and [PHASE_3_ACCEPTANCE_FIX_PROMPT.md](PHASE_3_ACCEPTANCE_FIX_PROMPT.md). The repair report below is historical, not current acceptance.
+
 > Phase 3 Follow-up Review Repair Checkpoint (2026-10-18): Repairs the independent follow-up review findings (`docs/PHASE_3_FOLLOWUP_REVIEW.md`, F1–F6) from commit `bd78083`. All defects converted into regression acceptance tests in `tests/backend/test_phase3_processing.py` and `tests/backend/test_database.py`. Both review probes (`scripts/review_phase3_probe.py` and `scripts/review_phase3_followup_probe.py`) pass 100%. Current status: Local repair complete on branch `manav`; unpushed pending independent review. Phase 2 remains accepted and published at `4058b2d` on `origin/manav` and `origin/main`.
 
 ## Week 2, Phase 3: Persistent Processing and PDF Extraction (Follow-up Review Repair)

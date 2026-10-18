@@ -72,7 +72,13 @@ Update `decision.md` only for actual decisions or changed evidence. Record Phase
 
 End each verification summary with `VERDICT: PASS` or `VERDICT: FAIL -- <unmet criterion>`, scoped to what was actually checked. A passing test suite does not override failed acceptance criteria.
 
-## Current Phase 3 follow-up review (2026-10-18)
+## Current Phase 3 acceptance review (2026-10-18)
+
+Independent review of `3c7743d` confirms the prior narrow API, migration-column, retry-status, lease-refresh, and error-fallback probes now pass. Acceptance remains blocked by G1 (migration misattributes retained pages to a newer failed run) and G2 (double-rotated overlay evidence passes without correspondence checks). Focused Phase 3/database tests returned 29 passed and 1 failed in subprocess recovery; frontend workers and a PowerShell harness rerun timed out. See `docs/PHASE_3_ACCEPTANCE_REVIEW.md` and `docs/PHASE_3_ACCEPTANCE_FIX_PROMPT.md`. Keep Phase 3 local.
+
+VERDICT: FAIL -- G1/G2 and fresh verification gates remain open.
+
+## Historical Phase 3 follow-up review (2026-10-18)
 
 Independent review of `bd78083` confirms narrow claim/reprocess/geometry improvements but reproduces HTTP 500 paper responses, missing schema upgrades from original 0003, incorrect status after retries, refreshed-lease retirement, and unsafe unknown-error fallback. Process-recovery and visual evidence remain incomplete. See `docs/PHASE_3_FOLLOWUP_REVIEW.md` and `docs/PHASE_3_FOLLOWUP_PROMPT.md`. Keep Phase 3 local pending corrections and acceptance.
 
