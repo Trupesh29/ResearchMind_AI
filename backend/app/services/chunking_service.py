@@ -50,6 +50,18 @@ def get_tokenizer() -> AutoTokenizer:
     if _tokenizer_instance is None:
         model_name = getattr(settings, "EMBEDDING_MODEL_NAME", TOKENIZER_MODEL_NAME) or TOKENIZER_MODEL_NAME
         revision = getattr(settings, "EMBEDDING_MODEL_REVISION", TOKENIZER_REVISION) or TOKENIZER_REVISION
+
+        if model_name != TOKENIZER_MODEL_NAME:
+            raise ValueError(
+                f"Unsupported embedding model '{model_name}'. "
+                f"Phase 4 ingestion requires supported baseline '{TOKENIZER_MODEL_NAME}'."
+            )
+        if revision != TOKENIZER_REVISION:
+            raise ValueError(
+                f"Unsupported revision '{revision}' for model '{model_name}'. "
+                f"Expected pinned revision '{TOKENIZER_REVISION}'."
+            )
+
         candidate: AutoTokenizer | None = None
         try:
             # First try loading locally with the pinned revision
@@ -336,7 +348,7 @@ def chunk_section(
         page_start = min(chunk_pages) if chunk_pages else section.page_start
         page_end = max(chunk_pages) if chunk_pages else section.page_end
 
-        revision = getattr(settings, "EMBEDDING_MODEL_REVISION", TOKENIZER_REVISION) or TOKENIZER_REVISION
+        meta = get_tokenizer_metadata()
         chunks.append(
             ChunkResult(
                 chunk_index=chunk_idx,
@@ -347,8 +359,8 @@ def chunk_section(
                 token_count=final_measured_tokens,
                 block_ids=distinct_blocks,
                 is_excluded=section.is_reference,
-                tokenizer_name=TOKENIZER_MODEL_NAME,
-                tokenizer_revision=revision,
+                tokenizer_name=meta["tokenizer"],
+                tokenizer_revision=meta["revision"],
             )
         )
         chunk_idx += 1

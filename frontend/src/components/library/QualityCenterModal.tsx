@@ -71,19 +71,51 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
 
   // Request & Polling guards
   const activeReqRef = useRef<number>(0);
+  const activeActionTokenRef = useRef<number>(0);
+  const currentPaperIdRef = useRef<string | null>(paper?.id ?? null);
+  const currentWorkspaceIdRef = useRef<string | null>(
+    paper?.workspace_id ?? null,
+  );
+  const isOpenRef = useRef<boolean>(isOpen);
+  const filtersRef = useRef<{ section: string; page: string }>({
+    section: sectionFilter,
+    page: pageFilter,
+  });
+  const currentRunIdRef = useRef<string | null>(null);
   const pollTimerRef = useRef<any>(null);
   const retryCountRef = useRef<number>(0);
+  const generationConflictCountRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const statusDataRef = useRef<PaperStatusResponse | null>(null);
 
-  useEffect(() => {
-    statusDataRef.current = statusData;
-  }, [statusData]);
+  // Synchronously update current identity refs on every render
+  currentPaperIdRef.current = paper?.id ?? null;
+  currentWorkspaceIdRef.current = paper?.workspace_id ?? null;
+  isOpenRef.current = isOpen;
+  filtersRef.current = { section: sectionFilter, page: pageFilter };
+  statusDataRef.current = statusData;
+  currentRunIdRef.current =
+    statusData?.published_run_id || statusData?.run_id || null;
 
-  // Reset state when active paper changes
+  // Invalidate and reset state when active paper or workspace changes
   useEffect(() => {
+    activeActionTokenRef.current += 1;
+    activeReqRef.current += 1;
+    generationConflictCountRef.current = 0;
+    retryCountRef.current = 0;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+
     setStatusData(null);
     statusDataRef.current = null;
+    currentRunIdRef.current = null;
     setChunks([]);
     setTotalChunks(0);
     setSections([]);
@@ -96,17 +128,36 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     setSearchFilter("");
     setIsReprocessing(false);
     setIsLoadingMoreChunks(false);
-    retryCountRef.current = 0;
-    activeReqRef.current += 1;
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+  }, [paper?.id, paper?.workspace_id]);
+
+  // Invalidate active actions, loads, and timers on modal close
+  useEffect(() => {
+    if (!isOpen) {
+      activeActionTokenRef.current += 1;
+      activeReqRef.current += 1;
+      generationConflictCountRef.current = 0;
+      retryCountRef.current = 0;
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+
+      setIsReprocessing(false);
+      setIsLoadingMoreChunks(false);
     }
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-  }, [paper?.id]);
+  }, [isOpen]);
+
+  // Invalidate pagination and load more actions when filters change
+  useEffect(() => {
+    activeActionTokenRef.current += 1;
+    setNextChunkCursor(null);
+    setIsLoadingMoreChunks(false);
+  }, [sectionFilter, pageFilter]);
 
   // Focus trap & Escape key
   useEffect(() => {
@@ -157,16 +208,20 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     }
   }, [isOpen, paper, onClose]);
 
-  // Load All Quality Data
+  // Load All Quality Data (enforces generation agreement on initial, filter, and polling loads)
   const loadData = useCallback(
     async (isPolling: boolean = false) => {
       if (!paper) return;
       const targetPaperId = paper.id;
+      const targetWorkspaceId = paper.workspace_id;
       const targetSection = sectionFilter;
       const targetPage = pageFilter;
       const reqId = ++activeReqRef.current;
-      if (!isPolling) setIsLoading(true);
-      setErrorMsg(null);
+
+      if (!isPolling) {
+        setIsLoading(true);
+        setErrorMsg(null);
+      }
 
       // Cancel in-flight request if present
       if (abortControllerRef.current) {
@@ -190,81 +245,141 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
           ],
         );
 
-        if (
+        // Current identity validation against mutable refs (K1)
+        const isRequestStillValid =
           reqId === activeReqRef.current &&
-          paper?.id === targetPaperId &&
-          sectionFilter === targetSection &&
-          pageFilter === targetPage
-        ) {
-          // Multi-resource generation agreement check
-          const targetPublishedRunId =
-            statusRes.published_run_id || statusRes.run_id;
-          const gens = [
-            chunksRes.run_id,
-            sectionsRes.run_id,
-            pagesRes.run_id,
-          ].filter(Boolean);
-          const hasConflict = gens.some(
-            (g) => targetPublishedRunId && g !== targetPublishedRunId,
-          );
+          isOpenRef.current &&
+          currentPaperIdRef.current === targetPaperId &&
+          currentWorkspaceIdRef.current === targetWorkspaceId &&
+          filtersRef.current.section === targetSection &&
+          filtersRef.current.page === targetPage;
 
-          if (hasConflict && isPolling) {
-            // Transient disagreement across resources: retry on next poll to avoid mixed snapshot
-            retryCountRef.current += 1;
+        if (!isRequestStillValid) {
+          return;
+        }
+
+        // Multi-resource generation agreement check (K2)
+        const targetPublishedRunId =
+          statusRes.published_run_id || statusRes.run_id;
+        const gens = [
+          chunksRes.run_id,
+          sectionsRes.run_id,
+          pagesRes.run_id,
+        ].filter(Boolean);
+
+        const anyStale = Boolean(
+          statusRes.is_stale ||
+          chunksRes.is_stale ||
+          sectionsRes.is_stale ||
+          pagesRes.is_stale,
+        );
+
+        const distinctGens = Array.from(new Set(gens));
+        const hasConflict =
+          anyStale ||
+          (targetPublishedRunId
+            ? gens.some((g) => g !== targetPublishedRunId)
+            : distinctGens.length > 1);
+
+        if (hasConflict) {
+          generationConflictCountRef.current += 1;
+          const MAX_GENERATION_RETRIES = 3;
+
+          // Invalidate active actions because generation is inconsistent or publishing
+          activeActionTokenRef.current += 1;
+
+          if (generationConflictCountRef.current > MAX_GENERATION_RETRIES) {
+            // Explicit unavailable state when generation agreement cannot be reached after bounded retries
+            setErrorMsg(
+              "Document artifacts are updating across pipeline runs. Generation agreement could not be reached. Retrying...",
+            );
+            setIsLoading(false);
+          }
+
+          // Schedule bounded retry to reach generation agreement
+          const delay = Math.min(
+            1500 *
+              Math.pow(1.5, Math.min(generationConflictCountRef.current, 4)),
+            8000,
+          );
+          if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+          pollTimerRef.current = setTimeout(() => {
+            loadData(true);
+          }, delay);
+          // Never publish mixed snapshots
+          return;
+        }
+
+        // Generation agreement verified: publish atomic snapshot
+        generationConflictCountRef.current = 0;
+        retryCountRef.current = 0;
+        setErrorMsg(null);
+        setIsLoading(false);
+
+        // Check if generation changed from previous snapshot; if so, invalidate action tokens
+        const newRunId = targetPublishedRunId || null;
+        if (
+          currentRunIdRef.current &&
+          newRunId &&
+          currentRunIdRef.current !== newRunId
+        ) {
+          activeActionTokenRef.current += 1;
+        }
+        currentRunIdRef.current = newRunId;
+        statusDataRef.current = statusRes;
+
+        setStatusData(statusRes);
+        setChunks(chunksRes.items);
+        setTotalChunks(chunksRes.total ?? chunksRes.items.length);
+        setNextChunkCursor(chunksRes.next_cursor ?? null);
+        setSections(sectionsRes.items);
+        setPages(pagesRes.items);
+      } catch (err: any) {
+        if (abortCtrl.signal.aborted) return;
+
+        const isRequestStillValid =
+          reqId === activeReqRef.current &&
+          isOpenRef.current &&
+          currentPaperIdRef.current === targetPaperId &&
+          currentWorkspaceIdRef.current === targetWorkspaceId;
+
+        if (!isRequestStillValid) return;
+
+        if (!isPolling) {
+          setErrorMsg(err?.message || "Failed to load quality metrics.");
+        } else {
+          // Transient polling failure: record retry attempt and explicitly schedule next poll
+          retryCountRef.current += 1;
+          const currentStatus = statusDataRef.current?.status || paper.status;
+          const currentSubstate = statusDataRef.current?.substate;
+          const hasConflict = generationConflictCountRef.current > 0;
+          const shouldPoll =
+            currentStatus === "uploaded" ||
+            (currentStatus === "processing" &&
+              (currentSubstate !== "awaiting_indexing" || hasConflict)) ||
+            hasConflict;
+
+          if (shouldPoll) {
             const delay = Math.min(
               2000 * Math.pow(1.5, retryCountRef.current),
               8000,
             );
-            if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+            if (pollTimerRef.current) {
+              clearTimeout(pollTimerRef.current);
+            }
             pollTimerRef.current = setTimeout(() => {
               loadData(true);
             }, delay);
-            return;
-          }
-
-          setStatusData(statusRes);
-          setChunks(chunksRes.items);
-          setTotalChunks(chunksRes.total ?? chunksRes.items.length);
-          setNextChunkCursor(chunksRes.next_cursor ?? null);
-          setSections(sectionsRes.items);
-          setPages(pagesRes.items);
-          retryCountRef.current = 0;
-        }
-      } catch (err: any) {
-        if (abortCtrl.signal.aborted) return;
-        if (reqId === activeReqRef.current && paper?.id === targetPaperId) {
-          if (!isPolling) {
-            setErrorMsg(err?.message || "Failed to load quality metrics.");
-          } else {
-            // Transient polling failure: record retry attempt and explicitly schedule next poll
-            retryCountRef.current += 1;
-            const currentStatus = statusDataRef.current?.status || paper.status;
-            const currentSubstate = statusDataRef.current?.substate;
-            const shouldPoll =
-              currentStatus === "uploaded" ||
-              (currentStatus === "processing" &&
-                currentSubstate !== "awaiting_indexing");
-
-            if (shouldPoll) {
-              const delay = Math.min(
-                2000 * Math.pow(1.5, retryCountRef.current),
-                8000,
-              );
-              if (pollTimerRef.current) {
-                clearTimeout(pollTimerRef.current);
-              }
-              pollTimerRef.current = setTimeout(() => {
-                loadData(true);
-              }, delay);
-            }
           }
         }
       } finally {
-        if (
+        const isRequestStillValid =
           reqId === activeReqRef.current &&
-          !isPolling &&
-          paper?.id === targetPaperId
-        ) {
+          isOpenRef.current &&
+          currentPaperIdRef.current === targetPaperId &&
+          currentWorkspaceIdRef.current === targetWorkspaceId;
+
+        if (isRequestStillValid && generationConflictCountRef.current === 0) {
           setIsLoading(false);
         }
       }
@@ -279,7 +394,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     }
   }, [isOpen, paper, loadData]);
 
-  // Adaptive polling: poll while queued (uploaded) or actively processing
+  // Adaptive polling: poll while queued (uploaded), actively processing, or while generation conflict persists
   useEffect(() => {
     if (!isOpen || !paper) return;
 
@@ -290,15 +405,24 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
 
     const currentStatus = statusData?.status || paper.status;
     const currentSubstate = statusData?.substate;
+    const hasConflict = generationConflictCountRef.current > 0;
 
-    // Continue polling if uploaded (queued) or processing without awaiting_indexing
+    // Continue polling if uploaded (queued), actively processing, or if generation agreement is pending
     const shouldPoll =
       currentStatus === "uploaded" ||
       (currentStatus === "processing" &&
-        currentSubstate !== "awaiting_indexing");
+        (currentSubstate !== "awaiting_indexing" || hasConflict)) ||
+      hasConflict;
 
     if (shouldPoll) {
-      const delay = Math.min(2000 * Math.pow(1.5, retryCountRef.current), 8000);
+      const delay = Math.min(
+        2000 *
+          Math.pow(
+            1.5,
+            Math.max(retryCountRef.current, generationConflictCountRef.current),
+          ),
+        8000,
+      );
       pollTimerRef.current = setTimeout(() => {
         loadData(true);
       }, delay);
@@ -315,14 +439,31 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     };
   }, [isOpen, paper, statusData, loadData]);
 
-  // Load More Chunks handler for pagination beyond 100
+  // Load More Chunks handler for pagination beyond 100 (guarded against closure & identity changes)
   const handleLoadMoreChunks = async () => {
     if (!paper || !nextChunkCursor || isLoadingMoreChunks) return;
     const targetPaperId = paper.id;
+    const targetWorkspaceId = paper.workspace_id;
     const targetCursor = nextChunkCursor;
     const targetSection = sectionFilter;
     const targetPage = pageFilter;
+    const targetRunId = currentRunIdRef.current;
+    const actionToken = ++activeActionTokenRef.current;
+
     setIsLoadingMoreChunks(true);
+
+    const isActionStillValid = () => {
+      return (
+        actionToken === activeActionTokenRef.current &&
+        isOpenRef.current &&
+        currentPaperIdRef.current === targetPaperId &&
+        currentWorkspaceIdRef.current === targetWorkspaceId &&
+        filtersRef.current.section === targetSection &&
+        filtersRef.current.page === targetPage &&
+        currentRunIdRef.current === targetRunId
+      );
+    };
+
     try {
       const res = await api.getPaperChunks(targetPaperId, {
         section: targetSection || undefined,
@@ -330,47 +471,67 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
         cursor: targetCursor,
         limit: 100,
       });
-      // Guard against paper, filter, or cursor identity change
-      if (
-        paper?.id === targetPaperId &&
-        sectionFilter === targetSection &&
-        pageFilter === targetPage &&
-        nextChunkCursor === targetCursor
-      ) {
-        setChunks((prev) => [...prev, ...res.items]);
-        setNextChunkCursor(res.next_cursor ?? null);
-        if (res.total !== undefined) {
-          setTotalChunks(res.total);
-        }
+
+      if (!isActionStillValid()) return;
+
+      // Invalidate if res generation conflicts with current generation
+      if (res.run_id && targetRunId && res.run_id !== targetRunId) {
+        return;
+      }
+
+      setChunks((prev) => [...prev, ...res.items]);
+      setNextChunkCursor(res.next_cursor ?? null);
+      if (res.total !== undefined) {
+        setTotalChunks(res.total);
       }
     } catch (err: any) {
-      if (paper?.id === targetPaperId) {
-        setErrorMsg(err?.message || "Failed to load more chunks.");
-      }
+      if (!isActionStillValid()) return;
+      setErrorMsg(err?.message || "Failed to load more chunks.");
     } finally {
-      if (paper?.id === targetPaperId) {
+      if (isActionStillValid()) {
         setIsLoadingMoreChunks(false);
       }
     }
   };
 
-  // Reprocess Handler
+  // Reprocess Handler (guarded against closure, paper change, close, and stale reload triggers)
   const handleReprocess = async () => {
     if (!paper || isReprocessing) return;
     const targetPaperId = paper.id;
+    const targetWorkspaceId = paper.workspace_id;
+    const actionToken = ++activeActionTokenRef.current;
+
     setIsReprocessing(true);
     setReprocessMsg(null);
+
+    const isActionStillValid = () => {
+      return (
+        actionToken === activeActionTokenRef.current &&
+        isOpenRef.current &&
+        currentPaperIdRef.current === targetPaperId &&
+        currentWorkspaceIdRef.current === targetWorkspaceId
+      );
+    };
+
     try {
       const res = await api.reprocessPaper(targetPaperId);
-      if (paper?.id !== targetPaperId) return;
+      if (!isActionStillValid()) return;
+
       setStatusData(res);
+      statusDataRef.current = res;
+      currentRunIdRef.current = res.published_run_id || res.run_id || null;
       setReprocessMsg({
         type: "success",
         text: "Reprocessing job enqueued successfully. Pipeline restarted.",
       });
-      loadData(true);
+
+      // Guard reprocess-triggered reload: only reload if action remains valid for this paper
+      if (isActionStillValid()) {
+        loadData(true);
+      }
     } catch (err: any) {
-      if (paper?.id !== targetPaperId) return;
+      if (!isActionStillValid()) return;
+
       if (err instanceof ApiClientError && err.statusCode === 409) {
         setReprocessMsg({
           type: "error",
@@ -385,7 +546,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
         });
       }
     } finally {
-      if (paper?.id === targetPaperId) {
+      if (isActionStillValid()) {
         setIsReprocessing(false);
       }
     }

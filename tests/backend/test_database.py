@@ -1248,7 +1248,9 @@ def test_multirun_page_generation_preservation_matrix(temp_test_dir):
         )
     command.upgrade(cfg, "head")
     with engine.connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == ("0008_add_block_spans_to_sections")
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
+            "0008_add_block_spans_to_sections"
+        )
 
     engine.dispose()
 
@@ -1284,6 +1286,160 @@ def test_clean_install_and_already_0005_upgrade(temp_test_dir):
         )
     command.upgrade(cfg, "head")
     with engine.connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == ("0008_add_block_spans_to_sections")
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
+            "0008_add_block_spans_to_sections"
+        )
+
+    engine.dispose()
+
+
+def test_migration_0008_span_reconciliation_matrix(temp_test_dir):
+    """Verifies K3: exact span reconciliation in 0008:
+
+    - localized dehyphenation bounds (no raw length extension)
+    - repeated prefix disambiguation
+    - multi-page and unequal block spans
+    - forward repair of historical chunks
+    - explicit unresolved None when exact reconciliation is impossible
+    """
+    import json
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    db_file = temp_test_dir / "migration_0008_matrix.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+
+    cfg = Config(str(PROJECT_ROOT / "backend" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "backend" / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+
+    # 1. Upgrade to 0007
+    command.upgrade(cfg, "0007_add_sections_and_chunks")
+    engine = create_engine(db_url)
+
+    stamp = "2026-10-19T00:00:00+00:00"
+    raw_dehyphen = "Deep learning trans-\nformers achieve state of the art."
+    cleaned_dehyphen = "Deep learning transformers achieve state of the art."
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO users (id, email, password_hash, created_at) VALUES ('u', 't@t.org', 'p', :s)"),
+            {"s": stamp},
+        )
+        conn.execute(
+            text("INSERT INTO workspaces (id, user_id, name, created_at) VALUES ('w', 'u', 'W', :s)"),
+            {"s": stamp},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, created_at, updated_at, current_run_id, published_run_id) "
+                "VALUES ('p', 'w', 'p.pdf', 'p.pdf', 'hash123', 10, 'processing', :s, :s, 'r', 'r')"
+            ),
+            {"s": stamp},
+        )
+
+        # Page 1: block b_dehyphen and block b_pref1
+        # Page 2: block b_pref2 and block b_p2
+        blocks_pg1 = [
+            {"id": "b_dehyphen", "text": raw_dehyphen},
+            {"id": "b_pref1", "text": "Method details"},
+        ]
+        blocks_pg2 = [
+            {"id": "b_pref2", "text": "Method details and experimental results across multiple tasks"},
+            {"id": "b_p2", "text": "Final evaluation summary."},
+        ]
+
+        conn.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, blocks_json, created_at) "
+                "VALUES ('pg1', 'p', 'r', 1, 100, 'ok', '[]', 'p1 raw', :b, :s)"
+            ),
+            {"b": json.dumps(blocks_pg1), "s": stamp},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, blocks_json, created_at) "
+                "VALUES ('pg2', 'p', 'r', 2, 100, 'ok', '[]', 'p2 raw', :b, :s)"
+            ),
+            {"b": json.dumps(blocks_pg2), "s": stamp},
+        )
+
+        # Section 1: dehyphenation block
+        conn.execute(
+            text(
+                "INSERT INTO sections (id, paper_id, run_id, section_index, section, page_start, page_end, text, block_ids_json, created_at) "
+                "VALUES ('s1', 'p', 'r', 0, 'intro', 1, 1, :txt, '[\"b_dehyphen\"]', :s)"
+            ),
+            {"txt": cleaned_dehyphen, "s": stamp},
+        )
+
+        # Section 2: multi-page, unequal blocks, repeated prefix
+        sec2_text = "Method details\n\nMethod details and experimental results across multiple tasks\n\nFinal evaluation summary."
+        conn.execute(
+            text(
+                "INSERT INTO sections (id, paper_id, run_id, section_index, section, page_start, page_end, text, block_ids_json, created_at) "
+                "VALUES ('s2', 'p', 'r', 1, 'methods', 1, 2, :txt, '[\"b_pref1\", \"b_pref2\", \"b_p2\"]', :s)"
+            ),
+            {"txt": sec2_text, "s": stamp},
+        )
+
+        # Section 3: unresolvable (corrupt / missing block ID)
+        conn.execute(
+            text(
+                "INSERT INTO sections (id, paper_id, run_id, section_index, section, page_start, page_end, text, block_ids_json, created_at) "
+                "VALUES ('s3', 'p', 'r', 2, 'results', 2, 2, 'Some text without blocks', '[\"nonexistent_b\"]', :s)"
+            ),
+            {"s": stamp},
+        )
+
+        # Historical chunk for Section 1 with obsolete/approximate provenance
+        conn.execute(
+            text(
+                "INSERT INTO chunks (id, paper_id, run_id, chunk_index, page_start, page_end, section, text, token_count, block_ids_json, created_at) "
+                "VALUES ('c1', 'p', 'r', 0, 99, 99, 'intro', :ctxt, 15, '[\"old_b\"]', :s)"
+            ),
+            {"ctxt": "Deep learning transformers", "s": stamp},
+        )
+
+    # 2. Upgrade to 0008
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        assert rev == "0008_add_block_spans_to_sections"
+
+        # Check Section 1: exact dehyphenation span
+        s1_spans = json.loads(conn.execute(text("SELECT block_spans_json FROM sections WHERE id='s1'")).scalar())
+        assert len(s1_spans) == 1
+        b_id, p_num, s_c, e_c = s1_spans[0]
+        assert b_id == "b_dehyphen"
+        assert p_num == 1
+        assert s_c == 0
+        assert e_c == len(cleaned_dehyphen)
+        assert e_c < len(raw_dehyphen)  # Cleaned length strictly less than raw length with newline
+        assert cleaned_dehyphen[s_c:e_c] == cleaned_dehyphen
+
+        # Check Section 2: multi-page, unequal blocks, repeated prefix disambiguation
+        s2_spans = json.loads(conn.execute(text("SELECT block_spans_json FROM sections WHERE id='s2'")).scalar())
+        assert len(s2_spans) == 3
+        assert s2_spans[0] == ["b_pref1", 1, 0, 14]
+        assert s2_spans[1] == ["b_pref2", 2, 16, 77]
+        assert s2_spans[2] == ["b_p2", 2, 79, 104]
+        for bid, pnum, sc, ec in s2_spans:
+            assert ec <= len(sec2_text)
+
+        # Check Section 3: unresolvable remains None
+        s3_spans = conn.execute(text("SELECT block_spans_json FROM sections WHERE id='s3'")).scalar()
+        assert s3_spans is None
+
+        # Check forward repair of historical chunk c1
+        c1_row = conn.execute(text("SELECT block_ids_json, page_start, page_end FROM chunks WHERE id='c1'")).fetchone()
+        assert json.loads(c1_row[0]) == ["b_dehyphen"]
+        assert c1_row[1] == 1  # Repaired from 99 to 1
+        assert c1_row[2] == 1  # Repaired from 99 to 1
 
     engine.dispose()

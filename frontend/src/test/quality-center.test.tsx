@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import { QualityCenterModal } from "../components/library/QualityCenterModal";
 import * as client from "../api/client";
 import {
@@ -489,7 +495,7 @@ describe("QualityCenterModal Component", () => {
     });
   });
 
-  it("guards late reprocess response from updating state when closed or switched (J3)", async () => {
+  it("guards late reprocess response from updating state when closed or switched (K1)", async () => {
     let resolveReprocess: (val: any) => void = () => {};
     const delayedReprocessPromise = new Promise((resolve) => {
       resolveReprocess = resolve;
@@ -517,23 +523,349 @@ describe("QualityCenterModal Component", () => {
       />,
     );
 
-    resolveReprocess({
-      status: "processing",
-      stage: "validating",
-      substate: "queued",
-      progress: 0.05,
-      attempt: 1,
-      run_id: "late-run-id",
+    await waitFor(() => {
+      expect(screen.getByText("Quality Center")).toBeInTheDocument();
     });
 
-    // Verify late reprocess message is not shown
+    // Settle promise and microtasks inside act before asserting absence
+    await act(async () => {
+      resolveReprocess({
+        status: "processing",
+        stage: "validating",
+        substate: "queued",
+        progress: 0.05,
+        attempt: 1,
+        run_id: "late-run-id",
+      });
+      await Promise.resolve();
+    });
+
+    // Verify late reprocess message is not shown on switched paper
+    expect(
+      screen.queryByText(
+        "Reprocessing job enqueued successfully. Pipeline restarted.",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("guards Paper A delayed actions after Paper B is fully loaded and after close/reopen (K1)", async () => {
+    let resolveDelayedChunksA: (val: any) => void = () => {};
+    const delayedChunksPromiseA = new Promise((resolve) => {
+      resolveDelayedChunksA = resolve;
+    });
+
+    vi.spyOn(client.api, "getPaperStatus").mockImplementation(
+      (paperId: string) =>
+        Promise.resolve({
+          ...mockStatus,
+          run_id: paperId === "paper-B" ? "run-B" : "run-gen-1",
+          published_run_id: paperId === "paper-B" ? "run-B" : "run-gen-1",
+        }) as any,
+    );
+    vi.spyOn(client.api, "getPaperSections").mockImplementation(
+      (paperId: string) =>
+        Promise.resolve({
+          items: mockSections,
+          total: 2,
+          run_id: paperId === "paper-B" ? "run-B" : "run-gen-1",
+        }) as any,
+    );
+    vi.spyOn(client.api, "getPaperPages").mockImplementation(
+      (paperId: string) =>
+        Promise.resolve({
+          items: mockPages,
+          total_pages: 2,
+          run_id: paperId === "paper-B" ? "run-B" : "run-gen-1",
+        }) as any,
+    );
+
+    vi.spyOn(client.api, "getPaperChunks").mockImplementation(
+      (paperId: string, opts: any) => {
+        if (paperId === "paper-123" && opts?.cursor === "cursor-A1") {
+          return delayedChunksPromiseA as any;
+        }
+        if (paperId === "paper-B") {
+          return Promise.resolve({
+            items: [
+              {
+                id: "chunk-B-1",
+                paper_id: "paper-B",
+                run_id: "run-B",
+                chunk_index: 0,
+                page_start: 1,
+                page_end: 1,
+                section: "Introduction",
+                text: "Chunk text unique to Paper B.",
+                token_count: 40,
+                block_ids: ["bB1"],
+                is_excluded: false,
+                created_at: "2026-10-18T12:00:00Z",
+              },
+            ],
+            total: 1,
+            next_cursor: null,
+            run_id: "run-B",
+            is_stale: false,
+          }) as any;
+        }
+        return Promise.resolve({
+          items: mockChunks,
+          total: 10,
+          next_cursor: "cursor-A1",
+          run_id: "run-gen-1",
+        }) as any;
+      },
+    );
+
+    const { rerender } = render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Load More Chunks/i)).toBeInTheDocument();
+    });
+
+    // Fire pagination on Paper A
+    fireEvent.click(screen.getByText(/Load More Chunks/i));
+
+    // Switch to Paper B and let it load completely
+    const paperB: PaperItem = {
+      ...mockPaper,
+      id: "paper-B",
+      title: "Paper B Title",
+    };
+    rerender(
+      <QualityCenterModal paper={paperB} isOpen={true} onClose={vi.fn()} />,
+    );
+
     await waitFor(() => {
       expect(
-        screen.queryByText(
-          "Reprocessing job enqueued successfully. Pipeline restarted.",
-        ),
+        screen.getByText("Chunk text unique to Paper B."),
+      ).toBeInTheDocument();
+    });
+
+    // Now resolve Paper A's delayed chunk response within act
+    await act(async () => {
+      resolveDelayedChunksA({
+        items: [
+          {
+            id: "chunk-A-delayed",
+            paper_id: "paper-123",
+            run_id: "run-gen-1",
+            chunk_index: 99,
+            page_start: 2,
+            page_end: 2,
+            section: "Methodology",
+            text: "Delayed Paper A Methodology Content",
+            token_count: 55,
+            block_ids: ["bA99"],
+            is_excluded: false,
+            created_at: "2026-10-18T10:00:00Z",
+          },
+        ],
+        total: 11,
+        next_cursor: null,
+      });
+      await Promise.resolve();
+    });
+
+    // Ensure Paper A's delayed chunk is NOT rendered into Paper B
+    expect(
+      screen.queryByText("Delayed Paper A Methodology Content"),
+    ).not.toBeInTheDocument();
+
+    // Close the modal
+    rerender(
+      <QualityCenterModal paper={paperB} isOpen={false} onClose={vi.fn()} />,
+    );
+
+    // Reopen modal for Paper A
+    rerender(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Quality Center")).toBeInTheDocument();
+    });
+
+    // Still should not show delayed chunk from previously aborted cycle
+    expect(
+      screen.queryByText("Delayed Paper A Methodology Content"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("enforces multi-resource generation agreement on initial load and prevents mixed snapshots (K2)", async () => {
+    let currentRun = "run-gen-1";
+    vi.spyOn(client.api, "getPaperStatus").mockResolvedValue({
+      ...mockStatus,
+      run_id: "run-gen-2",
+      published_run_id: "run-gen-2",
+    });
+    vi.spyOn(client.api, "getPaperChunks").mockImplementation(
+      () =>
+        Promise.resolve({
+          items: [
+            {
+              ...mockChunks[0],
+              text:
+                currentRun === "run-gen-2"
+                  ? "Reconciled run-2 chunk text"
+                  : "Conflicting run-1 chunk text",
+              run_id: currentRun,
+            },
+          ],
+          total: 1,
+          run_id: currentRun,
+          next_cursor: null,
+        }) as any,
+    );
+    vi.spyOn(client.api, "getPaperSections").mockImplementation(
+      () =>
+        Promise.resolve({
+          items: mockSections,
+          total: 2,
+          run_id: currentRun,
+        }) as any,
+    );
+    vi.spyOn(client.api, "getPaperPages").mockImplementation(
+      () =>
+        Promise.resolve({
+          items: mockPages,
+          total_pages: 2,
+          run_id: currentRun,
+        }) as any,
+    );
+
+    render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+
+    // Initial load encounters mismatch; conflicting chunk must NOT be published
+    await waitFor(() => {
+      expect(
+        screen.queryByText("Conflicting run-1 chunk text"),
       ).not.toBeInTheDocument();
     });
+
+    // Pipeline reconciles all resources to run-gen-2
+    currentRun = "run-gen-2";
+
+    // Bounded retry fires and reconciles snapshot atomically
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText("Reconciled run-2 chunk text"),
+        ).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+  });
+
+  it("continues polling when generation publishing between requests while in awaiting_indexing (K2)", async () => {
+    vi.useFakeTimers();
+    try {
+      let chunksRunId = "run-gen-1";
+      const statusSpy = vi
+        .spyOn(client.api, "getPaperStatus")
+        .mockResolvedValue({
+          ...mockStatus,
+          status: "processing",
+          substate: "awaiting_indexing",
+          published_run_id: "run-gen-2",
+        });
+
+      vi.spyOn(client.api, "getPaperChunks").mockImplementation(
+        () =>
+          Promise.resolve({
+            items: mockChunks,
+            total: 2,
+            run_id: chunksRunId,
+            next_cursor: null,
+          }) as any,
+      );
+
+      render(
+        <QualityCenterModal
+          paper={{ ...mockPaper, status: "processing" }}
+          isOpen={true}
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Initial load
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(statusSpy).toHaveBeenCalledTimes(1);
+
+      // Conflict exists (status run-2 vs chunks run-1).
+      // Even though substate is awaiting_indexing, polling MUST continue
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(statusSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      // Chunks publish run-gen-2
+      chunksRunId = "run-gen-2";
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      expect(statusSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("transitions to explicit unavailable state when generation conflict exceeds bounded retries (K2)", async () => {
+    vi.useFakeTimers();
+    try {
+      // Status reports run-gen-2, chunks report run-gen-1 permanently
+      vi.spyOn(client.api, "getPaperStatus").mockResolvedValue({
+        ...mockStatus,
+        run_id: "run-gen-2",
+        published_run_id: "run-gen-2",
+      });
+      vi.spyOn(client.api, "getPaperChunks").mockResolvedValue({
+        items: mockChunks,
+        total: 2,
+        run_id: "run-gen-1",
+        next_cursor: null,
+      });
+
+      render(
+        <QualityCenterModal
+          paper={mockPaper}
+          isOpen={true}
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Initial load -> conflict 1
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // Retry 1 -> conflict 2
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      // Retry 2 -> conflict 3
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      // Retry 3 -> conflict 4 (> MAX_GENERATION_RETRIES = 3)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+
+      // Explicit unavailable state displayed
+      expect(
+        screen.getByText(
+          "Document artifacts are updating across pipeline runs. Generation agreement could not be reached. Retrying...",
+        ),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders tablist and role=tab with aria-selected attributes", async () => {

@@ -355,3 +355,62 @@ def test_tokenizer_singleton_rejection_safety():
             assert cs._tokenizer_instance is None
     finally:
         cs._tokenizer_instance = previous
+
+
+def test_unsupported_model_or_revision_settings_rejection():
+    """Verify K4: Alternate or invalid model/revision settings are rejected before caching."""
+    from unittest.mock import patch
+
+    from backend.app.services import chunking_service as cs
+
+    previous = cs._tokenizer_instance
+    try:
+        cs._tokenizer_instance = None
+        # 1. Unsupported model name rejection
+        with patch.object(cs.settings, "EMBEDDING_MODEL_NAME", "bert-base-uncased"):
+            with pytest.raises(ValueError, match="Unsupported embedding model"):
+                cs.get_tokenizer()
+            # Repeat failure: singleton not published
+            with pytest.raises(ValueError, match="Unsupported embedding model"):
+                cs.get_tokenizer()
+            assert cs._tokenizer_instance is None
+
+        # 2. Unsupported revision rejection
+        with patch.object(cs.settings, "EMBEDDING_MODEL_REVISION", "main"):
+            with pytest.raises(ValueError, match="Unsupported revision"):
+                cs.get_tokenizer()
+            # Repeat failure
+            with pytest.raises(ValueError, match="Unsupported revision"):
+                cs.get_tokenizer()
+            assert cs._tokenizer_instance is None
+    finally:
+        cs._tokenizer_instance = previous
+
+
+def test_chunk_rows_worker_metadata_and_token_cap_agreement():
+    """Verify K4: Chunk rows, worker metadata, and token cap strictly agree with validated identity."""
+    from backend.app.services import chunking_service as cs
+    from backend.app.services.sectioning_service import SectionResult
+
+    meta = cs.get_tokenizer_metadata()
+    assert meta["tokenizer"] == cs.TOKENIZER_MODEL_NAME
+    assert meta["revision"] == cs.TOKENIZER_REVISION
+    assert meta["max_sequence_limit"] == cs.MODEL_MAX_SEQUENCE_LIMIT == 256
+
+    sec = SectionResult(
+        section_index=0,
+        section="methodology",
+        heading="3. Methodology",
+        page_start=1,
+        page_end=2,
+        text="Dense retrieval models encode queries and documents into continuous vector spaces. " * 15,
+        block_ids=["b1", "b2"],
+        block_spans=[("b1", 1, 0, 400), ("b2", 2, 402, 1200)],
+    )
+
+    chunks = cs.chunk_document_sections([sec])
+    assert len(chunks) > 0
+    for ch in chunks:
+        assert ch.tokenizer_name == meta["tokenizer"]
+        assert ch.tokenizer_revision == meta["revision"]
+        assert ch.token_count <= meta["max_sequence_limit"]

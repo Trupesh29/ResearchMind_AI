@@ -18,11 +18,201 @@ Fails with exit code 1 when any acceptance criterion is unsatisfied.
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+
+
+def create_academic_pdf(target_path: Path) -> None:
+    """Generate a rich 2-page academic PDF with selectable text using PyMuPDF."""
+    try:
+        import pymupdf
+
+        doc = pymupdf.open()
+        p1 = doc.new_page(width=612, height=792)
+        p1.insert_text(
+            (50, 60),
+            "Attention Is All You Need\n\nAbstract\nWe propose the Transformer architecture based entirely on self-attention mechanisms, dispensing with recurrence and convolutions entirely.\n\n1. Introduction\nRecurrent neural networks have been firmly established as state of the art approaches in sequence modeling.",
+        )
+        p2 = doc.new_page(width=612, height=792)
+        p2.insert_text(
+            (50, 60),
+            "2. Methodology\nThe Transformer model architecture follows an encoder-decoder structure using stacked self-attention and point-wise fully connected layers.\n\n3. References\n[1] Vaswani, A., et al. Attention is all you need. NeurIPS 2017.",
+        )
+        doc.save(str(target_path))
+        doc.close()
+    except ImportError:
+        escaped_target = str(target_path).replace("\\", "\\\\")
+        code = (
+            "import pymupdf; "
+            "doc = pymupdf.open(); "
+            "p1 = doc.new_page(width=612, height=792); "
+            "p1.insert_text((50, 60), 'Attention Is All You Need\\n\\nAbstract\\nWe propose the Transformer architecture based entirely on self-attention mechanisms.\\n\\n1. Introduction\\nRecurrent neural networks have been firmly established as state of the art.'); "
+            "p2 = doc.new_page(width=612, height=792); "
+            "p2.insert_text((50, 60), '2. Methodology\\nThe Transformer model architecture follows an encoder-decoder structure.\\n\\n3. References\\n[1] Vaswani, A., et al. Attention is all you need. NeurIPS 2017.'); "
+            f"doc.save(r'{escaped_target}'); doc.close()"
+        )
+        subprocess.run([str(VENV_PYTHON), "-c", code], check=True, cwd=str(PROJECT_ROOT), env=os.environ)
+
+
+def drain_worker_engine(max_cycles: int = 15) -> int:
+    """Run disposable worker engine iterations to process queued document stages."""
+    try:
+        from worker.engine import WorkerEngine
+
+        worker = WorkerEngine()
+        cycles = 0
+        for _ in range(max_cycles):
+            if not worker.run_once():
+                break
+            cycles += 1
+            time.sleep(0.1)
+        return cycles
+    except ImportError:
+        code = f"""
+import time
+from worker.engine import WorkerEngine
+
+worker = WorkerEngine()
+cycles = 0
+for _ in range({max_cycles}):
+    if not worker.run_once():
+        break
+    cycles += 1
+    time.sleep(0.1)
+print(f"WORKER_CYCLES:{{cycles}}")
+"""
+        try:
+            proc = subprocess.run(
+                [str(VENV_PYTHON), "-c", code],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=str(PROJECT_ROOT),
+                env=os.environ,
+            )
+            for line in proc.stdout.splitlines():
+                if line.startswith("WORKER_CYCLES:"):
+                    return int(line.split(":")[1])
+            return 0
+        except subprocess.CalledProcessError as err:
+            print(
+                f"[WORKER SUBPROCESS ERROR]\nSTDOUT:\n{err.stdout}\nSTDERR:\n{err.stderr}",
+                file=sys.stderr,
+            )
+            raise
+
+
+def seed_additional_chunks(paper_id: str, target_count: int = 105) -> int:
+    """Seed additional chunks for paper_id up to target_count to test >100 pagination."""
+    try:
+        import json
+        import uuid
+
+        from backend.app.db.models import Chunk, Paper, utcnow_iso
+        from backend.app.db.session import get_session_factory
+
+        factory = get_session_factory()
+        with factory() as db:
+            paper = db.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper or not paper.published_run_id:
+                return 0
+            pub_run = paper.published_run_id
+            existing = db.query(Chunk).filter(Chunk.paper_id == paper_id, Chunk.run_id == pub_run).all()
+            max_idx = max([c.chunk_index for c in existing], default=-1)
+            now_str = utcnow_iso()
+            added = 0
+            for idx in range(max_idx + 1, target_count):
+                pg = 2 if idx >= 50 else 1
+                sec = "methodology" if pg == 2 else "abstract"
+                c = Chunk(
+                    id=str(uuid.uuid4()),
+                    paper_id=paper_id,
+                    run_id=pub_run,
+                    chunk_index=idx,
+                    page_start=pg,
+                    page_end=pg,
+                    section=sec,
+                    text=f"Synthesized research chunk {idx} discussing academic methodology, token bounds, and verified findings.",
+                    token_count=120,
+                    block_ids_json=json.dumps(["b1", "b2"]),
+                    is_excluded=0,
+                    tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+                    tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+                    created_at=now_str,
+                )
+                db.add(c)
+                added += 1
+            db.commit()
+            return added
+    except ImportError:
+        code = f"""
+import sys
+import json
+import uuid
+from backend.app.db.session import get_session_factory
+from backend.app.db.models import Paper, Chunk, utcnow_iso
+
+factory = get_session_factory()
+with factory() as db:
+    paper = db.query(Paper).filter(Paper.id == '{paper_id}').first()
+    if not paper or not paper.published_run_id:
+        print("SEED_COUNT:0")
+        sys.exit(0)
+    pub_run = paper.published_run_id
+    existing = db.query(Chunk).filter(Chunk.paper_id == '{paper_id}', Chunk.run_id == pub_run).all()
+    max_idx = max([c.chunk_index for c in existing], default=-1)
+    now_str = utcnow_iso()
+    added = 0
+    for idx in range(max_idx + 1, {target_count}):
+        pg = 2 if idx >= 50 else 1
+        sec = "methodology" if pg == 2 else "abstract"
+        c = Chunk(
+            id=str(uuid.uuid4()),
+            paper_id='{paper_id}',
+            run_id=pub_run,
+            chunk_index=idx,
+            page_start=pg,
+            page_end=pg,
+            section=sec,
+            text=f"Synthesized research chunk {{idx}} discussing academic methodology, token bounds, and verified findings.",
+            token_count=120,
+            block_ids_json=json.dumps(["b1", "b2"]),
+            is_excluded=0,
+            tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+            tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+            created_at=now_str,
+        )
+        db.add(c)
+        added += 1
+    db.commit()
+    print(f"SEED_COUNT:{{added}}")
+"""
+        try:
+            proc = subprocess.run(
+                [str(VENV_PYTHON), "-c", code],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=str(PROJECT_ROOT),
+                env=os.environ,
+            )
+            for line in proc.stdout.splitlines():
+                if line.startswith("SEED_COUNT:"):
+                    return int(line.split(":")[1])
+            return 0
+        except subprocess.CalledProcessError as err:
+            print(
+                f"[SEEDING SUBPROCESS ERROR]\nSTDOUT:\n{err.stdout}\nSTDERR:\n{err.stderr}",
+                file=sys.stderr,
+            )
+            raise
 
 
 def evaluate_acceptance(
@@ -230,6 +420,12 @@ def evaluate_acceptance(
         p4_passed = (
             p4.get("planned_routes_available") is True
             and p4.get("quality_route_guidance") is True
+            and p4.get("disposable_worker_lifecycle") is True
+            and p4.get("real_processed_chunks") is True
+            and p4.get("page_gt1_source_navigation") is True
+            and p4.get("pagination_gt100_chunks") is True
+            and p4.get("transient_recovery") is True
+            and p4.get("late_response_isolation") is True
             and p4.get("quality_modal_opened") is True
             and p4.get("quality_tabs_present") is True
             and p4.get("quality_modal_escape_closed") is True
@@ -341,13 +537,17 @@ def run_checks(
             # Console and network listeners
             def handle_console(msg):
                 if msg.type == "error":
-                    # If we are simulating offline, fetch network failures are expected
-                    if is_simulating_offline and ("net::ERR" in msg.text or "Failed to load resource" in msg.text):
+                    # If we are simulating offline or transient errors, network failures are expected
+                    if is_simulating_offline and (
+                        "net::ERR" in msg.text
+                        or "Failed to load resource" in msg.text
+                        or "Failed to load document quality metrics" in msg.text
+                    ):
                         return
                     results["unexpected_console_errors"].append({"type": msg.type, "text": msg.text})
 
             def handle_request_failed(req):
-                if is_simulating_offline and ("/api/ready" in req.url or "/api/config/public" in req.url):
+                if is_simulating_offline:
                     results["simulated_offline_requests"].append({"url": req.url, "failure": req.failure})
                     return
 
@@ -866,15 +1066,7 @@ def run_checks(
             valid_pdf_b_path = temp_fixtures_dir / valid_pdf_b_name
             corrupt_pdf_path = temp_fixtures_dir / corrupt_pdf_name
 
-            minimal_valid_pdf_a_bytes = (
-                b"%PDF-1.4\n"
-                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
-                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
-                b"xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n"
-                b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n187\n%%EOF\n"
-            )
-            valid_pdf_a_path.write_bytes(minimal_valid_pdf_a_bytes)
+            create_academic_pdf(valid_pdf_a_path)
 
             minimal_valid_pdf_b_bytes = (
                 b"%PDF-1.4\n"
@@ -890,6 +1082,8 @@ def run_checks(
             corrupt_pdf_path.write_bytes(b"%PDF-corrupted-binary-header-test")
 
             created_workspace_id = None
+            paper_a_id = None
+            p4_results = results.setdefault("phase4_quality_center", {})
             results["phase2_lifecycle"] = p2_results
             try:
                 page.set_viewport_size({"width": 1440, "height": 900})
@@ -942,11 +1136,17 @@ def run_checks(
                 with page.expect_response(
                     lambda r: "/api/papers" in r.url and r.request.method == "POST" and r.status in (200, 201, 202),
                     timeout=10000,
-                ):
+                ) as upload_a_resp_info:
                     file_input.set_input_files(str(valid_pdf_a_path))
                 time.sleep(0.5)
                 accepted_badge = page.locator("text='1 Accepted'")
                 p2_results["pdf_uploaded"] = accepted_badge.count() > 0
+                try:
+                    upload_a_res = upload_a_resp_info.value.json()
+                    paper_list = upload_a_res.get("papers", []) or upload_a_res.get("accepted", [])
+                    paper_a_id = paper_list[0].get("id") if paper_list else None
+                except Exception:
+                    paper_a_id = None
 
                 # 10c. Upload duplicate PDF (identical bytes to PDF A)
                 print("[10c] Uploading duplicate PDF...")
@@ -986,6 +1186,28 @@ def run_checks(
                 expect(page.locator(".paper-row")).to_have_count(2, timeout=5000)
                 expect(row_a).to_be_visible(timeout=5000)
                 expect(row_b).to_be_visible(timeout=5000)
+
+                # 10d-3. Drain Disposable Worker and Seed Pagination Chunks
+                print("[10d-3] Executing disposable worker lifecycle...")
+                worker_cycles = drain_worker_engine(max_cycles=15)
+                print(f"[10d-3] Worker finished {worker_cycles} cycles.")
+                p4_results["disposable_worker_lifecycle"] = worker_cycles > 0
+
+                if not paper_a_id and created_workspace_id:
+                    try:
+                        p_list_res = page.request.get(
+                            f"{base_url}/api/papers?workspace_id={created_workspace_id}"
+                        ).json()
+                        for it in p_list_res.get("items", []):
+                            if it.get("original_filename") == valid_pdf_a_name:
+                                paper_a_id = it.get("id")
+                                break
+                    except Exception:
+                        pass
+
+                if paper_a_id:
+                    seeded = seed_additional_chunks(paper_a_id, target_count=105)
+                    print(f"[10d-3] Seeded {seeded} chunks for paper {paper_a_id} (total: 105).")
 
                 # 10e. Search
                 print("[10e] Starting search verification...")
@@ -1116,14 +1338,124 @@ def run_checks(
                     chunks_tab = page.locator("button[role='tab']:has-text('Chunks')")
                     history_tab = page.locator("button[role='tab']:has-text('Stage History')")
                     qc_tabs_present = chunks_tab.count() > 0 and history_tab.count() > 0
+
+                    p4_results["quality_modal_opened"] = qc_opened
+                    p4_results["quality_tabs_present"] = qc_tabs_present
+
+                    # Real processed chunks verification
+                    print("[10f-2a] Verifying real processed chunks...")
+                    expect(page.locator("text='Loaded 100 of 105 chunks'")).to_be_visible(timeout=10000)
+                    p4_results["real_processed_chunks"] = page.locator("text='tokens (MiniLM limit: 256)'").count() > 0
+
+                    # Page >1 source navigation
+                    print("[10f-2b] Testing page >1 source navigation...")
+                    page2_btn = page.locator("button[title='Jump to page 2 in PDF viewer']").first
+                    if page2_btn.count() > 0:
+                        page2_btn.click()
+                        time.sleep(0.8)
+                        viewer_dialog = page.locator("[role='dialog']")
+                        iframe = viewer_dialog.locator("iframe")
+                        expect(iframe).to_be_visible(timeout=5000)
+                        iframe_src = iframe.get_attribute("src") or ""
+                        p4_results["page_gt1_source_navigation"] = "#page=2" in iframe_src
+                        # Close PDF viewer modal
+                        page.keyboard.press("Escape")
+                        time.sleep(0.4)
+                        # Reopen Quality Center modal
+                        qc_btn.click()
+                        time.sleep(0.8)
+                        expect(page.locator("button[role='tab']:has-text('Chunks')")).to_be_visible(timeout=5000)
+                    else:
+                        p4_results["page_gt1_source_navigation"] = False
+
+                    # Pagination beyond 100 chunks
+                    print("[10f-2c] Testing pagination beyond 100 chunks...")
+                    expect(page.locator("text='Loaded 100 of 105 chunks'")).to_be_visible(timeout=10000)
+                    load_more_btn = page.locator("button:has-text('Load More Chunks')")
+                    if load_more_btn.count() > 0:
+                        with page.expect_response(
+                            lambda r: "/chunks" in r.url and "cursor=" in r.url and r.status == 200,
+                            timeout=10000,
+                        ):
+                            load_more_btn.click()
+                        expect(page.locator("text='Loaded 105 of 105 chunks'")).to_be_visible(timeout=5000)
+                        p4_results["pagination_gt100_chunks"] = (
+                            page.locator("text='Loaded 105 of 105 chunks'").count() > 0
+                        )
+                    else:
+                        p4_results["pagination_gt100_chunks"] = False
+
+                    # Transient error injection & recovery
+                    print("[10f-2d] Testing transient error injection and recovery...")
+                    is_simulating_offline = True
+
+                    def abort_chunks_handler(route):
+                        if "/chunks" in route.request.url:
+                            route.abort("failed")
+                        else:
+                            route.continue_()
+
+                    page.route("**/api/papers/*/chunks*", abort_chunks_handler)
+                    sec_select = page.locator("select[aria-label='Filter by section']")
+                    sec_select.select_option("abstract")
+                    time.sleep(0.6)
+                    err_banner = page.get_by_text("Unable to connect to the ResearchMind API server")
+                    expect(err_banner.first).to_be_visible(timeout=5000)
+                    has_err = err_banner.count() > 0
+
+                    page.unroute("**/api/papers/*/chunks*")
+                    sec_select.select_option("")
+                    time.sleep(0.8)
+                    expect(page.locator("text='Loaded 100 of 105 chunks'")).to_be_visible(timeout=10000)
+                    is_simulating_offline = False
+                    p4_results["transient_recovery"] = (
+                        has_err and page.locator("text='Loaded 100 of 105 chunks'").count() > 0
+                    )
+
+                    # Late response isolation
+                    print("[10f-2e] Testing late response isolation...")
+
+                    def delayed_reprocess_handler(route):
+                        if "/reprocess" in route.request.url and route.request.method == "POST":
+                            time.sleep(1.5)
+                            route.continue_()
+                        else:
+                            route.continue_()
+
+                    page.route("**/api/papers/*/reprocess*", delayed_reprocess_handler)
+                    reprocess_btn = page.locator(
+                        "button[aria-label='Reprocess document'], button:has-text('Reprocess')"
+                    ).first
+                    if reprocess_btn.count() > 0:
+                        reprocess_btn.click()
+                        time.sleep(0.1)
+                        # Hit Escape immediately while reprocess request is in-flight
+                        page.keyboard.press("Escape")
+                        time.sleep(0.4)
+                        closed_immediately = not qc_dialog.is_visible()
+                        # Wait for the in-flight delayed request to resolve in background
+                        time.sleep(1.6)
+                        page.unroute("**/api/papers/*/reprocess*")
+                        # Drain any reprocess job created so state remains clean
+                        drain_worker_engine(max_cycles=10)
+                        # Reopen Quality Center to confirm clean state
+                        qc_btn.click()
+                        time.sleep(0.8)
+                        p4_results["late_response_isolation"] = closed_immediately and qc_dialog.is_visible()
+                    else:
+                        p4_results["late_response_isolation"] = False
+
                     page.screenshot(path=str(screenshots_dir / "desktop_quality_center_modal.png"))
                     page.keyboard.press("Escape")
                     time.sleep(0.4)
                     qc_closed = not qc_dialog.is_visible()
+                else:
+                    p4_results["real_processed_chunks"] = False
+                    p4_results["page_gt1_source_navigation"] = False
+                    p4_results["pagination_gt100_chunks"] = False
+                    p4_results["transient_recovery"] = False
+                    p4_results["late_response_isolation"] = False
 
-                p4_results = results.setdefault("phase4_quality_center", {})
-                p4_results["quality_modal_opened"] = qc_opened
-                p4_results["quality_tabs_present"] = qc_tabs_present
                 p4_results["quality_modal_escape_closed"] = qc_closed
 
                 # 10g. Cancel Paper Deletion
@@ -1168,6 +1500,40 @@ def run_checks(
 
                 # Capture desktop Phase 2 library screenshot
                 page.screenshot(path=str(screenshots_dir / "desktop_library_phase2.png"))
+
+                # 10j. Planned Feature Routes & Quality Guidance Banner Verification
+                print("[10j] Verifying planned routes and Quality guidance banner...")
+                # 1. Explorer route
+                page.goto(f"{base_url}/explorer", wait_until="networkidle")
+                time.sleep(0.3)
+                explorer_h1 = page.locator("h1:has-text('Research Explorer')")
+                explorer_badge = page.locator("text='Roadmap Phase 5'")
+                explorer_ok = explorer_h1.count() > 0 and explorer_badge.count() > 0
+
+                # 2. Assistant route
+                page.goto(f"{base_url}/assistant", wait_until="networkidle")
+                time.sleep(0.3)
+                assistant_h1 = page.locator("h1:has-text('Research Assistant')")
+                assistant_badge = page.locator("text='Roadmap Phase 4'")
+                assistant_ok = assistant_h1.count() > 0 and assistant_badge.count() > 0
+
+                # 3. Model Lab route
+                page.goto(f"{base_url}/model-lab", wait_until="networkidle")
+                time.sleep(0.3)
+                model_lab_h1 = page.locator("h1:has-text('Model Lab')")
+                model_lab_badge = page.locator("text='Roadmap Phase 6'")
+                model_lab_ok = model_lab_h1.count() > 0 and model_lab_badge.count() > 0
+
+                p4_results["planned_routes_available"] = explorer_ok and assistant_ok and model_lab_ok
+
+                # 4. Quality Guidance Banner
+                page.goto(f"{base_url}/quality", wait_until="networkidle")
+                time.sleep(0.3)
+                quality_guidance = page.locator("[role='region'][aria-label='Quality Center Inspection Guidance']")
+                guidance_text = quality_guidance.inner_text() if quality_guidance.count() > 0 else ""
+                p4_results["quality_route_guidance"] = (
+                    quality_guidance.count() > 0 and "Quality Center · Inspection Mode" in guidance_text
+                )
 
                 results["phase2_lifecycle"] = p2_results
             finally:

@@ -4,7 +4,7 @@
     "base_url": "http://127.0.0.1:15173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-10-18T19:28:28Z",
+    "timestamp": "2026-10-19T10:51:27Z",
     "headless": true,
     "search_delay_ms": 0
   },
@@ -128,13 +128,23 @@
     {
       "url": "http://127.0.0.1:15173/api/config/public",
       "failure": "net::ERR_FAILED"
+    },
+    {
+      "url": "http://127.0.0.1:15173/api/papers/6b345a68-1fc4-40a3-b310-b414be7baa74/chunks?section=abstract&limit=100",
+      "failure": "net::ERR_FAILED"
     }
   ],
   "phase4_quality_center": {
     "planned_routes_available": true,
     "quality_route_guidance": true,
+    "disposable_worker_lifecycle": true,
     "quality_modal_opened": true,
     "quality_tabs_present": true,
+    "real_processed_chunks": true,
+    "page_gt1_source_navigation": true,
+    "pagination_gt100_chunks": true,
+    "transient_recovery": true,
+    "late_response_isolation": true,
     "quality_modal_escape_closed": true
   },
   "phase2_lifecycle": {
