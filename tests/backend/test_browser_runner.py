@@ -34,6 +34,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from run_browser_verification import (  # noqa: E402
+    check_late_response_isolation,
     compute_local_database_identity,
     drain_worker_engine,
     evaluate_acceptance,
@@ -1617,3 +1618,170 @@ def test_cli_passes_require_phase4_argument(tmp_path):
             mock_run.assert_called_once()
             _, kwargs = mock_run.call_args
             assert kwargs.get("require_phase4") is True
+
+
+# ==============================================================================
+# Late Response Isolation & Real Message Contract Negative Control Tests (M3)
+# ==============================================================================
+
+
+class _MockDialogElement:
+    def __init__(self, count: int = 0):
+        self._count = count
+
+    def count(self) -> int:
+        return self._count
+
+
+class _MockDialogLocator:
+    def __init__(self, selector_counts: dict[str, int] | None = None):
+        self._counts = selector_counts or {}
+
+    def locator(self, selector: str) -> _MockDialogElement:
+        return _MockDialogElement(self._counts.get(selector, 0))
+
+    def get_by_text(self, text: str, exact: bool = False) -> _MockDialogElement:
+        for k, v in self._counts.items():
+            if k == text or (not exact and text in k):
+                return _MockDialogElement(v)
+        return _MockDialogElement(self._counts.get(text, 0))
+
+
+class _MockButtonLocator:
+    def __init__(self, is_enabled: bool = True, text: str = "Reprocess"):
+        self._is_enabled = is_enabled
+        self._text = text
+
+    def is_enabled(self) -> bool:
+        return self._is_enabled
+
+    def text_content(self) -> str:
+        return self._text
+
+
+def test_check_late_response_isolation_passes_clean_state():
+    """M3: check_late_response_isolation returns True when Paper B modal state is uncorrupted."""
+    paper_title = "Paper B Valid Title"
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 1,
+            "Reprocessing job enqueued successfully": 0,
+            "Failed to trigger reprocess": 0,
+            "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded ": 1,
+        }
+    )
+    btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
+
+    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    assert passed is True
+    assert all(checks.values())
+
+
+def test_check_late_response_isolation_fails_on_leaked_success_banner_negative_control():
+    """M3 Negative Control: check_late_response_isolation fails when Paper A's real success
+
+    banner ('Reprocessing job enqueued successfully. Pipeline restarted.') leaks into Paper B.
+    """
+    paper_title = "Paper B Valid Title"
+    # Negative control injection: success banner from Paper A's late response is present!
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 1,
+            "Reprocessing job enqueued successfully. Pipeline restarted.": 1,  # Leaked banner!
+            "Failed to trigger reprocess": 0,
+            "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded ": 1,
+        }
+    )
+    btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
+
+    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    assert passed is False
+    assert checks["no_leaked_success_banner"] is False
+    assert checks["b_title_intact"] is True
+
+
+def test_check_late_response_isolation_fails_on_stale_warning_badge_negative_control():
+    """M3 Negative Control: check_late_response_isolation fails when Paper A's stale
+
+    warning ('Reprocessing in Progress (Old Bundle Shown)') leaks into Paper B.
+    """
+    paper_title = "Paper B Valid Title"
+    # Negative control injection: stale generation badge is present in Paper B modal!
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 1,
+            "Reprocessing job enqueued successfully": 0,
+            "Failed to trigger reprocess": 0,
+            "Reprocessing in Progress (Old Bundle Shown)": 1,  # Stale data leak!
+            "Loaded ": 1,
+        }
+    )
+    btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
+
+    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    assert passed is False
+    assert checks["no_stale_warning"] is False
+
+
+def test_check_late_response_isolation_fails_on_button_stranded_in_enqueueing():
+    """M3 Negative Control: fails when Paper B reprocess button is stranded in 'Enqueueing...'."""
+    paper_title = "Paper B Valid Title"
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 1,
+            "Reprocessing job enqueued successfully": 0,
+            "Failed to trigger reprocess": 0,
+            "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded ": 1,
+        }
+    )
+    # Button stranded in Enqueueing... state
+    btn = _MockButtonLocator(is_enabled=False, text="Enqueueing...")
+
+    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    assert passed is False
+    assert checks["b_btn_enabled"] is False
+
+
+def test_check_late_response_isolation_fails_on_title_corruption():
+    """M3 Negative Control: fails when document title was corrupted to a different paper."""
+    paper_title = "Paper B Valid Title"
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 0,  # Corrupted title
+            "Reprocessing job enqueued successfully": 0,
+            "Failed to trigger reprocess": 0,
+            "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded ": 1,
+        }
+    )
+    btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
+
+    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    assert passed is False
+    assert checks["b_title_intact"] is False
+
+
+def test_evaluate_acceptance_fails_on_late_response_isolation_false(valid_browser_results):
+    """M3: evaluate_acceptance strictly fails when late_response_isolation is False."""
+    results = copy.deepcopy(valid_browser_results)
+    results["phase4_quality_center"] = {
+        "planned_routes_available": True,
+        "quality_route_guidance": True,
+        "disposable_worker_lifecycle": True,
+        "real_processed_chunks": True,
+        "page_gt1_source_navigation": True,
+        "pagination_gt100_chunks": True,
+        "transient_recovery": True,
+        "late_response_isolation": False,  # Simulated gate failure
+        "quality_modal_opened": True,
+        "quality_tabs_present": True,
+        "quality_modal_escape_closed": True,
+    }
+
+    passed, failures, criteria = evaluate_acceptance(results, require_phase4=True)
+    assert passed is False
+    assert criteria["phase4_quality_center"] is False
+    assert any("Phase 4 Quality Center criteria failed" in f for f in failures)

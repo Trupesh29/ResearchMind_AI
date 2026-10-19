@@ -301,6 +301,39 @@ with factory() as db:
             raise
 
 
+def check_late_response_isolation(qc_dialog, expected_paper_title: str, reprocess_btn) -> tuple[bool, dict[str, bool]]:
+    """Evaluates whether the active modal state for Paper B remained completely uncorrupted
+
+    after Paper A's delayed reprocess response settled in the background.
+
+    Verifies:
+    1. Document title belongs to Paper B (expected_paper_title is visible).
+    2. Reprocess button belongs to Paper B, is enabled, and is not stranded in 'Enqueueing...'.
+    3. No success feedback banner from Paper A leaked into Paper B (the actual UI contract text:
+       'Reprocessing job enqueued successfully. Pipeline restarted.').
+    4. No error feedback banner from Paper A leaked into Paper B.
+    5. No stale generation warning ('Reprocessing in Progress (Old Bundle Shown)') leaked into Paper B.
+    6. Paper B chunk list remains loaded ('Loaded ' text count > 0).
+    """
+    b_title_intact = qc_dialog.get_by_text(expected_paper_title, exact=False).count() > 0
+    b_btn_enabled = reprocess_btn.is_enabled() and (reprocess_btn.text_content() or "").strip() == "Reprocess"
+    no_leaked_success_banner = qc_dialog.get_by_text("Reprocessing job enqueued successfully", exact=False).count() == 0
+    no_leaked_error_banner = qc_dialog.get_by_text("Failed to trigger reprocess", exact=False).count() == 0
+    no_stale_warning = qc_dialog.get_by_text("Reprocessing in Progress (Old Bundle Shown)", exact=False).count() == 0
+    b_chunks_intact = qc_dialog.get_by_text("Loaded ", exact=False).count() > 0
+
+    checks = {
+        "b_title_intact": b_title_intact,
+        "b_btn_enabled": b_btn_enabled,
+        "no_leaked_success_banner": no_leaked_success_banner,
+        "no_leaked_error_banner": no_leaked_error_banner,
+        "no_stale_warning": no_stale_warning,
+        "b_chunks_intact": b_chunks_intact,
+    }
+    all_passed = all(checks.values())
+    return all_passed, checks
+
+
 def evaluate_acceptance(
     results: dict, require_phase2: bool = False, require_phase4: bool = False
 ) -> tuple[bool, list[str], dict[str, bool]]:
@@ -1557,22 +1590,25 @@ def run_checks(
                     expect(reprocess_btn_b).to_be_enabled(timeout=5000)
                     expect(reprocess_btn_b).to_have_text("Reprocess")
 
-                    # Release Paper A's held request
-                    held_routes[0].continue_()
+                    # Verify Paper B chunks are fully loaded before releasing Paper A
+                    expect(qc_dialog.get_by_text("Loaded ", exact=False)).to_be_visible(timeout=10000)
+
+                    # Register response-completion gate before releasing Paper A's held request
+                    with page.expect_response(
+                        lambda r: f"/api/papers/{paper_a_id}/reprocess" in r.url and r.request.method == "POST",
+                        timeout=10000,
+                    ) as a_reprocess_resp_info:
+                        held_routes[0].continue_()
                     page.unroute(f"**/api/papers/{paper_a_id}/reprocess*")
-                    time.sleep(0.6)
+                    a_resp = a_reprocess_resp_info.value
+                    if a_resp.status not in (200, 202):
+                        raise RuntimeError(f"Paper A reprocess failed with HTTP {a_resp.status}")
 
-                    # Verify Paper B's modal state remains completely uncorrupted by Paper A's late response:
-                    # 1. Document title still belongs to Paper B
-                    b_title_intact = qc_dialog.locator(f"text='{valid_pdf_b_name}'").count() > 0
-                    # 2. Paper B's Reprocess button is still enabled and not stranded in 'Enqueueing...'
-                    b_btn_enabled = reprocess_btn_b.is_enabled() and "Enqueueing" not in (
-                        reprocess_btn_b.text_content() or ""
+                    # Verify Paper B's modal state remains completely uncorrupted by Paper A's late response
+                    isolation_passed, isolation_checks = check_late_response_isolation(
+                        qc_dialog, valid_pdf_b_name, reprocess_btn_b
                     )
-                    # 3. No feedback banner from Paper A's reprocess response leaked into Paper B
-                    no_leaked_banner = qc_dialog.locator("text='Ingestion pipeline queued'").count() == 0
-
-                    p4_results["late_response_isolation"] = b_title_intact and b_btn_enabled and no_leaked_banner
+                    p4_results["late_response_isolation"] = isolation_passed
 
                     # Drain any background worker jobs created from Paper A's released reprocess
                     drain_worker_engine(max_cycles=10, base_url=base_url)

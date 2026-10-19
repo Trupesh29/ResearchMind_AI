@@ -170,7 +170,40 @@ Duration    11.30s
 
 ---
 
-## 5. Verdict
+---
+
+## 6. Phase 4 Review Repair (M1–M3)
+
+Following checkpoint `0e0fe95` review (`docs/PHASE_4_REVIEW_0e0fe95.md`), findings **M1–M3** were resolved, tested, and verified locally.
+
+### 6.1 M1: Chunk Provenance Correspondence & Non-Empty Block Spans
+- **Correspondence Validation:** Updated both forward migration `0010_repair_chunk_provenance.py` and retroactive migration `0009_repair_block_spans_and_chunks.py` to validate exact chunk text offset correspondence against reconstructed section block spans before preserving existing references.
+- **Probe Verifications:**
+  - `python scripts/review_phase4_known_block_probe.py`: Successfully repairs chunks with orphaned/unrelated blocks to demonstrable true block IDs (`UNRELATED_BLOCK_RETAINED ["b"]`, repaired from `["c"]`).
+  - `python scripts/review_phase4_repeated_provenance_probe.py`: Accurately preserves valid multi-occurrence provenance without incorrect overwrites (`SECOND_OCCURRENCE_CHUNK_BLOCKS ["c"]`).
+- **Migration & Database Coverage:** Added populated 0008-to-0010 and 0009-to-0010 forward migration tests in `tests/backend/test_database.py`. All 193 backend tests pass.
+
+### 6.2 M2: Action Token Invalidation in QualityCenterModal
+- **Action Token Invalidation Guard:** In `frontend/src/components/library/QualityCenterModal.tsx`, wrapped `setIsLoadingMore(false)` and `setIsReprocessing(false)` inside their respective `finally` blocks with `if (actionToken === actionTokenRef.current)`. This guarantees that an older asynchronous request settling after modal close, reopen, paper switch, or filter change cannot prematurely clear the active busy state of a newer in-flight request.
+- **Frontend Regression Suite:** Added action ownership regression tests in `frontend/src/test/quality-center.test.tsx` verifying pagination and reprocess busy state retention. All 45 vitest tests pass across all 5 test files.
+
+### 6.3 M3: Browser Verification Gate for Late Reprocess Response Isolation
+- **Live Response Waiter:** Replaced arbitrary delay with a registered `page.expect_response` completion waiter on HTTP 202/200 before releasing the held Paper A reprocess request in `scripts/run_browser_verification.py`.
+- **UI Contract Inspection:** Implemented `check_late_response_isolation` verifying that:
+  - Document title belongs to Paper B.
+  - Reprocess button is enabled and not stranded in `"Enqueueing..."`.
+  - The actual UI feedback banner (`"Reprocessing job enqueued successfully. Pipeline restarted."`) did not leak into Paper B.
+  - No stale generation warning (`"Reprocessing in Progress (Old Bundle Shown)"`) leaked into Paper B.
+  - Paper B chunks remain loaded.
+- **Negative Controls & Unit Tests:** In `tests/backend/test_browser_runner.py`, verified negative controls ensuring the gate strictly fails if success banner, stale warning badge, stranded button, or corrupted title occurs. All 66 runner tests pass.
+- **Full Acceptance Suite:** Executed `powershell -ExecutionPolicy Bypass -File scripts/run_browser_suite.ps1 -BackendPort 18000 -FrontendPort 15173 -RequirePhase2 -RequirePhase4`:
+  - `[PASS] phase2_library_lifecycle`
+  - `[PASS] phase4_quality_center`
+  - All Phase 2 and Phase 4 criteria satisfied.
+
+---
+
+## 7. Verdict
 
 **VERDICT: PASS**
-All review findings L1 through L5 are completely repaired and verified. Phase 4 acceptance criteria and live browser verification are 100% satisfied. Work remains strictly local on branch `manav` without pushing to remote repositories.
+All review findings (L1 through L5 and M1 through M3) are completely repaired, covered by automated tests and probes, and verified with live browser acceptance testing. Phase 4 remains strictly local on branch `manav` without any remote push or unauthorized next-phase work.

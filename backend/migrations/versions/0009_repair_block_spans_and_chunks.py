@@ -208,71 +208,77 @@ def upgrade() -> None:
             key = (paper_id, run_id, ch_sec_name)
             matching_sections = section_lookup.get(key, [])
 
-            if not matching_sections:
-                # If chunk points to non-existent section or blocks not in section, check validity
-                continue
-
-            # Check if chunk already has proven block identity
-            proven_match = False
-            for sec_id, sec_text, rec_spans, p_start, p_end in matching_sections:
-                sec_bids = {span[0]: span[1] for span in rec_spans}  # b_id -> page_num
-                if existing_bids and all(b in sec_bids for b in existing_bids):
-                    # Proven identity: all blocks exist in this section!
-                    proven_pages = [sec_bids[b] for b in existing_bids]
-                    conn.execute(
-                        sa.text("UPDATE chunks SET page_start = :ps, page_end = :pe WHERE id = :cid"),
-                        {"ps": min(proven_pages), "pe": max(proven_pages), "cid": ch_id},
-                    )
-                    proven_match = True
-                    break
-
-            if proven_match:
-                # Proven occurrence preserved; do NOT overwrite!
-                continue
-
-            # If not proven (e.g. obsolete blocks or null), attempt strict reconciliation
-            # ONLY when section is unique and chunk text appears EXACTLY ONCE
-            if len(matching_sections) == 1 and ch_text:
-                sec_id, sec_text, rec_spans, p_start, p_end = matching_sections[0]
-                occurrences = [m.start() for m in re.finditer(re.escape(ch_text), sec_text)]
-                if len(occurrences) == 1:
-                    ch_start = occurrences[0]
-                    ch_end = ch_start + len(ch_text)
-                    overlapping_blocks = []
-                    overlapping_pages = []
-                    for b_id, p_num, b_s, b_e in rec_spans:
-                        if max(ch_start, b_s) < min(ch_end, b_e):
-                            overlapping_blocks.append(b_id)
-                            overlapping_pages.append(p_num)
-                    if overlapping_blocks and overlapping_pages:
-                        distinct_blocks = list(dict.fromkeys(overlapping_blocks))
-                        conn.execute(
-                            sa.text(
-                                "UPDATE chunks SET block_ids_json = :bids, page_start = :ps, page_end = :pe "
-                                "WHERE id = :cid"
-                            ),
-                            {
-                                "bids": json.dumps(distinct_blocks),
-                                "ps": min(overlapping_pages),
-                                "pe": max(overlapping_pages),
-                                "cid": ch_id,
-                            },
-                        )
-                        continue
-
-            # If unresolved or ambiguous, do NOT guess. Mark unresolved if obsolete
-            if existing_bids:
-                # Check if existing bids actually exist in any page of paper/run
-                all_known_blocks = set()
-                for _, _, rec_spans, _, _ in matching_sections:
-                    for span in rec_spans:
-                        all_known_blocks.add(span[0])
-                if not any(b in all_known_blocks for b in existing_bids):
-                    # Obsolete or invalid block IDs: mark unresolved
+            if not matching_sections or not ch_text:
+                # Without reconstructable section or chunk text, provenance cannot be verified
+                if existing_bids:
                     conn.execute(
                         sa.text("UPDATE chunks SET block_ids_json = NULL WHERE id = :cid"),
                         {"cid": ch_id},
                     )
+                continue
+
+            # Gather all candidate text occurrences across matching sections
+            candidate_occurrences = []
+            for sec_id, sec_text, rec_spans, p_start, p_end in matching_sections:
+                if not sec_text:
+                    continue
+                matches = list(re.finditer(re.escape(ch_text), sec_text))
+                if not matches and ch_text.strip() and ch_text.strip() != ch_text:
+                    matches = list(re.finditer(re.escape(ch_text.strip()), sec_text))
+
+                for m in matches:
+                    occ_start = m.start()
+                    occ_end = m.end()
+                    occ_blocks = []
+                    occ_pages = []
+                    for b_id, p_num, b_s, b_e in rec_spans:
+                        if max(occ_start, b_s) < min(occ_end, b_e):
+                            occ_blocks.append(b_id)
+                            occ_pages.append(p_num)
+                    if occ_blocks and occ_pages:
+                        distinct_blocks = list(dict.fromkeys(occ_blocks))
+                        candidate_occurrences.append((sec_id, occ_start, distinct_blocks, occ_pages))
+
+            # 1. Proven correspondence: check if existing_bids matches any candidate occurrence exactly
+            proven_candidate = None
+            if existing_bids:
+                for cand in candidate_occurrences:
+                    _, _, distinct_blocks, _ = cand
+                    if existing_bids == distinct_blocks:
+                        proven_candidate = cand
+                        break
+
+            if proven_candidate is not None:
+                # Real text correspondence verified; preserve existing blocks and update page bounds
+                _, _, _, occ_pages = proven_candidate
+                conn.execute(
+                    sa.text("UPDATE chunks SET page_start = :ps, page_end = :pe WHERE id = :cid"),
+                    {"ps": min(occ_pages), "pe": max(occ_pages), "cid": ch_id},
+                )
+                continue
+
+            # 2. Unique demonstrable match: repair if chunk appears exactly once across matching sections
+            if len(candidate_occurrences) == 1:
+                sec_id, occ_start, distinct_blocks, occ_pages = candidate_occurrences[0]
+                conn.execute(
+                    sa.text(
+                        "UPDATE chunks SET block_ids_json = :bids, page_start = :ps, page_end = :pe WHERE id = :cid"
+                    ),
+                    {
+                        "bids": json.dumps(distinct_blocks),
+                        "ps": min(occ_pages),
+                        "pe": max(occ_pages),
+                        "cid": ch_id,
+                    },
+                )
+                continue
+
+            # 3. Unresolved ambiguity or missing correspondence: mark block_ids_json NULL
+            if existing_bids:
+                conn.execute(
+                    sa.text("UPDATE chunks SET block_ids_json = NULL WHERE id = :cid"),
+                    {"cid": ch_id},
+                )
     except Exception as err:
         logger.error("Failed during historical chunk reconciliation: %s", err, exc_info=True)
         raise

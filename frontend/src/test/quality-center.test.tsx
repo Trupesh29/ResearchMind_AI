@@ -932,6 +932,132 @@ describe("QualityCenterModal Component", () => {
     );
   });
 
+  it("review: old action finally must not clear a reopened action busy state", async () => {
+    let first: (value: any) => void = () => {};
+    let second: (value: any) => void = () => {};
+    const action = vi
+      .spyOn(client.api, "reprocessPaper")
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          first = resolve;
+        }) as any,
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          second = resolve;
+        }) as any,
+      );
+    const props = { paper: mockPaper, onClose: vi.fn() };
+    const view = render(<QualityCenterModal {...props} isOpen={true} />);
+    await waitFor(() =>
+      expect(screen.getByText(mockChunks[0].text)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reprocess document" }));
+    view.rerender(<QualityCenterModal {...props} isOpen={false} />);
+    view.rerender(<QualityCenterModal {...props} isOpen={true} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Reprocess document" }),
+      ).not.toBeDisabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reprocess document" }));
+    expect(action).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      first(mockStatus);
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole("button", { name: "Reprocess document" }),
+    ).toBeDisabled();
+    await act(async () => {
+      second(mockStatus);
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole("button", { name: "Reprocess document" }),
+    ).not.toBeDisabled();
+  });
+
+  it("review: old pagination finally must not clear a new pagination busy state", async () => {
+    let firstChunksResolve: (value: any) => void = () => {};
+    let secondChunksResolve: (value: any) => void = () => {};
+
+    vi.spyOn(client.api, "getPaperChunks")
+      .mockResolvedValueOnce({
+        items: mockChunks,
+        total: 10,
+        next_cursor: "cursor-1",
+        run_id: "run-gen-1",
+      } as any)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          firstChunksResolve = resolve;
+        }) as any,
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          secondChunksResolve = resolve;
+        }) as any,
+      );
+
+    const { rerender } = render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Load More Chunks/i }),
+      ).toBeInTheDocument();
+    });
+
+    const loadMoreBtn1 = screen.getByRole("button", {
+      name: /Load More Chunks/i,
+    });
+    fireEvent.click(loadMoreBtn1);
+    expect(loadMoreBtn1).toBeDisabled();
+
+    rerender(
+      <QualityCenterModal paper={mockPaper} isOpen={false} onClose={vi.fn()} />,
+    );
+    rerender(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Load More Chunks/i }),
+      ).not.toBeDisabled();
+    });
+
+    const loadMoreBtn2 = screen.getByRole("button", {
+      name: /Load More Chunks/i,
+    });
+    fireEvent.click(loadMoreBtn2);
+    expect(loadMoreBtn2).toBeDisabled();
+
+    await act(async () => {
+      firstChunksResolve({
+        items: [],
+        total: 10,
+        next_cursor: "cursor-2",
+        run_id: "run-gen-1",
+      });
+      await Promise.resolve();
+    });
+
+    // Busy state for the second in-flight pagination request must remain active!
+    expect(loadMoreBtn2).toBeDisabled();
+
+    await act(async () => {
+      secondChunksResolve({
+        items: [],
+        total: 10,
+        next_cursor: null,
+        run_id: "run-gen-1",
+      });
+      await Promise.resolve();
+    });
+    // Cursor is null now, so button disappears or enables
+  });
+
   it("renders tablist and role=tab with aria-selected attributes", async () => {
     render(
       <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,

@@ -23,7 +23,8 @@ def test_ready_endpoint_healthy(client: TestClient):
     assert db_check["status"] == "healthy"
     assert db_check["message"] == "Connected and schema verified"
     assert (
-        "0009_repair_block_spans_and_chunks" in db_check["current_revisions"]
+        "0010_repair_chunk_provenance" in db_check["current_revisions"]
+        or "0009_repair_block_spans_and_chunks" in db_check["current_revisions"]
         or "0008_add_block_spans_to_sections" in db_check["current_revisions"]
         or "0007_add_sections_and_chunks" in db_check["current_revisions"]
         or "0006_preserve_multirun_page_generations" in db_check["current_revisions"]

@@ -486,6 +486,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
       setErrorMsg(err?.message || "Failed to load more chunks.");
     } finally {
       if (
+        actionToken === paginationActionTokenRef.current &&
         isOpenRef.current &&
         currentPaperIdRef.current === targetPaperId &&
         currentWorkspaceIdRef.current === targetWorkspaceId
@@ -548,6 +549,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
       }
     } finally {
       if (
+        actionToken === reprocessActionTokenRef.current &&
         isOpenRef.current &&
         currentPaperIdRef.current === targetPaperId &&
         currentWorkspaceIdRef.current === targetWorkspaceId
