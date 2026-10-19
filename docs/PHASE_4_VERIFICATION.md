@@ -1,5 +1,7 @@
 # PHASE_4_VERIFICATION.md — ResearchMind AI
 
+> Independent review of 0e0fe95: **changes required** — M1–M3 remain. See `docs/PHASE_4_REVIEW_0e0fe95.md` and `docs/PHASE_4_PROMPT_0e0fe95.md`. Historical completion claims below are superseded.
+
 **Week 2 Phase 4 Review Remediation & Final Acceptance Report (L1–L5)**
 **Date:** 2026-10-19
 **Application Checkpoint:** `4885420` Remediation
