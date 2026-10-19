@@ -1,5 +1,7 @@
 # ResearchMind AI agent workflow
 
+Latest independent review (573223a): **changes required** — N1 generation-change pagination lock and N2 browser data-isolation gate. See `docs/PHASE_4_REVIEW_573223a.md` and `docs/PHASE_4_PROMPT_573223a.md`. Keep Phase 4 local; prior conclusions below are historical.
+
 Latest independent review (0e0fe95): **changes required** — known-but-wrong source references, action-finally ownership and browser race assertions remain. See `docs/PHASE_4_REVIEW_0e0fe95.md` and `docs/PHASE_4_PROMPT_0e0fe95.md`. Keep Phase 4 local; prior conclusions below are historical.
 
 Latest independent review (4885420): **changes required** — L1–L5 cover migration compatibility/provenance, stale status, stranded action state and browser database ownership. See `docs/PHASE_4_REVIEW_4885420.md` and `docs/PHASE_4_PROMPT_4885420.md`. Keep Phase 4 local; older conclusions below are historical.

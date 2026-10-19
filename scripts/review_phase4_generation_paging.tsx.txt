@@ -1,0 +1,19 @@
+// Insert into a temporary copy of quality-center.test.tsx inside its existing describe.
+// Run vitest with -t "review: generation" and remove the temporary copy.
+  it("review: generation replacement releases invalidated pagination busy state", async () => {
+    let finish: (value: any) => void = () => {};
+    let generation = "run-gen-1";
+    vi.mocked(client.api.getPaperStatus).mockImplementation(async () => ({...mockStatus, run_id:generation, current_run_id:generation, published_run_id:generation}));
+    vi.mocked(client.api.getPaperSections).mockImplementation(async () => ({items:mockSections, total:2, run_id:generation, is_stale:false}));
+    vi.mocked(client.api.getPaperPages).mockImplementation(async () => ({items:mockPages, total_pages:2, run_id:generation, is_stale:false}));
+    vi.mocked(client.api.getPaperChunks).mockImplementation((_id, options) => options?.cursor ? new Promise(resolve => {finish=resolve;}) as any : Promise.resolve({items:mockChunks.map(c => ({...c, run_id:generation, text: generation+":"+c.text})), total:105, next_cursor:generation+"-next", run_id:generation, is_stale:false}));
+    const close = vi.fn();
+    const view=render(<QualityCenterModal paper={mockPaper} isOpen={true} onClose={close} />);
+    await waitFor(() => expect(screen.getByRole("button", {name:/Load More Chunks/})).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", {name:/Load More Chunks/}));
+    generation="run-gen-2";
+    view.rerender(<QualityCenterModal paper={{...mockPaper}} isOpen={true} onClose={close} />);
+    await waitFor(() => expect(screen.getByText(generation+":"+mockChunks[0].text)).toBeInTheDocument());
+    await act(async () => {finish({items:[], total:105, next_cursor:null, run_id:"run-gen-1", is_stale:false}); await Promise.resolve();});
+    expect(screen.getByRole("button", {name:/Load More Chunks/})).toBeEnabled();
+  });

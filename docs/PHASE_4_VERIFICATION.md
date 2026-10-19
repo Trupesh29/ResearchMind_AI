@@ -1,5 +1,7 @@
 # PHASE_4_VERIFICATION.md — ResearchMind AI
 
+> Latest independent review of 573223a: **changes required** — N1 pagination invalidation and N2 browser data-isolation assertions remain. See `docs/PHASE_4_REVIEW_573223a.md` and `docs/PHASE_4_PROMPT_573223a.md`. Earlier conclusions below are historical.
+
 > Independent review of 0e0fe95: **changes required** — M1–M3 remain. See `docs/PHASE_4_REVIEW_0e0fe95.md` and `docs/PHASE_4_PROMPT_0e0fe95.md`. Historical completion claims below are superseded.
 
 **Week 2 Phase 4 Review Remediation & Final Acceptance Report (L1–L5)**
