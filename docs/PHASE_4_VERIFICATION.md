@@ -1,5 +1,7 @@
 # PHASE_4_VERIFICATION.md — ResearchMind AI
 
+> Independent acceptance of application checkpoint **63fde59** (2026-10-20): **PASS**. Fresh checks: 200 backend tests, 48 frontend tests, static/build checks and 9/9 live Chrome gates passed. Original O1 probe now rejects wrong-paper content; real-DOM positive/negative controls pass. See `docs/PHASE_4_REVIEW_63fde59.md`. This supersedes earlier unresolved-review notices below. No corrective prompt is needed; Phase 4 remains local.
+
 > Latest independent review (post-989cba0): **Finding O1 repaired and verified**. Scoped chunk locators (`article, .chunk-card, [data-testid='chunk-card']`) eliminate modal title false-positive; distinct Paper B body text verification (`Language representation models`), comprehensive Paper A prohibited phrases, baseline exact chunk/count comparison, and real-DOM negative controls. Prior completion claims below are historical.
 
 > Latest independent review of 989cba0: **one acceptance-verification issue remains** (O1: title satisfies chunk-content check). See `docs/PHASE_4_REVIEW_989cba0.md` and `docs/PHASE_4_PROMPT_989cba0.md`. Prior completion claims below are historical.
