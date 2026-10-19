@@ -1,5 +1,7 @@
 # ResearchMind AI agent workflow
 
+Latest independent review (989cba0 remediation): **O1 finding repaired and verified** — Scoped chunk locators (`article, .chunk-card, [data-testid='chunk-card']`) eliminate modal title false-positive; distinct Paper B body text verification (`Language representation models`), comprehensive Paper A prohibited phrases, baseline exact chunk/count comparison, and real-DOM negative controls (probe title word, non-title A chunk, and partial A contamination). Full live browser suite (9/9 criteria) and test suites (200 backend, 73 runner, 48 frontend) pass. Keep Phase 4 local on branch `manav` (no push). See `docs/PHASE_4_VERIFICATION.md`.
+
 Latest independent review (989cba0): N1 pagination repair verified; O1 browser chunk-content verification remains. See `docs/PHASE_4_REVIEW_989cba0.md` and `docs/PHASE_4_PROMPT_989cba0.md`. Keep Phase 4 local; prior conclusions below are historical.
 
 Phase 4 corrective checkpoint (post-573223a): **N1–N2 findings repaired and verified** — N1 generation-change and conflict pagination busy-state release with token-guarded finally blocks; N2 browser data-isolation gate with distinct populated academic PDF fixtures, response body consumption, settled UI wait, exact content/prohibition/status checks, and negative controls. Full live browser suite (9/9 criteria) and all unit/integration test suites (197 backend, 70 runner, 48 frontend) pass. Keep Phase 4 local on branch `manav` (no push). See `docs/PHASE_4_VERIFICATION.md`.

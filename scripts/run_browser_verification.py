@@ -338,24 +338,27 @@ def check_late_response_isolation(
     expected_paper_title: str,
     reprocess_btn,
     expected_chunk_text: str | None = None,
-    prohibited_chunk_text: str | None = None,
+    prohibited_chunk_text: str | list[str] | tuple[str, ...] | None = None,
     min_chunks: int = 1,
     expected_status_not_failed: bool = True,
+    expected_chunks: list[str] | None = None,
+    exact_chunk_count: int | None = None,
 ) -> tuple[bool, dict[str, bool]]:
     """Evaluates whether the active modal state for Paper B remained completely uncorrupted
 
     after Paper A's delayed reprocess response settled in the background.
 
     Verifies:
-    1. Document title belongs to Paper B (expected_paper_title is visible).
+    1. Document title belongs to Paper B (expected_paper_title is visible in dialog).
     2. Reprocess button belongs to Paper B, is enabled, and is not stranded in 'Enqueueing...'.
     3. No success feedback banner from Paper A leaked into Paper B (the actual UI contract text:
        'Reprocessing job enqueued successfully. Pipeline restarted.').
     4. No error feedback banner from Paper A leaked into Paper B.
     5. No stale generation warning ('Reprocessing in Progress (Old Bundle Shown)') leaked into Paper B.
-    6. Paper B chunk list remains loaded ('Loaded ' text count > 0, and not 'Loaded 0 of 0 chunks' if min_chunks > 0).
-    7. Paper B chunks contain Paper B's expected text (not empty or wrong paper data).
-    8. Paper B chunks DO NOT contain Paper A's text (no cross-contamination).
+    6. Paper B chunk list remains loaded ('Loaded ' text count > 0, and not 'Loaded 0 of 0 chunks' if min_chunks > 0,
+       and chunk card count >= min_chunks).
+    7. Paper B chunks contain Paper B's expected text scoped strictly to chunk cards/bodies (not dialog title).
+    8. Paper B chunks DO NOT contain Paper A's text (no cross-contamination across cards and dialog).
     9. Paper B status is not 'Processing Failed' (if expected_status_not_failed is True).
     """
     b_title_intact = qc_dialog.get_by_text(expected_paper_title, exact=False).count() > 0
@@ -364,20 +367,71 @@ def check_late_response_isolation(
     no_leaked_error_banner = qc_dialog.get_by_text("Failed to trigger reprocess", exact=False).count() == 0
     no_stale_warning = qc_dialog.get_by_text("Reprocessing in Progress (Old Bundle Shown)", exact=False).count() == 0
 
+    # Locate chunk cards / bodies scoped strictly to chunk elements (article, .chunk-card, [data-testid='chunk-card'])
+    chunk_cards = qc_dialog.locator("article, .chunk-card, [data-testid='chunk-card']")
+    card_count = chunk_cards.count()
+
+    # Extract card texts if card_count > 0 and .all() is available
+    card_texts: list[str] = []
+    if card_count > 0:
+        try:
+            card_texts = [card.inner_text().strip() for card in chunk_cards.all()]
+        except Exception:
+            try:
+                card_texts = [card.text_content().strip() for card in chunk_cards.all()]
+            except Exception:
+                card_texts = []
+
     # Chunks integrity: verify loaded text and that it is not 'Loaded 0 of 0 chunks' when min_chunks > 0
     b_chunks_intact = qc_dialog.get_by_text("Loaded ", exact=False).count() > 0
     if min_chunks > 0 and qc_dialog.get_by_text("Loaded 0 of 0 chunks", exact=False).count() > 0:
         b_chunks_intact = False
+    if min_chunks > 0 and card_count < min_chunks:
+        b_chunks_intact = False
+    if exact_chunk_count is not None and card_count != exact_chunk_count:
+        b_chunks_intact = False
 
-    # Content verification: B's expected content is present
+    # Content verification: B's expected content must be present INSIDE chunk cards/bodies (NOT in title)
     b_chunk_content_verified = True
     if expected_chunk_text:
-        b_chunk_content_verified = qc_dialog.get_by_text(expected_chunk_text, exact=False).count() > 0
+        if card_count > 0:
+            b_chunk_content_verified = chunk_cards.get_by_text(expected_chunk_text, exact=False).count() > 0
+        else:
+            b_chunk_content_verified = False
 
-    # Cross-contamination prevention: A's prohibited content must NOT be present
+    # Exact expected chunks verification if provided
+    if expected_chunks is not None:
+        if card_count != len(expected_chunks):
+            b_chunk_content_verified = False
+        elif card_texts:
+            for exp, actual in zip(expected_chunks, card_texts):
+                if exp not in actual and actual not in exp:
+                    b_chunk_content_verified = False
+                    break
+
+    # Cross-contamination prevention: prohibited content must NOT be present in chunk cards or dialog
     no_cross_paper_chunks = True
     if prohibited_chunk_text:
-        no_cross_paper_chunks = qc_dialog.get_by_text(prohibited_chunk_text, exact=False).count() == 0
+        if isinstance(prohibited_chunk_text, str):
+            prohibited_items = [prohibited_chunk_text]
+        else:
+            prohibited_items = list(prohibited_chunk_text)
+        for item in prohibited_items:
+            if not item:
+                continue
+            if card_count > 0 and chunk_cards.get_by_text(item, exact=False).count() > 0:
+                no_cross_paper_chunks = False
+                break
+            if qc_dialog.get_by_text(item, exact=False).count() > 0:
+                no_cross_paper_chunks = False
+                break
+
+    # If expected_chunks is provided, verify no foreign chunks exist (all card texts belong to expected_chunks)
+    if expected_chunks is not None and card_count > 0 and card_texts:
+        for text in card_texts:
+            if not any(exp in text or text in exp for exp in expected_chunks):
+                no_cross_paper_chunks = False
+                break
 
     # Status check: not processing failed
     b_status_healthy = True
@@ -1646,9 +1700,16 @@ def run_checks(
                     expect(reprocess_btn_b).to_be_enabled(timeout=5000)
                     expect(reprocess_btn_b).to_have_text("Reprocess")
 
-                    # Verify Paper B chunks are fully loaded with Paper B's distinct content before releasing Paper A
-                    expect(qc_dialog.get_by_text("BERT", exact=False)).to_be_visible(timeout=10000)
+                    # Verify Paper B chunks are fully loaded with Paper B's distinct body content before releasing Paper A
+                    distinct_b_body_phrase = "Language representation models"
+                    chunk_card_locator = qc_dialog.locator("article, .chunk-card, [data-testid='chunk-card']")
+                    expect(chunk_card_locator.get_by_text(distinct_b_body_phrase, exact=False)).to_be_visible(
+                        timeout=10000
+                    )
                     expect(qc_dialog.get_by_text("Loaded ", exact=False)).to_be_visible(timeout=10000)
+
+                    # Capture Paper B's baseline chunk texts before releasing Paper A
+                    b_chunk_texts_before = [card.inner_text().strip() for card in chunk_card_locator.all()]
 
                     # Register response-completion gate before releasing Paper A's held request
                     with page.expect_response(
@@ -1669,14 +1730,21 @@ def run_checks(
                     time.sleep(0.3)
 
                     # Verify Paper B's modal state remains completely uncorrupted by Paper A's late response
+                    # Prohibit distinctive phrases from Paper A across both title and non-title body chunks:
+                    prohibited_a_phrases = [
+                        "Attention Is All You Need",
+                        "Recurrent neural networks have been firmly established",
+                        "Transformer architecture based entirely on self-attention",
+                    ]
                     isolation_passed, isolation_checks = check_late_response_isolation(
                         qc_dialog,
                         expected_b_title,
                         reprocess_btn_b,
-                        expected_chunk_text="BERT",
-                        prohibited_chunk_text="Attention Is All You Need",
+                        expected_chunk_text=distinct_b_body_phrase,
+                        prohibited_chunk_text=prohibited_a_phrases,
                         min_chunks=1,
                         expected_status_not_failed=True,
+                        expected_chunks=b_chunk_texts_before,
                     )
                     p4_results["late_response_isolation"] = isolation_passed
 

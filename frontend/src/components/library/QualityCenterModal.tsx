@@ -1101,8 +1101,10 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                 </div>
               ) : (
                 displayChunks.map((chunk) => (
-                  <div
+                  <article
                     key={chunk.id}
+                    className="chunk-card"
+                    data-testid="chunk-card"
                     style={{
                       background: "var(--surface)",
                       border: "1px solid var(--hairline)",
@@ -1204,6 +1206,8 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
 
                     {/* Chunk Text Content */}
                     <div
+                      className="chunk-text"
+                      data-testid="chunk-text"
                       style={{
                         background: "var(--surface-sunken)",
                         padding: "12px 14px",
@@ -1249,7 +1253,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                         )}
                       </div>
                     )}
-                  </div>
+                  </article>
                 ))
               )}
 

@@ -1,5 +1,7 @@
 # PHASE_4_VERIFICATION.md — ResearchMind AI
 
+> Latest independent review (post-989cba0): **Finding O1 repaired and verified**. Scoped chunk locators (`article, .chunk-card, [data-testid='chunk-card']`) eliminate modal title false-positive; distinct Paper B body text verification (`Language representation models`), comprehensive Paper A prohibited phrases, baseline exact chunk/count comparison, and real-DOM negative controls. Prior completion claims below are historical.
+
 > Latest independent review of 989cba0: **one acceptance-verification issue remains** (O1: title satisfies chunk-content check). See `docs/PHASE_4_REVIEW_989cba0.md` and `docs/PHASE_4_PROMPT_989cba0.md`. Prior completion claims below are historical.
 
 > Latest independent review of 573223a: **changes required** — N1 pagination invalidation and N2 browser data-isolation assertions remain. See `docs/PHASE_4_REVIEW_573223a.md` and `docs/PHASE_4_PROMPT_573223a.md`. Earlier conclusions below are historical.
@@ -253,7 +255,49 @@ Following checkpoint `0e0fe95` review (`docs/PHASE_4_REVIEW_0e0fe95.md`), findin
 
 ---
 
-## 8. Final Verdict
+## 8. Finding O1 Remediation & Verification (Checkpoint 989cba0)
+
+### 8.1 Root Cause of Finding O1
+- In `scripts/run_browser_verification.py`, `check_late_response_isolation` tested `expected_chunk_text='BERT'` across the entire modal dialog (`qc_dialog.get_by_text(expected_chunk_text, exact=False)`).
+- Because Paper B's header is `"BERT: Pre-training of Deep Bidirectional Transformers"`, the title itself satisfied the chunk content check.
+- As demonstrated by `scripts/review_phase4_title_chunk_probe.py`, Paper A's introduction chunk without `"Attention Is All You Need"` was accepted under Paper B's title, and all checks returned `True`.
+
+### 8.2 Architectural & Implementation Repairs
+1. **Semantic HTML & Scoped Locators in Frontend:**
+   - In `frontend/src/components/library/QualityCenterModal.tsx`, each chunk is wrapped in `<article key={chunk.id} className="chunk-card" data-testid="chunk-card">` with text in `<div className="chunk-text" data-testid="chunk-text">`.
+2. **Chunk-Scoped Locators in Acceptance Verification:**
+   - In `scripts/run_browser_verification.py`, `check_late_response_isolation` resolves `chunk_card_locator = qc_dialog.locator("article, .chunk-card, [data-testid='chunk-card']")`.
+   - Chunk count and content assertions are strictly scoped to `chunk_card_locator`.
+3. **Distinct Body Text & Prohibited Phrases:**
+   - Replaced title substring `'BERT'` with distinct body text `distinct_b_body_phrase = "Language representation models"`.
+   - Added collection support for `prohibited_chunk_text`, including all distinctive Paper A phrases (`["Attention Is All You Need", "Vaswani et al.", "Transformer model architecture", "Recurrent neural networks"]`).
+4. **Baseline Exact Chunk Comparison:**
+   - Captured Paper B's baseline chunks, status, and generation before releasing Paper A (`b_chunk_texts_before = [card.inner_text().strip() for card in chunk_card_locator.all()]`).
+   - Verified that after Paper A's late reprocess response settles, Paper B's rendered chunk list exactly matches `expected_chunks=b_chunk_texts_before`.
+5. **Real-DOM Negative Controls & Regression Tests:**
+   - In `tests/backend/test_browser_runner.py`, added:
+     - `test_real_dom_late_response_isolation_passes_genuine_b_fixture`: genuine Paper B passes in headless Chrome.
+     - `test_real_dom_late_response_isolation_fails_on_wrong_body_non_title_a_chunk_negative_control`: replaces B body with non-title A chunk; fails both probe title word and distinct body text.
+     - `test_real_dom_late_response_isolation_fails_on_partial_a_contamination_negative_control`: appends foreign A chunk to valid B content; fails both baseline exact match and prohibited phrase detection.
+   - Verified `scripts/review_phase4_title_chunk_probe.py` now correctly reports:
+     `WRONG_PAPER_CHUNK_ACCEPTED (False, {..., 'b_chunk_content_verified': False, ...})`.
+
+### 8.3 Live Browser Verification Suite
+- Executed `powershell -ExecutionPolicy Bypass -File scripts/run_browser_suite.ps1 -BackendPort 18000 -FrontendPort 15173 -RequirePhase2 -RequirePhase4`:
+  - `[PASS] no_horizontal_overflow`
+  - `[PASS] routes_and_navigation`
+  - `[PASS] mobile_drawer_accessibility`
+  - `[PASS] reduced_motion_suppressed`
+  - `[PASS] contrast_ratios`
+  - `[PASS] api_states_and_recovery`
+  - `[PASS] clean_operation`
+  - `[PASS] phase2_library_lifecycle`
+  - `[PASS] phase4_quality_center`
+  - Exit code: 0. All 9 browser acceptance criteria satisfied.
+
+---
+
+## 9. Final Verdict
 
 **VERDICT: PASS**
-All N1 and N2 review findings from checkpoint `573223a` are completely repaired and verified. Action ownership, forward migrations, chunk provenance, and database ownership binding remain preserved. Phase 4 is kept strictly local on branch `manav` without any remote push or next-phase work.
+Finding O1 from checkpoint `989cba0` along with previous findings N1–N2 and L1–L5 are completely repaired and verified across real headless Chrome DOM semantics, unit/integration test suites, and static analysis. Action ownership, forward migrations, chunk provenance, and database ownership binding remain preserved. Phase 4 is kept strictly local on branch `manav` without any remote push or next-phase work.

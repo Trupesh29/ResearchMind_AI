@@ -1626,24 +1626,61 @@ def test_cli_passes_require_phase4_argument(tmp_path):
 
 
 class _MockDialogElement:
-    def __init__(self, count: int = 0):
+    def __init__(self, count: int = 0, texts: list[str] | None = None):
         self._count = count
+        self._texts = texts or []
 
     def count(self) -> int:
         return self._count
 
+    def all(self) -> list["_MockDialogElement"]:
+        return [_MockDialogElement(1, [t]) for t in self._texts]
+
+    def inner_text(self) -> str:
+        return self._texts[0] if self._texts else ""
+
+    def text_content(self) -> str:
+        return self._texts[0] if self._texts else ""
+
+    def get_by_text(self, text: str, exact: bool = False) -> "_MockDialogElement":
+        matching = [t for t in self._texts if (t == text if exact else text in t)]
+        return _MockDialogElement(len(matching), matching)
+
+    def locator(self, selector: str) -> "_MockDialogElement":
+        return self
+
 
 class _MockDialogLocator:
-    def __init__(self, selector_counts: dict[str, int] | None = None):
+    def __init__(self, selector_counts: dict[str, int] | None = None, chunk_texts: list[str] | None = None):
         self._counts = selector_counts or {}
+        self._chunk_texts = chunk_texts
 
     def locator(self, selector: str) -> _MockDialogElement:
+        if any(term in selector for term in ["article", "chunk-card", "chunk"]):
+            if self._chunk_texts is not None:
+                return _MockDialogElement(len(self._chunk_texts), self._chunk_texts)
+            candidates = [
+                k
+                for k, v in self._counts.items()
+                if v > 0
+                and k
+                not in (
+                    "Reprocessing job enqueued successfully",
+                    "Reprocessing job enqueued successfully. Pipeline restarted.",
+                    "Failed to trigger reprocess",
+                    "Reprocessing in Progress (Old Bundle Shown)",
+                    "Processing Failed",
+                )
+                and not k.startswith("Loaded ")
+                and not k.endswith(".pdf")
+            ]
+            return _MockDialogElement(len(candidates), candidates)
         return _MockDialogElement(self._counts.get(selector, 0))
 
     def get_by_text(self, text: str, exact: bool = False) -> _MockDialogElement:
         for k, v in self._counts.items():
             if k == text or (not exact and text in k):
-                return _MockDialogElement(v)
+                return _MockDialogElement(v, [k] * v)
         return _MockDialogElement(self._counts.get(text, 0))
 
 
@@ -1954,3 +1991,174 @@ def test_evaluate_acceptance_fails_on_late_response_isolation_false(valid_browse
     assert passed is False
     assert criteria["phase4_quality_center"] is False
     assert any("Phase 4 Quality Center criteria failed" in f for f in failures)
+
+
+def _run_in_browser_env(test_code: str):
+    """Executes a real-DOM Playwright test snippet using the Scrapling/Playwright Python environment."""
+    scrapling_python = Path(r"F:\dev\apps\scrapling\Scripts\python.exe")
+    python_exe = scrapling_python if scrapling_python.exists() else Path(sys.executable)
+
+    check_code = "import playwright; print('OK')"
+    check_res = subprocess.run([str(python_exe), "-c", check_code], capture_output=True, text=True)
+    if check_res.returncode != 0:
+        pytest.skip(f"Playwright is not available in {python_exe}: {check_res.stderr.strip()}")
+
+    full_code = f"""
+import sys, os
+from pathlib import Path
+scripts_dir = Path(r"{SCRIPTS_DIR}")
+if str(scripts_dir) not in sys.path:
+    sys.path.insert(0, str(scripts_dir))
+
+from run_browser_verification import check_late_response_isolation
+
+{test_code}
+"""
+    env = os.environ.copy()
+    proc = subprocess.run(
+        [str(python_exe), "-c", full_code],
+        capture_output=True,
+        text=True,
+        cwd=str(SCRIPTS_DIR.parent),
+        env=env,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"Subprocess test failed (exit code {proc.returncode}):\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+        )
+
+
+def test_real_dom_late_response_isolation_passes_genuine_b_fixture():
+    """O1: Genuine Paper B fixture passes check_late_response_isolation in real DOM."""
+    test_code = r"""
+from playwright.sync_api import sync_playwright
+
+chrome_exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+with sync_playwright() as p:
+    browser = p.chromium.launch(executable_path=chrome_exe, headless=True)
+    page = browser.new_page()
+    page.set_content(
+        '''<div role="dialog">
+            <h2>BERT: Pre-training of Deep Bidirectional Transformers</h2>
+            <button>Reprocess</button>
+            <p>Loaded 1 of 1 chunks</p>
+            <article class="chunk-card" data-testid="chunk-card">
+                <div class="chunk-text" data-testid="chunk-text">Language representation models pre-trained on corpora have revolutionized NLP.</div>
+            </article>
+        </div>'''
+    )
+    passed, checks = check_late_response_isolation(
+        page.get_by_role("dialog"),
+        "BERT: Pre-training of Deep Bidirectional Transformers",
+        page.get_by_role("button"),
+        expected_chunk_text="Language representation models",
+        prohibited_chunk_text=["Attention Is All You Need", "Recurrent neural networks"],
+        min_chunks=1,
+        expected_status_not_failed=True,
+        expected_chunks=["Language representation models pre-trained on corpora have revolutionized NLP."],
+    )
+    assert passed is True
+    assert all(checks.values()), f"Checks failed: {checks}"
+    browser.close()
+"""
+    _run_in_browser_env(test_code)
+
+
+def test_real_dom_late_response_isolation_fails_on_wrong_body_non_title_a_chunk_negative_control():
+    """O1 Negative Control: Replacing B's body with a non-title A chunk must fail.
+
+    Even if expected_chunk_text is 'BERT' (from the title), chunk-scoped locator fails.
+    And when expected_chunk_text is B's distinct phrase or prohibited_chunk_text is A's phrase, it fails.
+    """
+    test_code = r"""
+from playwright.sync_api import sync_playwright
+
+chrome_exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+with sync_playwright() as p:
+    browser = p.chromium.launch(executable_path=chrome_exe, headless=True)
+    page = browser.new_page()
+    page.set_content(
+        '''<div role="dialog">
+            <h2>BERT: Pre-training of Deep Bidirectional Transformers</h2>
+            <button>Reprocess</button>
+            <p>Loaded 1 of 1 chunks</p>
+            <article class="chunk-card" data-testid="chunk-card">
+                <div class="chunk-text" data-testid="chunk-text">Recurrent neural networks have been firmly established as state of the art approaches in sequence modeling.</div>
+            </article>
+        </div>'''
+    )
+    # Test 1: Title word 'BERT' no longer passes because it is scoped to chunk cards/article
+    passed_title_probe, checks_title_probe = check_late_response_isolation(
+        page.get_by_role("dialog"),
+        "BERT: Pre-training of Deep Bidirectional Transformers",
+        page.get_by_role("button"),
+        expected_chunk_text="BERT",
+        prohibited_chunk_text="Attention Is All You Need",
+    )
+    assert passed_title_probe is False, f"Expected False but got True: {checks_title_probe}"
+    assert checks_title_probe["b_chunk_content_verified"] is False
+    assert checks_title_probe["b_title_intact"] is True
+
+    # Test 2: Distinct body phrase check fails because B body text is missing
+    passed_distinct, checks_distinct = check_late_response_isolation(
+        page.get_by_role("dialog"),
+        "BERT: Pre-training of Deep Bidirectional Transformers",
+        page.get_by_role("button"),
+        expected_chunk_text="Language representation models",
+        prohibited_chunk_text=["Attention Is All You Need", "Recurrent neural networks"],
+    )
+    assert passed_distinct is False, f"Expected False but got True: {checks_distinct}"
+    assert checks_distinct["b_chunk_content_verified"] is False
+    assert checks_distinct["no_cross_paper_chunks"] is False
+    browser.close()
+"""
+    _run_in_browser_env(test_code)
+
+
+def test_real_dom_late_response_isolation_fails_on_partial_a_contamination_negative_control():
+    """O1 Negative Control: Appending one foreign chunk to valid B content must fail."""
+    test_code = r"""
+from playwright.sync_api import sync_playwright
+
+chrome_exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+with sync_playwright() as p:
+    browser = p.chromium.launch(executable_path=chrome_exe, headless=True)
+    page = browser.new_page()
+    page.set_content(
+        '''<div role="dialog">
+            <h2>BERT: Pre-training of Deep Bidirectional Transformers</h2>
+            <button>Reprocess</button>
+            <p>Loaded 2 of 2 chunks</p>
+            <article class="chunk-card" data-testid="chunk-card">
+                <div class="chunk-text" data-testid="chunk-text">Language representation models pre-trained on corpora have revolutionized NLP.</div>
+            </article>
+            <article class="chunk-card" data-testid="chunk-card">
+                <div class="chunk-text" data-testid="chunk-text">Recurrent neural networks have been firmly established as state of the art approaches in sequence modeling.</div>
+            </article>
+        </div>'''
+    )
+    # Test 1: expected_chunks baseline check detects the extra foreign chunk
+    passed_exact, checks_exact = check_late_response_isolation(
+        page.get_by_role("dialog"),
+        "BERT: Pre-training of Deep Bidirectional Transformers",
+        page.get_by_role("button"),
+        expected_chunk_text="Language representation models",
+        prohibited_chunk_text=["Attention Is All You Need"],
+        expected_chunks=["Language representation models pre-trained on corpora have revolutionized NLP."],
+    )
+    assert passed_exact is False, f"Expected False but got True: {checks_exact}"
+    assert checks_exact["b_chunk_content_verified"] is False or checks_exact["no_cross_paper_chunks"] is False
+
+    # Test 2: prohibited_chunk_text catches foreign chunk in partial contamination
+    passed_prohib, checks_prohib = check_late_response_isolation(
+        page.get_by_role("dialog"),
+        "BERT: Pre-training of Deep Bidirectional Transformers",
+        page.get_by_role("button"),
+        expected_chunk_text="Language representation models",
+        prohibited_chunk_text=["Attention Is All You Need", "Recurrent neural networks"],
+    )
+    assert passed_prohib is False, f"Expected False but got True: {checks_prohib}"
+    assert checks_prohib["no_cross_paper_chunks"] is False
+    browser.close()
+"""
+    _run_in_browser_env(test_code)
