@@ -1,5 +1,7 @@
 # PHASE_4_VERIFICATION.md — ResearchMind AI
 
+> Independent review of 4885420: **changes required**. L1–L5 and acceptance-evidence gaps remain; see `docs/PHASE_4_REVIEW_4885420.md` and `docs/PHASE_4_PROMPT_4885420.md`. Completion claims below are superseded by that review.
+
 **Week 2 Phase 4 Implementation, Review Remediation & Acceptance Report**
 **Date:** 2026-10-19
 **Application Checkpoint:** `4e09867` remediation

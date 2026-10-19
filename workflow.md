@@ -1,5 +1,7 @@
 # ResearchMind AI agent workflow
 
+Latest independent review (4885420): **changes required** — L1–L5 cover migration compatibility/provenance, stale status, stranded action state and browser database ownership. See `docs/PHASE_4_REVIEW_4885420.md` and `docs/PHASE_4_PROMPT_4885420.md`. Keep Phase 4 local; older conclusions below are historical.
+
 Latest independent review (`4e09867`, 2026-10-19): changes still required — K1 stale action responses, K2 initial mixed-generation snapshots, K3 incorrect migration offsets/historical provenance, K4 tokenizer identity consistency. See `docs/PHASE_4_LATEST_REVIEW.md` and `docs/PHASE_4_LATEST_PROMPT.md`. Earlier findings below are historical; keep Phase 4 local.
 
 Latest independent Phase 4 review (`fc38b35`, 2026-10-19): FAIL -- source spans are lost at persistence, polling stops after transient failure, action responses lack identity guards, and rejected tokenizer state remains cached. See `docs/PHASE_4_FOLLOWUP_REVIEW.md` and `docs/PHASE_4_FOLLOWUP_PROMPT.md`. Keep Phase 4 local.
