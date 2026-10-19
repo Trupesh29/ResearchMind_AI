@@ -4,7 +4,7 @@
     "base_url": "http://127.0.0.1:15173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-10-19T10:51:27Z",
+    "timestamp": "2026-10-19T12:28:33Z",
     "headless": true,
     "search_delay_ms": 0
   },
@@ -130,7 +130,7 @@
       "failure": "net::ERR_FAILED"
     },
     {
-      "url": "http://127.0.0.1:15173/api/papers/6b345a68-1fc4-40a3-b310-b414be7baa74/chunks?section=abstract&limit=100",
+      "url": "http://127.0.0.1:15173/api/papers/fa1ca100-2ef8-4d48-a516-59b9277a6ddb/chunks?section=abstract&limit=100",
       "failure": "net::ERR_FAILED"
     }
   ],

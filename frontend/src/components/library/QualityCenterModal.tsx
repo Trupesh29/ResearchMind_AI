@@ -71,7 +71,8 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
 
   // Request & Polling guards
   const activeReqRef = useRef<number>(0);
-  const activeActionTokenRef = useRef<number>(0);
+  const reprocessActionTokenRef = useRef<number>(0);
+  const paginationActionTokenRef = useRef<number>(0);
   const currentPaperIdRef = useRef<string | null>(paper?.id ?? null);
   const currentWorkspaceIdRef = useRef<string | null>(
     paper?.workspace_id ?? null,
@@ -99,7 +100,8 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
 
   // Invalidate and reset state when active paper or workspace changes
   useEffect(() => {
-    activeActionTokenRef.current += 1;
+    reprocessActionTokenRef.current += 1;
+    paginationActionTokenRef.current += 1;
     activeReqRef.current += 1;
     generationConflictCountRef.current = 0;
     retryCountRef.current = 0;
@@ -133,7 +135,8 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
   // Invalidate active actions, loads, and timers on modal close
   useEffect(() => {
     if (!isOpen) {
-      activeActionTokenRef.current += 1;
+      reprocessActionTokenRef.current += 1;
+      paginationActionTokenRef.current += 1;
       activeReqRef.current += 1;
       generationConflictCountRef.current = 0;
       retryCountRef.current = 0;
@@ -152,9 +155,9 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     }
   }, [isOpen]);
 
-  // Invalidate pagination and load more actions when filters change
+  // Invalidate pagination and load more actions when filters change (independent of reprocess)
   useEffect(() => {
-    activeActionTokenRef.current += 1;
+    paginationActionTokenRef.current += 1;
     setNextChunkCursor(null);
     setIsLoadingMoreChunks(false);
   }, [sectionFilter, pageFilter]);
@@ -258,42 +261,36 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
           return;
         }
 
-        // Multi-resource generation agreement check (K2)
-        const targetPublishedRunId =
-          statusRes.published_run_id || statusRes.run_id;
+        // Multi-resource generation agreement check (K2) across published artifacts
         const gens = [
           chunksRes.run_id,
           sectionsRes.run_id,
           pagesRes.run_id,
         ].filter(Boolean);
 
-        const anyStale = Boolean(
-          statusRes.is_stale ||
-          chunksRes.is_stale ||
-          sectionsRes.is_stale ||
-          pagesRes.is_stale,
-        );
-
+        const targetArtifactRunId =
+          statusRes.published_run_id || (gens.length > 0 ? gens[0] : null);
         const distinctGens = Array.from(new Set(gens));
-        const hasConflict =
-          anyStale ||
-          (targetPublishedRunId
-            ? gens.some((g) => g !== targetPublishedRunId)
-            : distinctGens.length > 1);
 
-        if (hasConflict) {
+        // True artifact publication conflict: published artifacts disagree with each other
+        const hasArtifactConflict = targetArtifactRunId
+          ? gens.some((g) => g !== targetArtifactRunId)
+          : distinctGens.length > 1;
+
+        if (hasArtifactConflict) {
           generationConflictCountRef.current += 1;
           const MAX_GENERATION_RETRIES = 3;
 
-          // Invalidate active actions because generation is inconsistent or publishing
-          activeActionTokenRef.current += 1;
+          paginationActionTokenRef.current += 1;
 
           if (generationConflictCountRef.current > MAX_GENERATION_RETRIES) {
             // Explicit unavailable state when generation agreement cannot be reached after bounded retries
             setErrorMsg(
-              "Document artifacts are updating across pipeline runs. Generation agreement could not be reached. Retrying...",
+              "Document artifacts are updating across pipeline runs. Generation agreement could not be reached.",
             );
             setIsLoading(false);
+            // Genuinely bounded retry: stop retrying once max retries exceeded
+            return;
           }
 
           // Schedule bounded retry to reach generation agreement
@@ -310,25 +307,26 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
           return;
         }
 
-        // Generation agreement verified: publish atomic snapshot
+        // Generation agreement verified: publish atomic artifact snapshot and current status (L3)
         generationConflictCountRef.current = 0;
         retryCountRef.current = 0;
         setErrorMsg(null);
         setIsLoading(false);
 
-        // Check if generation changed from previous snapshot; if so, invalidate action tokens
-        const newRunId = targetPublishedRunId || null;
+        setStatusData(statusRes);
+        statusDataRef.current = statusRes;
+
+        // Check if generation changed from previous snapshot; if so, invalidate pagination tokens
+        const newRunId = targetArtifactRunId || null;
         if (
           currentRunIdRef.current &&
           newRunId &&
           currentRunIdRef.current !== newRunId
         ) {
-          activeActionTokenRef.current += 1;
+          paginationActionTokenRef.current += 1;
         }
         currentRunIdRef.current = newRunId;
-        statusDataRef.current = statusRes;
 
-        setStatusData(statusRes);
         setChunks(chunksRes.items);
         setTotalChunks(chunksRes.total ?? chunksRes.items.length);
         setNextChunkCursor(chunksRes.next_cursor ?? null);
@@ -345,32 +343,31 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
 
         if (!isRequestStillValid) return;
 
-        if (!isPolling) {
-          setErrorMsg(err?.message || "Failed to load quality metrics.");
-        } else {
-          // Transient polling failure: record retry attempt and explicitly schedule next poll
-          retryCountRef.current += 1;
-          const currentStatus = statusDataRef.current?.status || paper.status;
-          const currentSubstate = statusDataRef.current?.substate;
-          const hasConflict = generationConflictCountRef.current > 0;
-          const shouldPoll =
-            currentStatus === "uploaded" ||
-            (currentStatus === "processing" &&
-              (currentSubstate !== "awaiting_indexing" || hasConflict)) ||
-            hasConflict;
+        setErrorMsg(err?.message || "Failed to load quality metrics.");
 
-          if (shouldPoll) {
-            const delay = Math.min(
-              2000 * Math.pow(1.5, retryCountRef.current),
-              8000,
-            );
-            if (pollTimerRef.current) {
-              clearTimeout(pollTimerRef.current);
-            }
-            pollTimerRef.current = setTimeout(() => {
-              loadData(true);
-            }, delay);
+        retryCountRef.current += 1;
+        const currentStatus = statusDataRef.current?.status || paper.status;
+        const currentSubstate = statusDataRef.current?.substate;
+        const hasConflict = generationConflictCountRef.current > 0;
+        const shouldPoll =
+          currentStatus === "uploaded" ||
+          (currentStatus === "processing" &&
+            (currentSubstate !== "awaiting_indexing" || hasConflict)) ||
+          hasConflict ||
+          isPolling ||
+          retryCountRef.current <= 3;
+
+        if (shouldPoll && retryCountRef.current <= 3) {
+          const delay = Math.min(
+            2000 * Math.pow(1.5, Math.min(retryCountRef.current, 3)),
+            6000,
+          );
+          if (pollTimerRef.current) {
+            clearTimeout(pollTimerRef.current);
           }
+          pollTimerRef.current = setTimeout(() => {
+            loadData(true);
+          }, delay);
         }
       } finally {
         const isRequestStillValid =
@@ -448,13 +445,13 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     const targetSection = sectionFilter;
     const targetPage = pageFilter;
     const targetRunId = currentRunIdRef.current;
-    const actionToken = ++activeActionTokenRef.current;
+    const actionToken = ++paginationActionTokenRef.current;
 
     setIsLoadingMoreChunks(true);
 
     const isActionStillValid = () => {
       return (
-        actionToken === activeActionTokenRef.current &&
+        actionToken === paginationActionTokenRef.current &&
         isOpenRef.current &&
         currentPaperIdRef.current === targetPaperId &&
         currentWorkspaceIdRef.current === targetWorkspaceId &&
@@ -488,7 +485,11 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
       if (!isActionStillValid()) return;
       setErrorMsg(err?.message || "Failed to load more chunks.");
     } finally {
-      if (isActionStillValid()) {
+      if (
+        isOpenRef.current &&
+        currentPaperIdRef.current === targetPaperId &&
+        currentWorkspaceIdRef.current === targetWorkspaceId
+      ) {
         setIsLoadingMoreChunks(false);
       }
     }
@@ -499,14 +500,14 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     if (!paper || isReprocessing) return;
     const targetPaperId = paper.id;
     const targetWorkspaceId = paper.workspace_id;
-    const actionToken = ++activeActionTokenRef.current;
+    const actionToken = ++reprocessActionTokenRef.current;
 
     setIsReprocessing(true);
     setReprocessMsg(null);
 
     const isActionStillValid = () => {
       return (
-        actionToken === activeActionTokenRef.current &&
+        actionToken === reprocessActionTokenRef.current &&
         isOpenRef.current &&
         currentPaperIdRef.current === targetPaperId &&
         currentWorkspaceIdRef.current === targetWorkspaceId
@@ -546,7 +547,11 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
         });
       }
     } finally {
-      if (isActionStillValid()) {
+      if (
+        isOpenRef.current &&
+        currentPaperIdRef.current === targetPaperId &&
+        currentWorkspaceIdRef.current === targetWorkspaceId
+      ) {
         setIsReprocessing(false);
       }
     }

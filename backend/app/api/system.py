@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import logging
 import uuid
@@ -291,8 +292,10 @@ def get_public_config(
 ) -> dict[str, Any]:
     """
     Public non-sensitive configuration parameters consumed by the frontend shell.
+    In disposable test environments, exposes database_identity to allow test runners
+    to bind and verify owned database isolation before executing mutating operations.
     """
-    return {
+    cfg: dict[str, Any] = {
         "project_name": settings.PROJECT_NAME,
         "api_version": settings.VERSION,
         "environment": settings.APP_ENV,
@@ -306,3 +309,12 @@ def get_public_config(
         },
         "disposable_test_env": settings.DISPOSABLE_TEST_ENV,
     }
+    if settings.DISPOSABLE_TEST_ENV:
+        db_url = str(settings.DATABASE_URL).strip()
+        if db_url.startswith("sqlite:///"):
+            path_part = db_url[len("sqlite:///") :]
+            if not path_part.startswith(":memory:"):
+                norm_path = Path(path_part).resolve().as_posix().lower()
+                db_url = f"sqlite:///{norm_path}"
+        cfg["database_identity"] = hashlib.sha256(db_url.encode("utf-8")).hexdigest()
+    return cfg

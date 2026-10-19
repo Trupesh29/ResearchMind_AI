@@ -860,12 +860,76 @@ describe("QualityCenterModal Component", () => {
       // Explicit unavailable state displayed
       expect(
         screen.getByText(
-          "Document artifacts are updating across pipeline runs. Generation agreement could not be reached. Retrying...",
+          "Document artifacts are updating across pipeline runs. Generation agreement could not be reached.",
         ),
       ).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it.each([true, false])(
+    "review: failed replacement visible when stale=%s",
+    async (stale) => {
+      vi.mocked(client.api.getPaperStatus).mockResolvedValue({
+        ...mockStatus,
+        status: "failed",
+        substate: "failed",
+        run_id: "run-new",
+        current_run_id: "run-new",
+        published_run_id: "run-gen-1",
+        is_stale: stale,
+        stages: [
+          {
+            ...mockStatus.stages![0],
+            status: "failed",
+            error: "Replacement extraction failed",
+          },
+        ],
+        error: "Replacement extraction failed",
+      });
+      render(
+        <QualityCenterModal
+          paper={mockPaper}
+          isOpen={true}
+          onClose={vi.fn()}
+        />,
+      );
+      fireEvent.click(screen.getByRole("tab", { name: /stage history/i }));
+      await waitFor(() =>
+        expect(
+          screen.getByText("Replacement extraction failed"),
+        ).toBeInTheDocument(),
+      );
+    },
+  );
+
+  it("review: filter change during reprocess releases action busy state", async () => {
+    let finish: (value: any) => void = () => {};
+    vi.spyOn(client.api, "reprocessPaper").mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }) as any,
+    );
+    render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={vi.fn()} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(mockChunks[0].text)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("Reprocess"));
+    fireEvent.change(screen.getByLabelText("Filter by section"), {
+      target: { value: "1. Introduction" },
+    });
+    await act(async () => {
+      finish(mockStatus);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /Reprocess/i }),
+      ).not.toBeDisabled(),
+    );
   });
 
   it("renders tablist and role=tab with aria-selected attributes", async () => {

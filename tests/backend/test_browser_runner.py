@@ -33,7 +33,15 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from run_browser_verification import evaluate_acceptance, main, make_search_predicate  # noqa: E402
+from run_browser_verification import (  # noqa: E402
+    compute_local_database_identity,
+    drain_worker_engine,
+    evaluate_acceptance,
+    main,
+    make_search_predicate,
+    seed_additional_chunks,
+    verify_disposable_database_ownership,
+)
 
 
 @pytest.fixture
@@ -1182,6 +1190,176 @@ $res | ConvertTo-Json -Compress | Set-Content -Path '{result_file}' -Encoding UT
     assert result_file.exists()
     data = json.loads(result_file.read_text(encoding="utf-8-sig"))
     assert data["after"] == "caller_preset"
+
+
+# ==============================================================================
+# L5 Tests: Disposable Database Ownership Verification
+# ==============================================================================
+
+
+def test_verify_disposable_database_ownership_fails_closed_when_env_not_disposable(monkeypatch):
+    """L5: verify_disposable_database_ownership must fail closed when local DISPOSABLE_TEST_ENV is not set."""
+    monkeypatch.delenv("DISPOSABLE_TEST_ENV", raising=False)
+    with pytest.raises(RuntimeError, match="Local environment is not configured as disposable"):
+        verify_disposable_database_ownership("http://127.0.0.1:8000")
+
+
+def test_verify_disposable_database_ownership_fails_when_backend_not_disposable(monkeypatch):
+    """L5: verify_disposable_database_ownership must fail when target backend disposable_test_env is False."""
+    monkeypatch.setenv("DISPOSABLE_TEST_ENV", "1")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///C:/test/disposable.db")
+
+    b_port = find_free_port()
+
+    class NonDispHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"disposable_test_env": false}')
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", b_port), NonDispHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        with pytest.raises(RuntimeError, match="not in a disposable test environment"):
+            verify_disposable_database_ownership(f"http://127.0.0.1:{b_port}")
+    finally:
+        server.shutdown()
+
+
+def test_verify_disposable_database_ownership_fails_when_database_identity_mismatched(monkeypatch):
+    """L5: verify_disposable_database_ownership must fail when local DATABASE_URL does not match backend database_identity."""
+    monkeypatch.setenv("DISPOSABLE_TEST_ENV", "1")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///C:/test/local_disposable.db")
+
+    b_port = find_free_port()
+
+    class MismatchedHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                b'{"disposable_test_env": true, "database_identity": "remote_different_identity_hash_123"}'
+            )
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", b_port), MismatchedHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        with pytest.raises(
+            RuntimeError, match="Mismatched database configuration between local caller and remote backend"
+        ):
+            verify_disposable_database_ownership(f"http://127.0.0.1:{b_port}")
+    finally:
+        server.shutdown()
+
+
+def test_verify_disposable_database_ownership_succeeds_when_matched(monkeypatch):
+    """L5: verify_disposable_database_ownership returns identity when local and remote match."""
+    local_url = "sqlite:///C:/test/matching_disposable.db"
+    monkeypatch.setenv("DISPOSABLE_TEST_ENV", "1")
+    monkeypatch.setenv("DATABASE_URL", local_url)
+
+    expected_id = compute_local_database_identity()
+    assert expected_id is not None
+
+    b_port = find_free_port()
+
+    class MatchedHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({"disposable_test_env": True, "database_identity": expected_id}).encode("utf-8")
+            )
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", b_port), MatchedHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        ident = verify_disposable_database_ownership(f"http://127.0.0.1:{b_port}")
+        assert ident == expected_id
+    finally:
+        server.shutdown()
+
+
+def test_drain_worker_and_seed_chunks_fail_when_ownership_unverified(monkeypatch):
+    """L5: drain_worker_engine and seed_additional_chunks fail when base_url points to unverified/non-disposable server."""
+    monkeypatch.delenv("DISPOSABLE_TEST_ENV", raising=False)
+    with pytest.raises(RuntimeError, match="Local environment is not configured as disposable"):
+        drain_worker_engine(max_cycles=1, base_url="http://127.0.0.1:8000")
+
+    with pytest.raises(RuntimeError, match="Local environment is not configured as disposable"):
+        seed_additional_chunks("paper-1", target_count=5, base_url="http://127.0.0.1:8000")
+
+
+def test_suite_attach_mode_rejects_mismatched_database_identity_for_phase4(tmp_path):
+    """L5: In -Attach mode with -RequirePhase4, mismatched database_identity must be rejected."""
+    b_port = find_free_port()
+    f_port = find_free_port()
+
+    class MismatchedAttachHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            if self.path == "/api/config/public":
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"disposable_test_env": true, "database_identity": "mismatched_server_hash_999"}')
+            else:
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+        def log_message(self, *args):
+            pass
+
+    backend_server = HTTPServer(("127.0.0.1", b_port), MismatchedAttachHandler)
+    frontend_server = HTTPServer(("127.0.0.1", f_port), MismatchedAttachHandler)
+    t_b = threading.Thread(target=backend_server.serve_forever, daemon=True)
+    t_f = threading.Thread(target=frontend_server.serve_forever, daemon=True)
+    t_b.start()
+    t_f.start()
+
+    try:
+        env = os.environ.copy()
+        env["DATABASE_URL"] = "sqlite:///C:/test/local_unmatched.db"
+        env["DISPOSABLE_TEST_ENV"] = "1"
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SUITE_SCRIPT),
+            "-Attach",
+            "-RequirePhase4",
+            "-BackendPort",
+            str(b_port),
+            "-FrontendPort",
+            str(f_port),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
+        assert proc.returncode != 0
+        combined_output = proc.stdout + proc.stderr
+        assert (
+            "does not match target backend's database_identity" in combined_output
+            or "Attach mode rejected" in combined_output
+        )
+    finally:
+        backend_server.shutdown()
+        frontend_server.shutdown()
 
 
 # ==============================================================================

@@ -87,14 +87,38 @@ try {
         if (-not (Test-PortListening $FrontendPort)) {
             throw "Attach mode failed: No process is listening on port $FrontendPort."
         }
-        if ($RequirePhase2) {
+        if ($RequirePhase2 -or $RequirePhase4) {
             try {
                 $publicConfig = Invoke-RestMethod -Uri "http://127.0.0.1:$BackendPort/api/config/public" -TimeoutSec 3 -ErrorAction Stop
                 if ($publicConfig.disposable_test_env -ne $true) {
-                    throw "Target backend on port $BackendPort does not have disposable_test_env enabled. Refusing to run mutating Phase 2 tests against non-disposable target."
+                    throw "Target backend on port $BackendPort does not have disposable_test_env enabled. Refusing to run mutating Phase 2/4 tests against non-disposable target."
+                }
+                if (-not $publicConfig.database_identity) {
+                    throw "Target backend on port $BackendPort did not return database_identity. Refusing mutating tests."
+                }
+                if (-not $env:DATABASE_URL) {
+                    throw "Local DATABASE_URL environment variable is not set. Attach mode cannot bind local workers/mutations to backend database."
+                }
+                if ($env:DISPOSABLE_TEST_ENV -ne "1" -and $env:DISPOSABLE_TEST_ENV -ne "true") {
+                    throw "Local DISPOSABLE_TEST_ENV is not set to 1 or true. Refusing mutating operations."
+                }
+                $localDbUrl = $env:DATABASE_URL.Trim()
+                if ($localDbUrl.StartsWith("sqlite:///")) {
+                    $subPath = $localDbUrl.Substring(10)
+                    if (-not $subPath.StartsWith(":memory:")) {
+                        $resolved = [System.IO.Path]::GetFullPath($subPath).Replace('\', '/').ToLowerInvariant()
+                        $localDbUrl = "sqlite:///$resolved"
+                    }
+                }
+                $hasher = [System.Security.Cryptography.SHA256]::Create()
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($localDbUrl)
+                $hashBytes = $hasher.ComputeHash($bytes)
+                $localIdentity = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLowerInvariant()
+                if ($localIdentity -ne $publicConfig.database_identity) {
+                    throw "Local DATABASE_URL does not match target backend's database_identity ($localIdentity vs $($publicConfig.database_identity)). Aborting to protect local data."
                 }
             } catch {
-                throw "Attach mode rejected for Phase 2 verification: backend at port $BackendPort is not running in a verified disposable test environment ($($_.Exception.Message))."
+                throw "Attach mode rejected for Phase 2/4 verification: backend at port $BackendPort is not running in a verified disposable test environment ($($_.Exception.Message))."
             }
         }
     } else {

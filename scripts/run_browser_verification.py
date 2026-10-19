@@ -16,11 +16,13 @@ Fails with exit code 1 when any acceptance criterion is unsatisfied.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -61,8 +63,90 @@ def create_academic_pdf(target_path: Path) -> None:
         subprocess.run([str(VENV_PYTHON), "-c", code], check=True, cwd=str(PROJECT_ROOT), env=os.environ)
 
 
-def drain_worker_engine(max_cycles: int = 15) -> int:
+def compute_local_database_identity() -> str | None:
+    """Compute normalized SHA256 database identity from local environment / settings."""
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        try:
+            from backend.app.core.config import get_settings
+
+            db_url = get_settings().DATABASE_URL
+        except Exception:
+            return None
+    if not db_url:
+        return None
+
+    db_url_str = str(db_url).strip()
+    if db_url_str.startswith("sqlite:///"):
+        path_part = db_url_str[len("sqlite:///") :]
+        if not path_part.startswith(":memory:"):
+            norm_path = Path(path_part).resolve().as_posix().lower()
+            db_url_str = f"sqlite:///{norm_path}"
+    return hashlib.sha256(db_url_str.encode("utf-8")).hexdigest()
+
+
+def verify_disposable_database_ownership(base_url: str) -> str:
+    """
+    Verify that the local runtime environment owns and points to the exact same disposable
+    database as the target backend server before executing any mutations or worker drains.
+    Fails closed if:
+    1. Local DISPOSABLE_TEST_ENV is not '1' or 'true'
+    2. Remote /api/config/public disposable_test_env is not True
+    3. Remote database_identity is missing
+    4. Local database_identity does not match remote database_identity
+    """
+    local_disp = os.environ.get("DISPOSABLE_TEST_ENV", "").strip().lower()
+    if local_disp not in ("1", "true"):
+        raise RuntimeError(
+            "Local environment is not configured as disposable (DISPOSABLE_TEST_ENV is not '1' or 'true'). "
+            "Refusing to execute worker drain or chunk seeding against unverified local data."
+        )
+
+    cfg_url = f"{base_url.rstrip('/')}/api/config/public"
+    try:
+        req = urllib.request.Request(cfg_url, headers={"User-Agent": "ResearchMind-OwnershipVerifier/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Remote backend responded with HTTP {resp.status} at {cfg_url}")
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Failed to query backend disposable configuration at {cfg_url}: {exc}") from exc
+
+    if not data.get("disposable_test_env"):
+        raise RuntimeError(
+            f"Remote backend at {base_url} is not in a disposable test environment (disposable_test_env is False). "
+            "Refusing to execute mutating operations."
+        )
+
+    remote_identity = data.get("database_identity")
+    if not remote_identity:
+        raise RuntimeError(
+            f"Remote backend at {base_url} did not provide a database_identity token. "
+            "Refusing to execute mutating operations."
+        )
+
+    local_identity = compute_local_database_identity()
+    if not local_identity:
+        raise RuntimeError(
+            "Local environment has no identifiable DATABASE_URL configured. "
+            "Cannot bind local worker/seeding to backend database."
+        )
+
+    if local_identity != remote_identity:
+        raise RuntimeError(
+            f"Mismatched database configuration between local caller and remote backend!\n"
+            f"Local database identity:  {local_identity}\n"
+            f"Remote database identity: {remote_identity}\n"
+            "Worker drain and seeding aborted to protect database integrity."
+        )
+
+    return local_identity
+
+
+def drain_worker_engine(max_cycles: int = 15, base_url: str | None = None) -> int:
     """Run disposable worker engine iterations to process queued document stages."""
+    if base_url:
+        verify_disposable_database_ownership(base_url)
     try:
         from worker.engine import WorkerEngine
 
@@ -109,8 +193,10 @@ print(f"WORKER_CYCLES:{{cycles}}")
             raise
 
 
-def seed_additional_chunks(paper_id: str, target_count: int = 105) -> int:
+def seed_additional_chunks(paper_id: str, target_count: int = 105, base_url: str | None = None) -> int:
     """Seed additional chunks for paper_id up to target_count to test >100 pagination."""
+    if base_url:
+        verify_disposable_database_ownership(base_url)
     try:
         import json
         import uuid
@@ -1188,8 +1274,10 @@ def run_checks(
                 expect(row_b).to_be_visible(timeout=5000)
 
                 # 10d-3. Drain Disposable Worker and Seed Pagination Chunks
-                print("[10d-3] Executing disposable worker lifecycle...")
-                worker_cycles = drain_worker_engine(max_cycles=15)
+                print("[10d-3] Verifying database ownership and executing disposable worker lifecycle...")
+                verified_db_id = verify_disposable_database_ownership(base_url)
+                print(f"[10d-3] Verified owned disposable database: {verified_db_id[:12]}...")
+                worker_cycles = drain_worker_engine(max_cycles=15, base_url=base_url)
                 print(f"[10d-3] Worker finished {worker_cycles} cycles.")
                 p4_results["disposable_worker_lifecycle"] = worker_cycles > 0
 
@@ -1206,7 +1294,7 @@ def run_checks(
                         pass
 
                 if paper_a_id:
-                    seeded = seed_additional_chunks(paper_a_id, target_count=105)
+                    seeded = seed_additional_chunks(paper_a_id, target_count=105, base_url=base_url)
                     print(f"[10d-3] Seeded {seeded} chunks for paper {paper_a_id} (total: 105).")
 
                 # 10e. Search
@@ -1385,8 +1473,8 @@ def run_checks(
                     else:
                         p4_results["pagination_gt100_chunks"] = False
 
-                    # Transient error injection & recovery
-                    print("[10f-2d] Testing transient error injection and recovery...")
+                    # Transient error injection & automatic recovery (without changing filters)
+                    print("[10f-2d] Testing transient error injection and automatic polling recovery...")
                     is_simulating_offline = True
 
                     def abort_chunks_handler(route):
@@ -1398,52 +1486,96 @@ def run_checks(
                     page.route("**/api/papers/*/chunks*", abort_chunks_handler)
                     sec_select = page.locator("select[aria-label='Filter by section']")
                     sec_select.select_option("abstract")
-                    time.sleep(0.6)
                     err_banner = page.get_by_text("Unable to connect to the ResearchMind API server")
                     expect(err_banner.first).to_be_visible(timeout=5000)
                     has_err = err_banner.count() > 0
 
+                    # Remove failure route without changing section filter, and wait for automatic background retry
                     page.unroute("**/api/papers/*/chunks*")
-                    sec_select.select_option("")
-                    time.sleep(0.8)
-                    expect(page.locator("text='Loaded 100 of 105 chunks'")).to_be_visible(timeout=10000)
                     is_simulating_offline = False
+
+                    # Wait for automatic background polling retry to resolve successfully
+                    with page.expect_response(lambda r: "/chunks" in r.url and r.status == 200, timeout=10000):
+                        pass
+
+                    # Error banner must automatically disappear without changing filters
+                    expect(err_banner).to_have_count(0, timeout=5000)
+                    expect(page.locator("text='Loaded 46 of 46 chunks'")).to_be_visible(timeout=5000)
                     p4_results["transient_recovery"] = (
-                        has_err and page.locator("text='Loaded 100 of 105 chunks'").count() > 0
+                        has_err and page.locator("text='Loaded 46 of 46 chunks'").count() > 0
                     )
 
-                    # Late response isolation
-                    print("[10f-2e] Testing late response isolation...")
+                    # Reset section filter to all chunks for subsequent tests
+                    sec_select.select_option("")
+                    expect(page.locator("text='Loaded 100 of 105 chunks'")).to_be_visible(timeout=5000)
 
-                    def delayed_reprocess_handler(route):
-                        if "/reprocess" in route.request.url and route.request.method == "POST":
-                            time.sleep(1.5)
-                            route.continue_()
+                    # Late response isolation across paper switch
+                    print("[10f-2e] Testing late response isolation across paper switch...")
+                    held_routes = []
+
+                    def hold_a_reprocess_handler(route):
+                        if (
+                            f"/api/papers/{paper_a_id}/reprocess" in route.request.url
+                            and route.request.method == "POST"
+                        ):
+                            held_routes.append(route)
                         else:
                             route.continue_()
 
-                    page.route("**/api/papers/*/reprocess*", delayed_reprocess_handler)
+                    page.route(f"**/api/papers/{paper_a_id}/reprocess*", hold_a_reprocess_handler)
                     reprocess_btn = page.locator(
                         "button[aria-label='Reprocess document'], button:has-text('Reprocess')"
                     ).first
-                    if reprocess_btn.count() > 0:
-                        reprocess_btn.click()
-                        time.sleep(0.1)
-                        # Hit Escape immediately while reprocess request is in-flight
-                        page.keyboard.press("Escape")
-                        time.sleep(0.4)
-                        closed_immediately = not qc_dialog.is_visible()
-                        # Wait for the in-flight delayed request to resolve in background
-                        time.sleep(1.6)
-                        page.unroute("**/api/papers/*/reprocess*")
-                        # Drain any reprocess job created so state remains clean
-                        drain_worker_engine(max_cycles=10)
-                        # Reopen Quality Center to confirm clean state
-                        qc_btn.click()
-                        time.sleep(0.8)
-                        p4_results["late_response_isolation"] = closed_immediately and qc_dialog.is_visible()
-                    else:
-                        p4_results["late_response_isolation"] = False
+                    reprocess_btn.click()
+
+                    # Wait until the request is in-flight and held
+                    for _ in range(40):
+                        if held_routes:
+                            break
+                        time.sleep(0.05)
+                    if not held_routes:
+                        raise RuntimeError("Failed to intercept Paper A reprocess request")
+
+                    # Close Paper A modal immediately with Escape while request is in flight
+                    page.keyboard.press("Escape")
+                    expect(qc_dialog).not_to_be_visible(timeout=5000)
+
+                    # Open Paper B Quality Center modal
+                    qc_btn_b = (
+                        page.locator(".paper-row")
+                        .filter(has_text=valid_pdf_b_name)
+                        .locator("button:has-text('Quality')")
+                        .first
+                    )
+                    qc_btn_b.click()
+                    expect(qc_dialog).to_be_visible(timeout=5000)
+                    # Verify Paper B title is visible and Paper B reprocess button is enabled
+                    expect(qc_dialog.locator(f"text='{valid_pdf_b_name}'")).to_be_visible(timeout=5000)
+                    reprocess_btn_b = qc_dialog.locator(
+                        "button[aria-label='Reprocess document'], button:has-text('Reprocess')"
+                    ).first
+                    expect(reprocess_btn_b).to_be_enabled(timeout=5000)
+                    expect(reprocess_btn_b).to_have_text("Reprocess")
+
+                    # Release Paper A's held request
+                    held_routes[0].continue_()
+                    page.unroute(f"**/api/papers/{paper_a_id}/reprocess*")
+                    time.sleep(0.6)
+
+                    # Verify Paper B's modal state remains completely uncorrupted by Paper A's late response:
+                    # 1. Document title still belongs to Paper B
+                    b_title_intact = qc_dialog.locator(f"text='{valid_pdf_b_name}'").count() > 0
+                    # 2. Paper B's Reprocess button is still enabled and not stranded in 'Enqueueing...'
+                    b_btn_enabled = reprocess_btn_b.is_enabled() and "Enqueueing" not in (
+                        reprocess_btn_b.text_content() or ""
+                    )
+                    # 3. No feedback banner from Paper A's reprocess response leaked into Paper B
+                    no_leaked_banner = qc_dialog.locator("text='Ingestion pipeline queued'").count() == 0
+
+                    p4_results["late_response_isolation"] = b_title_intact and b_btn_enabled and no_leaked_banner
+
+                    # Drain any background worker jobs created from Paper A's released reprocess
+                    drain_worker_engine(max_cycles=10, base_url=base_url)
 
                     page.screenshot(path=str(screenshots_dir / "desktop_quality_center_modal.png"))
                     page.keyboard.press("Escape")

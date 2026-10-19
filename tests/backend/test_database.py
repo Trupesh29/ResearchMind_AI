@@ -912,7 +912,7 @@ def test_historical_generation_attribution_matrix(temp_test_dir):
     command.upgrade(cfg, "head")
     with SessionCls() as session:
         head_rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert head_rev == "0008_add_block_spans_to_sections"
+        assert head_rev == "0009_repair_block_spans_and_chunks"
         final_p1 = session.execute(
             text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"), {"id": p1_id}
         ).fetchone()
@@ -1158,7 +1158,7 @@ def test_multirun_page_generation_preservation_matrix(temp_test_dir):
     with SessionCls() as session:
         # Check revision advanced to head
         rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "0008_add_block_spans_to_sections"
+        assert rev == "0009_repair_block_spans_and_chunks"
 
         # Verification 1: Overlapping multi-generation pages survive!
         ov_pages = session.execute(
@@ -1249,7 +1249,7 @@ def test_multirun_page_generation_preservation_matrix(temp_test_dir):
     command.upgrade(cfg, "head")
     with engine.connect() as c:
         assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
-            "0008_add_block_spans_to_sections"
+            "0009_repair_block_spans_and_chunks"
         )
 
     engine.dispose()
@@ -1276,7 +1276,7 @@ def test_clean_install_and_already_0005_upgrade(temp_test_dir):
     engine = create_engine(db_url)
     with engine.connect() as c:
         rev = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "0008_add_block_spans_to_sections"
+        assert rev == "0009_repair_block_spans_and_chunks"
 
     # 2. Downgrade to 0005 and upgrade back to head
     command.downgrade(cfg, "0005_repair_historical_generation_attribution")
@@ -1287,14 +1287,14 @@ def test_clean_install_and_already_0005_upgrade(temp_test_dir):
     command.upgrade(cfg, "head")
     with engine.connect() as c:
         assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
-            "0008_add_block_spans_to_sections"
+            "0009_repair_block_spans_and_chunks"
         )
 
     engine.dispose()
 
 
 def test_migration_0008_span_reconciliation_matrix(temp_test_dir):
-    """Verifies K3: exact span reconciliation in 0008:
+    """Verifies K3/L1: exact span reconciliation through 0009:
 
     - localized dehyphenation bounds (no raw length extension)
     - repeated prefix disambiguation
@@ -1405,12 +1405,12 @@ def test_migration_0008_span_reconciliation_matrix(temp_test_dir):
             {"ctxt": "Deep learning transformers", "s": stamp},
         )
 
-    # 2. Upgrade to 0008
+    # 2. Upgrade to head (0008 then 0009)
     command.upgrade(cfg, "head")
 
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "0008_add_block_spans_to_sections"
+        assert rev == "0009_repair_block_spans_and_chunks"
 
         # Check Section 1: exact dehyphenation span
         s1_spans = json.loads(conn.execute(text("SELECT block_spans_json FROM sections WHERE id='s1'")).scalar())
@@ -1441,5 +1441,108 @@ def test_migration_0008_span_reconciliation_matrix(temp_test_dir):
         assert json.loads(c1_row[0]) == ["b_dehyphen"]
         assert c1_row[1] == 1  # Repaired from 99 to 1
         assert c1_row[2] == 1  # Repaired from 99 to 1
+
+    engine.dispose()
+
+
+def test_existing_0008_database_upgrades_to_0009_with_provenance_preservation(temp_test_dir):
+    """Verifies L1 & L2:
+
+    1. Existing database stamped at 0008 receives 0009 forward repair.
+    2. Repeated blocks preserve proven identity and never guess by first occurrence.
+    3. Ambiguous repeated text without proven identity is marked unresolved.
+    """
+    import json
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    db_file = temp_test_dir / "existing_0008_test.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+
+    cfg = Config(str(PROJECT_ROOT / "backend" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "backend" / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+
+    # 1. Upgrade to 0008
+    command.upgrade(cfg, "0008_add_block_spans_to_sections")
+    engine = create_engine(db_url)
+
+    stamp = "2026-10-19T00:00:00+00:00"
+    raw_repeated = "Repeated evidence."
+    cleaned_sec = raw_repeated + "\n" + raw_repeated
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO users (id, email, password_hash, created_at) VALUES ('u', 'u@test.org', 'p', :s)"),
+            {"s": stamp},
+        )
+        conn.execute(
+            text("INSERT INTO workspaces (id, user_id, name, created_at) VALUES ('w', 'u', 'W', :s)"),
+            {"s": stamp},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO papers (id, workspace_id, original_filename, storage_path, sha256, size_bytes, status, created_at, updated_at, current_run_id, published_run_id) "
+                "VALUES ('p', 'w', 'p.pdf', 'p.pdf', 'hash', 10, 'processing', :s, :s, 'r', 'r')"
+            ),
+            {"s": stamp},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO pages (id, paper_id, run_id, page_number, char_count, extraction_status, flags_json, raw_text, blocks_json, created_at) "
+                "VALUES ('pg1', 'p', 'r', 1, 100, 'ok', '[]', 'raw', :b, :s)"
+            ),
+            {"b": json.dumps([{"id": "b", "text": raw_repeated}, {"id": "c", "text": raw_repeated}]), "s": stamp},
+        )
+        # Pre-seed section with obsolete/flawed 0008 span exceeding length (simulating original 0008)
+        conn.execute(
+            text(
+                "INSERT INTO sections (id, paper_id, run_id, section_index, section, page_start, page_end, text, block_ids_json, block_spans_json, created_at) "
+                "VALUES ('s', 'p', 'r', 0, 'intro', 1, 1, :txt, '[\"b\",\"c\"]', :spans, :s)"
+            ),
+            {"txt": cleaned_sec, "spans": json.dumps([["b", 1, 0, 48]]), "s": stamp},
+        )
+        # Chunk 1: Proven identity to second occurrence block 'c'
+        conn.execute(
+            text(
+                "INSERT INTO chunks (id, paper_id, run_id, chunk_index, page_start, page_end, section, text, token_count, block_ids_json, created_at) "
+                "VALUES ('ch_c', 'p', 'r', 1, 1, 1, 'intro', :txt, 5, '[\"c\"]', :s)"
+            ),
+            {"txt": raw_repeated, "s": stamp},
+        )
+        # Chunk 2: Obsolete block ID with ambiguous repeated text in section -> should NOT guess 'b'
+        conn.execute(
+            text(
+                "INSERT INTO chunks (id, paper_id, run_id, chunk_index, page_start, page_end, section, text, token_count, block_ids_json, created_at) "
+                "VALUES ('ch_ambig', 'p', 'r', 2, 99, 99, 'intro', :txt, 5, '[\"obsolete_x\"]', :s)"
+            ),
+            {"txt": raw_repeated, "s": stamp},
+        )
+
+    # 2. Upgrade to head (runs 0009 on existing 0008 database)
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
+            "0009_repair_block_spans_and_chunks"
+        )
+
+        # Verify section spans repaired (no out-of-bounds)
+        spans = json.loads(conn.execute(text("SELECT block_spans_json FROM sections WHERE id='s'")).scalar())
+        assert len(spans) == 2
+        assert spans[0] == ["b", 1, 0, len(raw_repeated)]
+        assert spans[1][3] <= len(cleaned_sec)
+
+        # L2 check: Proven second occurrence block 'c' was NOT corrupted to 'b'
+        ch_c_bids = json.loads(conn.execute(text("SELECT block_ids_json FROM chunks WHERE id='ch_c'")).scalar())
+        assert ch_c_bids == ["c"]
+
+        # Ambiguous chunk was marked unresolved (NULL), NOT guessed as 'b'
+        ch_ambig_bids = conn.execute(text("SELECT block_ids_json FROM chunks WHERE id='ch_ambig'")).scalar()
+        assert ch_ambig_bids is None
 
     engine.dispose()
