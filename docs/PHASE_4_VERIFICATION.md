@@ -205,7 +205,53 @@ Following checkpoint `0e0fe95` review (`docs/PHASE_4_REVIEW_0e0fe95.md`), findin
 
 ---
 
-## 7. Verdict
+---
+
+## 7. Corrective Verification for Checkpoint 573223a (N1–N2 Findings)
+
+### 7.1 N1: Invalidation Busy State Release
+- **Defect:** In `frontend/src/components/library/QualityCenterModal.tsx`, when generation-conflict (line 284) or generation-change (line 326) paths invalidated pagination tokens (`paginationTokenRef.current = null`), `isLoadingMoreChunks` was left `true`. The superseded request's guarded `finally` block could not clear the spinner because its token was invalidated.
+- **Correction:** Explicitly release busy state (`setIsLoadingMoreChunks(false)`) at both invalidation sites (`generationConflictCountRef.current > 0` and `result.run_id !== activeGen`), while strictly preserving action ownership token checks in `finally` to prevent stale requests from clearing newer concurrent requests.
+- **Verification:**
+  - Added reproduction test case from `scripts/review_phase4_generation_paging.tsx.txt`: `review: generation replacement releases invalidated pagination busy state`.
+  - Added generation conflict test case: `review: generation conflict releases invalidated pagination busy state`.
+  - Added subsequent request test case: `review: subsequent new pagination request retains busy state when old request settles`.
+  - All 48 frontend tests pass across all 5 test files (`npm test -- --run`).
+
+### 7.2 N2: Browser Verification Isolation Gate & Negative Controls
+- **Defect:** `check_late_response_isolation` previously verified only that `'Loaded '` was present, passing even if Paper B displayed `'Processing Failed'` and `'Loaded 0 of 0 chunks'`. Furthermore, `scripts/run_browser_verification.py` created Paper B as a raw 4-object PDF fixture without real text content, and the runner did not wait for the response body of Paper A's reprocess request to complete or the UI to settle.
+- **Correction:**
+  - Added `create_academic_pdf_b` to generate a real 2-page academic PDF (`"BERT: Pre-training of Deep Bidirectional Transformers"`), with distinct sections and content.
+  - Required full response body consumption (`_ = a_resp.body()`) and settled network/UI state (`page.wait_for_load_state("networkidle")`).
+  - Strengthened `check_late_response_isolation` with:
+    - Content verification: `expected_chunk_text="BERT"` must be present in Paper B's chunks.
+    - Cross-contamination gate: `prohibited_chunk_text="Attention Is All You Need"` must NOT be present in Paper B.
+    - Chunk existence: `min_chunks=1` and not `'Loaded 0 of 0 chunks'`.
+    - Status health: `expected_status_not_failed=True` ensures Paper B does not display `'Processing Failed'`.
+    - Title check: verifies Paper B's document title is intact.
+  - Added 4 negative controls in `tests/backend/test_browser_runner.py`:
+    - `test_check_late_response_isolation_fails_on_wrong_paper_chunks_negative_control`
+    - `test_check_late_response_isolation_fails_on_empty_or_zero_chunks_negative_control`
+    - `test_check_late_response_isolation_fails_on_processing_failed_status_negative_control`
+    - `test_check_late_response_isolation_fails_on_delayed_body_corruption_negative_control`
+  - All 70 test runner unit tests pass (`pytest tests/backend/test_browser_runner.py`).
+
+### 7.3 Live Browser Verification Suite
+- Executed `powershell -ExecutionPolicy Bypass -File scripts/run_browser_suite.ps1 -BackendPort 18000 -FrontendPort 15173 -RequirePhase2 -RequirePhase4`:
+  - `[PASS] no_horizontal_overflow`
+  - `[PASS] routes_and_navigation`
+  - `[PASS] mobile_drawer_accessibility`
+  - `[PASS] reduced_motion_suppressed`
+  - `[PASS] contrast_ratios`
+  - `[PASS] api_states_and_recovery`
+  - `[PASS] clean_operation`
+  - `[PASS] phase2_library_lifecycle`
+  - `[PASS] phase4_quality_center`
+  - Exit code: 0. All 9 browser acceptance criteria satisfied.
+
+---
+
+## 8. Final Verdict
 
 **VERDICT: PASS**
-All review findings (L1 through L5 and M1 through M3) are completely repaired, covered by automated tests and probes, and verified with live browser acceptance testing. Phase 4 remains strictly local on branch `manav` without any remote push or unauthorized next-phase work.
+All N1 and N2 review findings from checkpoint `573223a` are completely repaired and verified. Action ownership, forward migrations, chunk provenance, and database ownership binding remain preserved. Phase 4 is kept strictly local on branch `manav` without any remote push or next-phase work.

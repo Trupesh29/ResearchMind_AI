@@ -63,6 +63,38 @@ def create_academic_pdf(target_path: Path) -> None:
         subprocess.run([str(VENV_PYTHON), "-c", code], check=True, cwd=str(PROJECT_ROOT), env=os.environ)
 
 
+def create_academic_pdf_b(target_path: Path) -> None:
+    """Generate a rich 2-page academic PDF for Paper B with distinct selectable text using PyMuPDF."""
+    try:
+        import pymupdf
+
+        doc = pymupdf.open()
+        p1 = doc.new_page(width=612, height=792)
+        p1.insert_text(
+            (50, 60),
+            "BERT: Pre-training of Deep Bidirectional Transformers\n\nAbstract\nWe introduce BERT, designed to pre-train deep bidirectional representations from unlabeled text by conditioning on both left and right context.\n\n1. Introduction\nLanguage representation models pre-trained on corpora have revolutionized NLP.",
+        )
+        p2 = doc.new_page(width=612, height=792)
+        p2.insert_text(
+            (50, 60),
+            "2. Architecture\nThe architecture is a multi-layer bidirectional Transformer encoder based on the original Transformer model.\n\n3. References\n[1] Devlin, J., et al. BERT. NAACL 2019.",
+        )
+        doc.save(str(target_path))
+        doc.close()
+    except ImportError:
+        escaped_target = str(target_path).replace("\\", "\\\\")
+        code = (
+            "import pymupdf; "
+            "doc = pymupdf.open(); "
+            "p1 = doc.new_page(width=612, height=792); "
+            "p1.insert_text((50, 60), 'BERT: Pre-training of Deep Bidirectional Transformers\\n\\nAbstract\\nWe introduce BERT, designed to pre-train deep bidirectional representations.\\n\\n1. Introduction\\nLanguage representation models pre-trained on corpora have revolutionized NLP.'); "
+            "p2 = doc.new_page(width=612, height=792); "
+            "p2.insert_text((50, 60), '2. Architecture\\nThe architecture is a multi-layer bidirectional Transformer encoder.\\n\\n3. References\\n[1] Devlin, J., et al. BERT. NAACL 2019.'); "
+            f"doc.save(r'{escaped_target}'); doc.close()"
+        )
+        subprocess.run([str(VENV_PYTHON), "-c", code], check=True, cwd=str(PROJECT_ROOT), env=os.environ)
+
+
 def compute_local_database_identity() -> str | None:
     """Compute normalized SHA256 database identity from local environment / settings."""
     db_url = os.environ.get("DATABASE_URL")
@@ -301,7 +333,15 @@ with factory() as db:
             raise
 
 
-def check_late_response_isolation(qc_dialog, expected_paper_title: str, reprocess_btn) -> tuple[bool, dict[str, bool]]:
+def check_late_response_isolation(
+    qc_dialog,
+    expected_paper_title: str,
+    reprocess_btn,
+    expected_chunk_text: str | None = None,
+    prohibited_chunk_text: str | None = None,
+    min_chunks: int = 1,
+    expected_status_not_failed: bool = True,
+) -> tuple[bool, dict[str, bool]]:
     """Evaluates whether the active modal state for Paper B remained completely uncorrupted
 
     after Paper A's delayed reprocess response settled in the background.
@@ -313,14 +353,36 @@ def check_late_response_isolation(qc_dialog, expected_paper_title: str, reproces
        'Reprocessing job enqueued successfully. Pipeline restarted.').
     4. No error feedback banner from Paper A leaked into Paper B.
     5. No stale generation warning ('Reprocessing in Progress (Old Bundle Shown)') leaked into Paper B.
-    6. Paper B chunk list remains loaded ('Loaded ' text count > 0).
+    6. Paper B chunk list remains loaded ('Loaded ' text count > 0, and not 'Loaded 0 of 0 chunks' if min_chunks > 0).
+    7. Paper B chunks contain Paper B's expected text (not empty or wrong paper data).
+    8. Paper B chunks DO NOT contain Paper A's text (no cross-contamination).
+    9. Paper B status is not 'Processing Failed' (if expected_status_not_failed is True).
     """
     b_title_intact = qc_dialog.get_by_text(expected_paper_title, exact=False).count() > 0
     b_btn_enabled = reprocess_btn.is_enabled() and (reprocess_btn.text_content() or "").strip() == "Reprocess"
     no_leaked_success_banner = qc_dialog.get_by_text("Reprocessing job enqueued successfully", exact=False).count() == 0
     no_leaked_error_banner = qc_dialog.get_by_text("Failed to trigger reprocess", exact=False).count() == 0
     no_stale_warning = qc_dialog.get_by_text("Reprocessing in Progress (Old Bundle Shown)", exact=False).count() == 0
+
+    # Chunks integrity: verify loaded text and that it is not 'Loaded 0 of 0 chunks' when min_chunks > 0
     b_chunks_intact = qc_dialog.get_by_text("Loaded ", exact=False).count() > 0
+    if min_chunks > 0 and qc_dialog.get_by_text("Loaded 0 of 0 chunks", exact=False).count() > 0:
+        b_chunks_intact = False
+
+    # Content verification: B's expected content is present
+    b_chunk_content_verified = True
+    if expected_chunk_text:
+        b_chunk_content_verified = qc_dialog.get_by_text(expected_chunk_text, exact=False).count() > 0
+
+    # Cross-contamination prevention: A's prohibited content must NOT be present
+    no_cross_paper_chunks = True
+    if prohibited_chunk_text:
+        no_cross_paper_chunks = qc_dialog.get_by_text(prohibited_chunk_text, exact=False).count() == 0
+
+    # Status check: not processing failed
+    b_status_healthy = True
+    if expected_status_not_failed:
+        b_status_healthy = qc_dialog.get_by_text("Processing Failed", exact=False).count() == 0
 
     checks = {
         "b_title_intact": b_title_intact,
@@ -329,6 +391,9 @@ def check_late_response_isolation(qc_dialog, expected_paper_title: str, reproces
         "no_leaked_error_banner": no_leaked_error_banner,
         "no_stale_warning": no_stale_warning,
         "b_chunks_intact": b_chunks_intact,
+        "b_chunk_content_verified": b_chunk_content_verified,
+        "no_cross_paper_chunks": no_cross_paper_chunks,
+        "b_status_healthy": b_status_healthy,
     }
     all_passed = all(checks.values())
     return all_passed, checks
@@ -1186,17 +1251,7 @@ def run_checks(
             corrupt_pdf_path = temp_fixtures_dir / corrupt_pdf_name
 
             create_academic_pdf(valid_pdf_a_path)
-
-            minimal_valid_pdf_b_bytes = (
-                b"%PDF-1.4\n"
-                b"% Distinct Beta Document Bytes for Search Verification\n"
-                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
-                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
-                b"xref\n0 4\n0000000000 65535 f \n0000000065 00000 n \n0000000114 00000 n \n0000000171 00000 n \n"
-                b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n243\n%%EOF\n"
-            )
-            valid_pdf_b_path.write_bytes(minimal_valid_pdf_b_bytes)
+            create_academic_pdf_b(valid_pdf_b_path)
 
             corrupt_pdf_path.write_bytes(b"%PDF-corrupted-binary-header-test")
 
@@ -1310,7 +1365,7 @@ def run_checks(
                 print("[10d-3] Verifying database ownership and executing disposable worker lifecycle...")
                 verified_db_id = verify_disposable_database_ownership(base_url)
                 print(f"[10d-3] Verified owned disposable database: {verified_db_id[:12]}...")
-                worker_cycles = drain_worker_engine(max_cycles=15, base_url=base_url)
+                worker_cycles = drain_worker_engine(max_cycles=25, base_url=base_url)
                 print(f"[10d-3] Worker finished {worker_cycles} cycles.")
                 p4_results["disposable_worker_lifecycle"] = worker_cycles > 0
 
@@ -1582,15 +1637,17 @@ def run_checks(
                     )
                     qc_btn_b.click()
                     expect(qc_dialog).to_be_visible(timeout=5000)
+                    expected_b_title = "BERT: Pre-training of Deep Bidirectional Transformers"
                     # Verify Paper B title is visible and Paper B reprocess button is enabled
-                    expect(qc_dialog.locator(f"text='{valid_pdf_b_name}'")).to_be_visible(timeout=5000)
+                    expect(qc_dialog.get_by_text(expected_b_title, exact=False)).to_be_visible(timeout=5000)
                     reprocess_btn_b = qc_dialog.locator(
                         "button[aria-label='Reprocess document'], button:has-text('Reprocess')"
                     ).first
                     expect(reprocess_btn_b).to_be_enabled(timeout=5000)
                     expect(reprocess_btn_b).to_have_text("Reprocess")
 
-                    # Verify Paper B chunks are fully loaded before releasing Paper A
+                    # Verify Paper B chunks are fully loaded with Paper B's distinct content before releasing Paper A
+                    expect(qc_dialog.get_by_text("BERT", exact=False)).to_be_visible(timeout=10000)
                     expect(qc_dialog.get_by_text("Loaded ", exact=False)).to_be_visible(timeout=10000)
 
                     # Register response-completion gate before releasing Paper A's held request
@@ -1604,9 +1661,22 @@ def run_checks(
                     if a_resp.status not in (200, 202):
                         raise RuntimeError(f"Paper A reprocess failed with HTTP {a_resp.status}")
 
+                    # Explicitly consume the full response body to establish network transfer completion
+                    _ = a_resp.body()
+
+                    # Wait for UI to settle cleanly after response completion
+                    page.wait_for_load_state("networkidle")
+                    time.sleep(0.3)
+
                     # Verify Paper B's modal state remains completely uncorrupted by Paper A's late response
                     isolation_passed, isolation_checks = check_late_response_isolation(
-                        qc_dialog, valid_pdf_b_name, reprocess_btn_b
+                        qc_dialog,
+                        expected_b_title,
+                        reprocess_btn_b,
+                        expected_chunk_text="BERT",
+                        prohibited_chunk_text="Attention Is All You Need",
+                        min_chunks=1,
+                        expected_status_not_failed=True,
                     )
                     p4_results["late_response_isolation"] = isolation_passed
 

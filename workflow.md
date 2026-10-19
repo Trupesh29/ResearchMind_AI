@@ -1,5 +1,7 @@
 # ResearchMind AI agent workflow
 
+Phase 4 corrective checkpoint (post-573223a): **N1–N2 findings repaired and verified** — N1 generation-change and conflict pagination busy-state release with token-guarded finally blocks; N2 browser data-isolation gate with distinct populated academic PDF fixtures, response body consumption, settled UI wait, exact content/prohibition/status checks, and negative controls. Full live browser suite (9/9 criteria) and all unit/integration test suites (197 backend, 70 runner, 48 frontend) pass. Keep Phase 4 local on branch `manav` (no push). See `docs/PHASE_4_VERIFICATION.md`.
+
 Latest independent review (573223a): **changes required** — N1 generation-change pagination lock and N2 browser data-isolation gate. See `docs/PHASE_4_REVIEW_573223a.md` and `docs/PHASE_4_PROMPT_573223a.md`. Keep Phase 4 local; prior conclusions below are historical.
 
 Latest independent review (0e0fe95): **changes required** — known-but-wrong source references, action-finally ownership and browser race assertions remain. See `docs/PHASE_4_REVIEW_0e0fe95.md` and `docs/PHASE_4_PROMPT_0e0fe95.md`. Keep Phase 4 local; prior conclusions below are historical.

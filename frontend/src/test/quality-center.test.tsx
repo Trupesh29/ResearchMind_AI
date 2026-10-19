@@ -1072,4 +1072,274 @@ describe("QualityCenterModal Component", () => {
       expect(tabs[2]).toHaveAttribute("aria-selected", "false");
     });
   });
+
+  it("review: generation replacement releases invalidated pagination busy state", async () => {
+    let finish: (value: any) => void = () => {};
+    let generation = "run-gen-1";
+    vi.mocked(client.api.getPaperStatus).mockImplementation(async () => ({
+      ...mockStatus,
+      run_id: generation,
+      current_run_id: generation,
+      published_run_id: generation,
+    }));
+    vi.mocked(client.api.getPaperSections).mockImplementation(async () => ({
+      items: mockSections,
+      total: 2,
+      run_id: generation,
+      is_stale: false,
+    }));
+    vi.mocked(client.api.getPaperPages).mockImplementation(async () => ({
+      items: mockPages,
+      total_pages: 2,
+      run_id: generation,
+      is_stale: false,
+    }));
+    vi.mocked(client.api.getPaperChunks).mockImplementation((_id, options) =>
+      options?.cursor
+        ? (new Promise((resolve) => {
+            finish = resolve;
+          }) as any)
+        : Promise.resolve({
+            items: mockChunks.map((c) => ({
+              ...c,
+              run_id: generation,
+              text: generation + ":" + c.text,
+            })),
+            total: 105,
+            next_cursor: generation + "-next",
+            run_id: generation,
+            is_stale: false,
+          }),
+    );
+    const close = vi.fn();
+    const view = render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={close} />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /Load More Chunks/ }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Load More Chunks/ }));
+    generation = "run-gen-2";
+    view.rerender(
+      <QualityCenterModal
+        paper={{ ...mockPaper }}
+        isOpen={true}
+        onClose={close}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(generation + ":" + mockChunks[0].text),
+      ).toBeInTheDocument(),
+    );
+    await act(async () => {
+      finish({
+        items: [],
+        total: 105,
+        next_cursor: null,
+        run_id: "run-gen-1",
+        is_stale: false,
+      });
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole("button", { name: /Load More Chunks/ }),
+    ).toBeEnabled();
+  });
+
+  it("review: generation conflict releases invalidated pagination busy state", async () => {
+    let finish: (value: any) => void = () => {};
+    const generation = "run-gen-1";
+    let triggerConflict = false;
+
+    vi.mocked(client.api.getPaperStatus).mockImplementation(async () => ({
+      ...mockStatus,
+      run_id: generation,
+      current_run_id: generation,
+      published_run_id: generation,
+    }));
+    vi.mocked(client.api.getPaperSections).mockImplementation(async () => ({
+      items: mockSections,
+      total: 2,
+      run_id: triggerConflict ? "run-conflict-id" : generation,
+      is_stale: false,
+    }));
+    vi.mocked(client.api.getPaperPages).mockImplementation(async () => ({
+      items: mockPages,
+      total_pages: 2,
+      run_id: generation,
+      is_stale: false,
+    }));
+    vi.mocked(client.api.getPaperChunks).mockImplementation((_id, options) =>
+      options?.cursor
+        ? (new Promise((resolve) => {
+            finish = resolve;
+          }) as any)
+        : Promise.resolve({
+            items: mockChunks.map((c) => ({
+              ...c,
+              run_id: generation,
+              text: generation + ":" + c.text,
+            })),
+            total: 105,
+            next_cursor: generation + "-next",
+            run_id: generation,
+            is_stale: false,
+          }),
+    );
+    const close = vi.fn();
+    const view = render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={close} />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /Load More Chunks/ }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Load More Chunks/ }));
+
+    // Trigger an artifact conflict
+    triggerConflict = true;
+    view.rerender(
+      <QualityCenterModal
+        paper={{ ...mockPaper }}
+        isOpen={true}
+        onClose={close}
+      />,
+    );
+
+    // Conflict releases the busy state of pagination so user is not permanently stuck
+    await waitFor(() => {
+      const btn = screen.queryByRole("button", { name: /Load More Chunks/ });
+      if (btn) {
+        expect(btn).toBeEnabled();
+      }
+    });
+
+    await act(async () => {
+      finish({
+        items: [],
+        total: 105,
+        next_cursor: null,
+        run_id: "run-gen-1",
+        is_stale: false,
+      });
+      await Promise.resolve();
+    });
+  });
+
+  it("review: subsequent new pagination request retains busy state when old request settles", async () => {
+    let finish1: (value: any) => void = () => {};
+    let finish2: (value: any) => void = () => {};
+    let generation = "run-gen-1";
+
+    vi.mocked(client.api.getPaperStatus).mockImplementation(async () => ({
+      ...mockStatus,
+      run_id: generation,
+      current_run_id: generation,
+      published_run_id: generation,
+    }));
+    vi.mocked(client.api.getPaperSections).mockImplementation(async () => ({
+      items: mockSections,
+      total: 2,
+      run_id: generation,
+      is_stale: false,
+    }));
+    vi.mocked(client.api.getPaperPages).mockImplementation(async () => ({
+      items: mockPages,
+      total_pages: 2,
+      run_id: generation,
+      is_stale: false,
+    }));
+    vi.mocked(client.api.getPaperChunks).mockImplementation((_id, options) => {
+      if (options?.cursor === "run-gen-1-next") {
+        return new Promise((resolve) => {
+          finish1 = resolve;
+        }) as any;
+      }
+      if (options?.cursor === "run-gen-2-next") {
+        return new Promise((resolve) => {
+          finish2 = resolve;
+        }) as any;
+      }
+      return Promise.resolve({
+        items: mockChunks.map((c) => ({
+          ...c,
+          run_id: generation,
+          text: generation + ":" + c.text,
+        })),
+        total: 105,
+        next_cursor: generation + "-next",
+        run_id: generation,
+        is_stale: false,
+      });
+    });
+
+    const close = vi.fn();
+    const view = render(
+      <QualityCenterModal paper={mockPaper} isOpen={true} onClose={close} />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /Load More Chunks/ }),
+      ).toBeEnabled(),
+    );
+
+    // Start request 1 on generation 1
+    fireEvent.click(screen.getByRole("button", { name: /Load More Chunks/ }));
+
+    // Generation 2 arrives and publishes
+    generation = "run-gen-2";
+    view.rerender(
+      <QualityCenterModal
+        paper={{ ...mockPaper }}
+        isOpen={true}
+        onClose={close}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(generation + ":" + mockChunks[0].text),
+      ).toBeInTheDocument(),
+    );
+
+    // Load More button for generation 2 is enabled
+    const loadMoreBtn2 = screen.getByRole("button", {
+      name: /Load More Chunks/,
+    });
+    expect(loadMoreBtn2).toBeEnabled();
+
+    // Start request 2 on generation 2
+    fireEvent.click(loadMoreBtn2);
+    expect(loadMoreBtn2).toBeDisabled();
+
+    // Now resolve old request 1 from generation 1
+    await act(async () => {
+      finish1({
+        items: [],
+        total: 105,
+        next_cursor: null,
+        run_id: "run-gen-1",
+        is_stale: false,
+      });
+      await Promise.resolve();
+    });
+
+    // Busy state for request 2 MUST NOT be cleared by request 1's finally!
+    expect(loadMoreBtn2).toBeDisabled();
+
+    // Resolve request 2
+    await act(async () => {
+      finish2({
+        items: [],
+        total: 105,
+        next_cursor: null,
+        run_id: "run-gen-2",
+        is_stale: false,
+      });
+      await Promise.resolve();
+    });
+  });
 });

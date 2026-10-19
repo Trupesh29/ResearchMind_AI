@@ -282,6 +282,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
           const MAX_GENERATION_RETRIES = 3;
 
           paginationActionTokenRef.current += 1;
+          setIsLoadingMoreChunks(false);
 
           if (generationConflictCountRef.current > MAX_GENERATION_RETRIES) {
             // Explicit unavailable state when generation agreement cannot be reached after bounded retries
@@ -324,6 +325,7 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
           currentRunIdRef.current !== newRunId
         ) {
           paginationActionTokenRef.current += 1;
+          setIsLoadingMoreChunks(false);
         }
         currentRunIdRef.current = newRunId;
 

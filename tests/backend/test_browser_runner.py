@@ -1660,20 +1660,32 @@ class _MockButtonLocator:
 
 
 def test_check_late_response_isolation_passes_clean_state():
-    """M3: check_late_response_isolation returns True when Paper B modal state is uncorrupted."""
-    paper_title = "Paper B Valid Title"
+    """M3 & N2: check_late_response_isolation returns True when Paper B modal state is uncorrupted."""
+    paper_title = "beta_target_paper.pdf"
     dialog = _MockDialogLocator(
         {
             paper_title: 1,
             "Reprocessing job enqueued successfully": 0,
             "Failed to trigger reprocess": 0,
             "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded 2 of 2 chunks": 1,
             "Loaded ": 1,
+            "BERT: Pre-training of Deep Bidirectional Transformers": 1,
+            "Attention Is All You Need": 0,
+            "Processing Failed": 0,
         }
     )
     btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
 
-    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        prohibited_chunk_text="Attention Is All You Need",
+        min_chunks=1,
+        expected_status_not_failed=True,
+    )
     assert passed is True
     assert all(checks.values())
 
@@ -1683,7 +1695,7 @@ def test_check_late_response_isolation_fails_on_leaked_success_banner_negative_c
 
     banner ('Reprocessing job enqueued successfully. Pipeline restarted.') leaks into Paper B.
     """
-    paper_title = "Paper B Valid Title"
+    paper_title = "beta_target_paper.pdf"
     # Negative control injection: success banner from Paper A's late response is present!
     dialog = _MockDialogLocator(
         {
@@ -1692,11 +1704,20 @@ def test_check_late_response_isolation_fails_on_leaked_success_banner_negative_c
             "Failed to trigger reprocess": 0,
             "Reprocessing in Progress (Old Bundle Shown)": 0,
             "Loaded ": 1,
+            "BERT": 1,
+            "Attention Is All You Need": 0,
+            "Processing Failed": 0,
         }
     )
     btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
 
-    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        prohibited_chunk_text="Attention Is All You Need",
+    )
     assert passed is False
     assert checks["no_leaked_success_banner"] is False
     assert checks["b_title_intact"] is True
@@ -1707,7 +1728,7 @@ def test_check_late_response_isolation_fails_on_stale_warning_badge_negative_con
 
     warning ('Reprocessing in Progress (Old Bundle Shown)') leaks into Paper B.
     """
-    paper_title = "Paper B Valid Title"
+    paper_title = "beta_target_paper.pdf"
     # Negative control injection: stale generation badge is present in Paper B modal!
     dialog = _MockDialogLocator(
         {
@@ -1716,18 +1737,27 @@ def test_check_late_response_isolation_fails_on_stale_warning_badge_negative_con
             "Failed to trigger reprocess": 0,
             "Reprocessing in Progress (Old Bundle Shown)": 1,  # Stale data leak!
             "Loaded ": 1,
+            "BERT": 1,
+            "Attention Is All You Need": 0,
+            "Processing Failed": 0,
         }
     )
     btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
 
-    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        prohibited_chunk_text="Attention Is All You Need",
+    )
     assert passed is False
     assert checks["no_stale_warning"] is False
 
 
 def test_check_late_response_isolation_fails_on_button_stranded_in_enqueueing():
     """M3 Negative Control: fails when Paper B reprocess button is stranded in 'Enqueueing...'."""
-    paper_title = "Paper B Valid Title"
+    paper_title = "beta_target_paper.pdf"
     dialog = _MockDialogLocator(
         {
             paper_title: 1,
@@ -1735,19 +1765,28 @@ def test_check_late_response_isolation_fails_on_button_stranded_in_enqueueing():
             "Failed to trigger reprocess": 0,
             "Reprocessing in Progress (Old Bundle Shown)": 0,
             "Loaded ": 1,
+            "BERT": 1,
+            "Attention Is All You Need": 0,
+            "Processing Failed": 0,
         }
     )
     # Button stranded in Enqueueing... state
     btn = _MockButtonLocator(is_enabled=False, text="Enqueueing...")
 
-    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        prohibited_chunk_text="Attention Is All You Need",
+    )
     assert passed is False
     assert checks["b_btn_enabled"] is False
 
 
 def test_check_late_response_isolation_fails_on_title_corruption():
     """M3 Negative Control: fails when document title was corrupted to a different paper."""
-    paper_title = "Paper B Valid Title"
+    paper_title = "beta_target_paper.pdf"
     dialog = _MockDialogLocator(
         {
             paper_title: 0,  # Corrupted title
@@ -1755,13 +1794,143 @@ def test_check_late_response_isolation_fails_on_title_corruption():
             "Failed to trigger reprocess": 0,
             "Reprocessing in Progress (Old Bundle Shown)": 0,
             "Loaded ": 1,
+            "BERT": 1,
+            "Attention Is All You Need": 0,
+            "Processing Failed": 0,
         }
     )
     btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
 
-    passed, checks = check_late_response_isolation(dialog, paper_title, btn)
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        prohibited_chunk_text="Attention Is All You Need",
+    )
     assert passed is False
     assert checks["b_title_intact"] is False
+
+
+def test_check_late_response_isolation_fails_on_wrong_paper_chunks_negative_control():
+    """N2 Negative Control: fails when Paper B modal contains Paper A chunks instead of Paper B chunks."""
+    paper_title = "beta_target_paper.pdf"
+    # Negative control injection: Paper A chunks present in Paper B modal!
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 1,
+            "Reprocessing job enqueued successfully": 0,
+            "Failed to trigger reprocess": 0,
+            "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded 1 of 1 chunks": 1,
+            "Loaded ": 1,
+            "Attention Is All You Need": 1,  # Leaked chunk from Paper A!
+            "UNIQUE CHUNK FROM PAPER A": 1,  # Leaked chunk from Paper A!
+            "BERT": 0,  # Missing Paper B content!
+            "Processing Failed": 0,
+        }
+    )
+    btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
+
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        prohibited_chunk_text="Attention Is All You Need",
+        min_chunks=1,
+        expected_status_not_failed=True,
+    )
+    assert passed is False
+    assert checks["b_chunk_content_verified"] is False
+    assert checks["no_cross_paper_chunks"] is False
+
+
+def test_check_late_response_isolation_fails_on_empty_or_zero_chunks_negative_control():
+    """N2 Negative Control: fails when Paper B displays 'Loaded 0 of 0 chunks'."""
+    paper_title = "beta_target_paper.pdf"
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 1,
+            "Reprocessing job enqueued successfully": 0,
+            "Failed to trigger reprocess": 0,
+            "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded 0 of 0 chunks": 1,  # 0 chunks!
+            "Loaded ": 1,
+            "BERT": 0,
+            "Processing Failed": 0,
+        }
+    )
+    btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
+
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        min_chunks=1,
+        expected_status_not_failed=True,
+    )
+    assert passed is False
+    assert checks["b_chunks_intact"] is False
+
+
+def test_check_late_response_isolation_fails_on_processing_failed_status_negative_control():
+    """N2 Negative Control: fails when Paper B modal displays 'Processing Failed'."""
+    paper_title = "beta_target_paper.pdf"
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 1,
+            "Reprocessing job enqueued successfully": 0,
+            "Failed to trigger reprocess": 0,
+            "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded 2 of 2 chunks": 1,
+            "Loaded ": 1,
+            "BERT": 1,
+            "Processing Failed": 1,  # Error badge displayed!
+        }
+    )
+    btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
+
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        min_chunks=1,
+        expected_status_not_failed=True,
+    )
+    assert passed is False
+    assert checks["b_status_healthy"] is False
+
+
+def test_check_late_response_isolation_fails_on_delayed_body_corruption_negative_control():
+    """N2 Negative Control: fails when delayed response body resolution injects corruption."""
+    paper_title = "beta_target_paper.pdf"
+    dialog = _MockDialogLocator(
+        {
+            paper_title: 1,
+            "Reprocessing job enqueued successfully": 0,
+            "Failed to trigger reprocess": 1,  # Delayed body resolution leaked error banner!
+            "Reprocessing in Progress (Old Bundle Shown)": 0,
+            "Loaded 2 of 2 chunks": 1,
+            "Loaded ": 1,
+            "BERT": 1,
+            "Processing Failed": 0,
+        }
+    )
+    btn = _MockButtonLocator(is_enabled=True, text="Reprocess")
+
+    passed, checks = check_late_response_isolation(
+        dialog,
+        paper_title,
+        btn,
+        expected_chunk_text="BERT",
+        min_chunks=1,
+        expected_status_not_failed=True,
+    )
+    assert passed is False
+    assert checks["no_leaked_error_banner"] is False
 
 
 def test_evaluate_acceptance_fails_on_late_response_isolation_false(valid_browser_results):
