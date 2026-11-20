@@ -91,6 +91,9 @@ async function request<T>(
     if (err instanceof ApiClientError) {
       throw err;
     }
+    if (err?.name === "AbortError") {
+      throw err;
+    }
     // Network or client-side connection error
     throw new ApiClientError({
       code: "NETWORK_ERROR",
@@ -159,6 +162,7 @@ export const api = {
       q?: string;
       cursor?: string | null;
       limit?: number;
+      signal?: AbortSignal;
     } = {},
   ) => {
     const params = new URLSearchParams();
@@ -167,7 +171,9 @@ export const api = {
     if (options.q && options.q.trim()) params.set("q", options.q.trim());
     if (options.cursor) params.set("cursor", options.cursor);
     if (options.limit) params.set("limit", String(options.limit));
-    return request<PaperListResponse>(`/papers?${params.toString()}`);
+    return request<PaperListResponse>(`/papers?${params.toString()}`, {
+      signal: options.signal,
+    });
   },
   getPaper: (id: string) => request<PaperItem>(`/papers/${id}`),
   getPaperStatus: (id: string, signal?: AbortSignal) =>

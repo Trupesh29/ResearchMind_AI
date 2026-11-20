@@ -33,6 +33,7 @@ const mockPaper = {
 describe("Role-Specific Route and Page Separation Suite", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    localStorage.clear();
     window.history.pushState({}, "", "/");
 
     vi.spyOn(client.api, "getReady").mockResolvedValue({
@@ -369,5 +370,241 @@ describe("Role-Specific Route and Page Separation Suite", () => {
       name: /Paper Library/i,
     });
     expect(libraryNavBtns[0]).toHaveStyle({ color: "var(--text-secondary)" });
+  });
+
+  describe("Quality Center Workspace Request Fencing (P5-F3)", () => {
+    it("fences workspace requests and discards late responses from previous workspace", async () => {
+      const wsA = {
+        id: "ws-a",
+        name: "Workspace A",
+        description: "Old Workspace",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+      const wsB = {
+        id: "ws-b",
+        name: "Workspace B",
+        description: "New Workspace",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+
+      const paperA = {
+        ...mockPaper,
+        id: "paper-a",
+        workspace_id: "ws-a",
+        title: "Paper from Stale Workspace A",
+      };
+      const paperB = {
+        ...mockPaper,
+        id: "paper-b",
+        workspace_id: "ws-b",
+        title: "Paper from Fresh Workspace B",
+      };
+
+      vi.spyOn(client.api, "listAllWorkspaces").mockResolvedValue([wsA, wsB]);
+
+      let resolveWsA: (value: any) => void = () => {};
+      const pendingPromiseA = new Promise((resolve) => {
+        resolveWsA = resolve;
+      });
+
+      vi.spyOn(client.api, "listPapers").mockImplementation(
+        (wsId: string, _options?: any) => {
+          if (wsId === "ws-a") {
+            return pendingPromiseA as any;
+          }
+          if (wsId === "ws-b") {
+            return Promise.resolve({
+              items: [paperB],
+              next_cursor: null,
+              total_count: 1,
+            });
+          }
+          return Promise.resolve({
+            items: [],
+            next_cursor: null,
+            total_count: 0,
+          });
+        },
+      );
+
+      window.history.pushState({}, "", "/quality");
+      render(<App />);
+
+      // Workspace selector should be present
+      await waitFor(() => {
+        expect(screen.getByLabelText("Select Workspace")).toBeInTheDocument();
+      });
+
+      // Switch to Workspace B while A is still pending
+      const wsSelect = screen.getByLabelText("Select Workspace");
+      fireEvent.change(wsSelect, { target: { value: "ws-b" } });
+
+      // Workspace B resolves and displays Paper B
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Paper from Fresh Workspace B/i),
+        ).toBeInTheDocument();
+      });
+
+      // Now resolve the delayed Workspace A request
+      resolveWsA({
+        items: [paperA],
+        next_cursor: null,
+        total_count: 1,
+      });
+
+      // Wait a moment and confirm Paper A NEVER overwrites Paper B
+      await new Promise((r) => setTimeout(r, 50));
+      expect(
+        screen.queryByText(/Paper from Stale Workspace A/i),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/Paper from Fresh Workspace B/i),
+      ).toBeInTheDocument();
+    });
+
+    it("ignores errors from superseded workspace requests without displaying error banner", async () => {
+      const wsA = {
+        id: "ws-a",
+        name: "Workspace A",
+        description: "Old Workspace",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+      const wsB = {
+        id: "ws-b",
+        name: "Workspace B",
+        description: "New Workspace",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+
+      const paperB = {
+        ...mockPaper,
+        id: "paper-b",
+        workspace_id: "ws-b",
+        title: "Paper from Fresh Workspace B",
+      };
+
+      vi.spyOn(client.api, "listAllWorkspaces").mockResolvedValue([wsA, wsB]);
+
+      let rejectWsA: (reason?: any) => void = () => {};
+      const pendingPromiseA = new Promise((_, reject) => {
+        rejectWsA = reject;
+      });
+
+      vi.spyOn(client.api, "listPapers").mockImplementation((wsId: string) => {
+        if (wsId === "ws-a") {
+          return pendingPromiseA as any;
+        }
+        if (wsId === "ws-b") {
+          return Promise.resolve({
+            items: [paperB],
+            next_cursor: null,
+            total_count: 1,
+          });
+        }
+        return Promise.resolve({
+          items: [],
+          next_cursor: null,
+          total_count: 0,
+        });
+      });
+
+      window.history.pushState({}, "", "/quality");
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Select Workspace")).toBeInTheDocument();
+      });
+
+      // Switch to Workspace B
+      const wsSelect = screen.getByLabelText("Select Workspace");
+      fireEvent.change(wsSelect, { target: { value: "ws-b" } });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Paper from Fresh Workspace B/i),
+        ).toBeInTheDocument();
+      });
+
+      // Reject A with network error
+      rejectWsA(new Error("Workspace A connection dropped"));
+
+      await new Promise((r) => setTimeout(r, 50));
+      // No error banner should be displayed
+      expect(
+        screen.queryByText(/Workspace A connection dropped/i),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/Failed to load papers for workspace/i),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/Paper from Fresh Workspace B/i),
+      ).toBeInTheDocument();
+    });
+
+    it("clears inspection data, selection and URL paper param on workspace switch", async () => {
+      const wsA = {
+        id: "ws-a",
+        name: "Workspace A",
+        description: "Old Workspace",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+      const wsB = {
+        id: "ws-b",
+        name: "Workspace B",
+        description: "New Workspace",
+        paper_count: 0,
+        ready_count: 0,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+
+      vi.spyOn(client.api, "listAllWorkspaces").mockResolvedValue([wsA, wsB]);
+      vi.spyOn(client.api, "listPapers").mockImplementation((wsId: string) => {
+        if (wsId === "ws-a") {
+          return Promise.resolve({
+            items: [mockPaper],
+            next_cursor: null,
+            total_count: 1,
+          });
+        }
+        return Promise.resolve({
+          items: [],
+          next_cursor: null,
+          total_count: 0,
+        });
+      });
+
+      window.history.pushState({}, "", "/quality?paper=paper-test-1");
+      render(<App />);
+
+      // Initially paper is loaded and selected
+      await waitFor(() => {
+        expect(
+          screen.getByText("Attention Is All You Need"),
+        ).toBeInTheDocument();
+      });
+
+      // Switch workspace to B
+      const wsSelect = screen.getByLabelText("Select Workspace");
+      fireEvent.change(wsSelect, { target: { value: "ws-b" } });
+
+      // Invariant: ?paper= is removed from URL and old paper is not shown
+      await waitFor(() => {
+        expect(window.location.search).not.toContain("paper=");
+        expect(
+          screen.queryByText("Attention Is All You Need"),
+        ).not.toBeInTheDocument();
+      });
+    });
   });
 });

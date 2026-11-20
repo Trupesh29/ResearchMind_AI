@@ -119,13 +119,73 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
   const activeReqRef = useRef<number>(0);
   const abortCtrlRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<any>(null);
+  const paperListReqIdRef = useRef<number>(0);
+  const paperListAbortCtrlRef = useRef<AbortController | null>(null);
+  const selectedWorkspaceIdRef = useRef<string>(selectedWorkspaceId);
   const reprocessActionTokenRef = useRef<number>(0);
   const loadMoreActionTokenRef = useRef<number>(0);
   const currentPaperIdRef = useRef<string>("");
 
   useEffect(() => {
+    selectedWorkspaceIdRef.current = selectedWorkspaceId;
+  }, [selectedWorkspaceId]);
+
+  useEffect(() => {
     currentPaperIdRef.current = selectedPaperId;
   }, [selectedPaperId]);
+
+  // Handle workspace change with full state fencing & cancellation
+  const handleSelectWorkspace = useCallback((newWs: string) => {
+    selectedWorkspaceIdRef.current = newWs;
+
+    // Invalidate and cancel previous paper list requests
+    paperListReqIdRef.current += 1;
+    if (paperListAbortCtrlRef.current) {
+      paperListAbortCtrlRef.current.abort();
+      paperListAbortCtrlRef.current = null;
+    }
+
+    // Invalidate and cancel any ongoing inspection or polling requests
+    activeReqRef.current += 1;
+    if (abortCtrlRef.current) {
+      abortCtrlRef.current.abort();
+      abortCtrlRef.current = null;
+    }
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+
+    // Reset action tokens
+    reprocessActionTokenRef.current += 1;
+    loadMoreActionTokenRef.current += 1;
+    setIsReprocessing(false);
+    setIsLoadingMoreChunks(false);
+
+    // Immediately clear old workspace and paper state
+    setPapers([]);
+    setSelectedPaperId("");
+    setPaperNotFound(null);
+    setStatusData(null);
+    setChunks([]);
+    setTotalChunks(0);
+    setNextChunkCursor(null);
+    setSections([]);
+    setInspectionError(null);
+    setReprocessMsg(null);
+    setSectionFilter("");
+    setPageFilter("");
+    setSearchFilter("");
+
+    // Clean up URL query parameters
+    const url = new URL(window.location.href);
+    url.searchParams.delete("paper");
+    window.history.pushState({}, "", url.pathname + url.search);
+
+    // Set new workspace
+    setSelectedWorkspaceId(newWs);
+    localStorage.setItem(STORAGE_KEY_SELECTED_WS, newWs);
+  }, []);
 
   // 1. Initial Workspace Load
   useEffect(() => {
@@ -141,6 +201,7 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
           const matched = items.find((w) => w.id === stored);
           const initialWsId = matched ? matched.id : items[0].id;
           setSelectedWorkspaceId(initialWsId);
+          selectedWorkspaceIdRef.current = initialWsId;
           localStorage.setItem(STORAGE_KEY_SELECTED_WS, initialWsId);
         }
       })
@@ -160,12 +221,34 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
   const loadPapers = useCallback(async (wsId: string) => {
     if (!wsId) {
       setPapers([]);
+      setIsLoadingPapers(false);
       return;
     }
+
+    const reqId = ++paperListReqIdRef.current;
+    if (paperListAbortCtrlRef.current) {
+      paperListAbortCtrlRef.current.abort();
+    }
+    const abortCtrl = new AbortController();
+    paperListAbortCtrlRef.current = abortCtrl;
+
     setIsLoadingPapers(true);
     setPaperNotFound(null);
+
     try {
-      const res = await api.listPapers(wsId, { limit: 100 });
+      const res = await api.listPapers(wsId, {
+        limit: 100,
+        signal: abortCtrl.signal,
+      });
+
+      // Request fence: check generation identity and workspace alignment
+      if (
+        reqId !== paperListReqIdRef.current ||
+        wsId !== selectedWorkspaceIdRef.current
+      ) {
+        return;
+      }
+
       setPapers(res.items);
 
       // Check URL search params for deep-linked paper
@@ -186,15 +269,27 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
         setPaperNotFound(null);
       }
     } catch (err: any) {
+      if (err?.name === "AbortError" || abortCtrl.signal.aborted) {
+        return;
+      }
+      if (
+        reqId !== paperListReqIdRef.current ||
+        wsId !== selectedWorkspaceIdRef.current
+      ) {
+        return;
+      }
       setInspectionError(
         err?.message || "Failed to load papers for workspace.",
       );
     } finally {
-      setIsLoadingPapers(false);
+      if (reqId === paperListReqIdRef.current) {
+        setIsLoadingPapers(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    selectedWorkspaceIdRef.current = selectedWorkspaceId;
     if (selectedWorkspaceId) {
       loadPapers(selectedWorkspaceId);
     }
@@ -516,13 +611,7 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
                 aria-label="Select Workspace"
                 value={selectedWorkspaceId}
                 onChange={(e) => {
-                  const newWs = e.target.value;
-                  setSelectedWorkspaceId(newWs);
-                  localStorage.setItem(STORAGE_KEY_SELECTED_WS, newWs);
-                  setSelectedPaperId("");
-                  const url = new URL(window.location.href);
-                  url.searchParams.delete("paper");
-                  window.history.pushState({}, "", url.pathname + url.search);
+                  handleSelectWorkspace(e.target.value);
                 }}
                 style={{
                   padding: "8px 12px",
