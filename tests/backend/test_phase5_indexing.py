@@ -46,6 +46,7 @@ from backend.app.main import app
 from backend.app.services.bm25_service import BM25Index
 from backend.app.services.embedding_service import (
     EMBEDDING_DIMENSION,
+    EMBEDDING_MODEL_NAME,
     EMBEDDING_MODEL_REVISION,
     embed_texts,
     get_or_compute_generation_embeddings,
@@ -59,6 +60,7 @@ from backend.app.services.index_service import (
     WorkerFencingViolation,
     build_and_publish_workspace_index,
     cleanup_stale_staging_directories,
+    compute_file_sha256,
     get_active_workspace_index,
     search_dense,
     search_sparse,
@@ -1542,3 +1544,263 @@ def test_crash_boundaries_preservation_and_recovery(p5_env, boundary):
         # 3. v2 final directory must NOT exist on disk
         v2_dir = data_dir / "indexes" / ws_id / "v2"
         assert not v2_dir.exists(), f"Uncommitted v2 directory must not remain on disk for boundary {boundary}"
+
+
+# ---------------------------------------------------------------------------
+# Test 19: Cache & Artifact Negative Controls (A5)
+# ---------------------------------------------------------------------------
+def test_embedding_cache_negative_controls_extended(p5_env):
+    """Verifies that all embedding cache tampering/corruption scenarios fail closed (return None)."""
+    data_dir = p5_env["test_dir"]
+    paper_id = "paper-neg-cache"
+    run_id = "run-neg-cache"
+
+    chunks = [
+        {"id": "c1", "text": "First chunk text about attention mechanisms."},
+        {"id": "c2", "text": "Second chunk text about feed-forward layers."},
+    ]
+    texts = [c["text"] for c in chunks]
+    chunk_ids = [c["id"] for c in chunks]
+
+    # Save baseline cache
+    vecs = embed_texts(texts)
+    vec_path, meta_path = save_generation_embeddings(
+        paper_id, run_id, chunk_ids, vecs, chunk_texts=texts, data_dir=data_dir
+    )
+    assert vec_path.exists() and meta_path.exists()
+
+    # Baseline valid load
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir, expected_chunk_ids=chunk_ids) is not None
+
+    # Scenario A: Wrong model name
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    meta["model_name"] = "wrong-model-name-unsupported"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir) is None
+
+    # Reset
+    save_generation_embeddings(paper_id, run_id, chunk_ids, vecs, chunk_texts=texts, data_dir=data_dir)
+
+    # Scenario B: Wrong vector dtype (not float32)
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    meta["dtype"] = "float64"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir) is None
+
+    # Reset
+    save_generation_embeddings(paper_id, run_id, chunk_ids, vecs, chunk_texts=texts, data_dir=data_dir)
+
+    # Scenario C: Reordered or missing chunk IDs
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir, expected_chunk_ids=["c2", "c1"]) is None
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir, expected_chunk_ids=["c1"]) is None
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir, expected_chunk_ids=["c1", "c2", "c3"]) is None
+
+    # Scenario D: Changed chunk text with reused IDs
+    tampered_texts = ["Completely altered text that does not match original", "Second altered chunk text"]
+    assert load_generation_embeddings(
+        paper_id, run_id, data_dir=data_dir, expected_chunk_ids=chunk_ids, expected_chunk_texts=tampered_texts
+    ) is None
+
+    # Scenario E: Vectors / metadata checksum mismatch
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    meta["vectors_sha256"] = "deadbeef" * 8
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir) is None
+
+    # Reset
+    save_generation_embeddings(paper_id, run_id, chunk_ids, vecs, chunk_texts=texts, data_dir=data_dir)
+
+    # Scenario F: Partial cache write (missing .json)
+    meta_path.unlink()
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir) is None
+
+    # Scenario G: Partial cache write (missing .npy)
+    save_generation_embeddings(paper_id, run_id, chunk_ids, vecs, chunk_texts=texts, data_dir=data_dir)
+    vec_path.unlink()
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir) is None
+
+
+def test_index_artifacts_negative_controls_extended(p5_env):
+    """Verifies that tampering with published index artifacts strictly fails closed."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    now = utcnow_iso()
+    with factory() as db:
+        p = Paper(
+            id="p-neg-art",
+            workspace_id=ws_id,
+            original_filename="art.pdf",
+            storage_path="art.pdf",
+            sha256="hash_art",
+            size_bytes=100,
+            status="processing",
+            current_run_id="run-art-1",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(p)
+        db.add(
+            Chunk(
+                id="c-art-1",
+                paper_id="p-neg-art",
+                run_id="run-art-1",
+                chunk_index=0,
+                text="Artifact negative control chunk text one.",
+                token_count=10,
+                section="Intro",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.add(
+            Chunk(
+                id="c-art-2",
+                paper_id="p-neg-art",
+                run_id="run-art-1",
+                chunk_index=1,
+                text="Artifact negative control chunk text two.",
+                token_count=10,
+                section="Methods",
+                page_start=2,
+                page_end=2,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        idx = build_and_publish_workspace_index(
+            db,
+            workspace_id=ws_id,
+            target_paper_id="p-neg-art",
+            target_run_id="run-art-1",
+            data_dir=data_dir,
+        )
+        assert idx is not None
+        assert verify_index_artifacts_integrity(idx, db=db) is True
+
+        # 1. Missing FAISS index
+        orig_faiss = idx.faiss_path
+        renamed_faiss = orig_faiss + ".bak"
+        os.rename(orig_faiss, renamed_faiss)
+        assert verify_index_artifacts_integrity(idx, db=db) is False
+        os.rename(renamed_faiss, orig_faiss)
+        assert verify_index_artifacts_integrity(idx, db=db) is True
+
+        # 2. Missing BM25 index
+        orig_bm25 = idx.bm25_path
+        renamed_bm25 = orig_bm25 + ".bak"
+        os.rename(orig_bm25, renamed_bm25)
+        assert verify_index_artifacts_integrity(idx, db=db) is False
+        os.rename(renamed_bm25, orig_bm25)
+        assert verify_index_artifacts_integrity(idx, db=db) is True
+
+        # 3. Missing manifest.json
+        orig_manifest = idx.manifest_path
+        renamed_manifest = orig_manifest + ".bak"
+        os.rename(orig_manifest, renamed_manifest)
+        assert verify_index_artifacts_integrity(idx, db=db) is False
+        os.rename(renamed_manifest, orig_manifest)
+        assert verify_index_artifacts_integrity(idx, db=db) is True
+
+        # 4. Manifest workspace_id mismatch
+        with open(orig_manifest, "r", encoding="utf-8") as f:
+            m_data = json.load(f)
+        orig_ws = m_data["workspace_id"]
+        m_data["workspace_id"] = "different-workspace-uuid"
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+        assert verify_index_artifacts_integrity(idx, db=db) is False
+        m_data["workspace_id"] = orig_ws
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+
+        # 5. Manifest version mismatch
+        m_data["version"] = 999
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+        assert verify_index_artifacts_integrity(idx, db=db) is False
+        m_data["version"] = idx.version
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+
+        # 6. Manifest model_name mismatch
+        m_data["model_name"] = "unsupported-model-xyz"
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+        assert verify_index_artifacts_integrity(idx, db=db) is False
+        m_data["model_name"] = EMBEDDING_MODEL_NAME
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+
+        # 7. Manifest chunk_count mismatch with database
+        m_data["chunk_count"] = 99
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+        assert verify_index_artifacts_integrity(idx, db=db) is False
+        m_data["chunk_count"] = 2
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+
+        # 8. Manifest checksum mismatch (tampered content without updating DB checksum record)
+        m_data["extra_field"] = "tampered"
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f)
+        assert verify_index_artifacts_integrity(idx, db=db) is False
+
+        # Reset manifest cleanly
+        del m_data["extra_field"]
+        with open(orig_manifest, "w", encoding="utf-8") as f:
+            json.dump(m_data, f, indent=2)
+        # Restore original manifest file with checksum
+        idx.index_checksums_json = json.dumps({
+            "faiss_sha256": compute_file_sha256(idx.faiss_path),
+            "bm25_sha256": compute_file_sha256(idx.bm25_path),
+            "manifest_sha256": compute_file_sha256(idx.manifest_path),
+        })
+        db.commit()
+        assert verify_index_artifacts_integrity(idx, db=db) is True
+
+        # 9. FAISS / BM25 / DB chunk count mismatch (simulate orphan chunk in DB)
+        db.add(
+            Chunk(
+                id="c-art-3",
+                paper_id="p-neg-art",
+                run_id="run-art-1",
+                chunk_index=2,
+                text="Extra chunk in DB not indexed.",
+                token_count=10,
+                section="Discussion",
+                page_start=3,
+                page_end=3,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.flush()
+        db.add(
+            IndexChunk(
+                id="ic-orphan",
+                index_id=idx.id,
+                paper_id="p-neg-art",
+                run_id="run-art-1",
+                chunk_id="c-art-3",
+                faiss_id=99,
+                created_at=now,
+            )
+        )
+        db.commit()
+        assert verify_index_artifacts_integrity(idx, db=db) is False

@@ -258,6 +258,12 @@ def load_generation_embeddings(
                 f"{meta.get('dimension')} != {EMBEDDING_DIMENSION}"
             )
             return None
+        if meta.get("dtype") != "float32":
+            logger.warning(
+                f"Embedding cache dtype mismatch for {paper_id}/{run_id}: "
+                f"{meta.get('dtype')} != float32"
+            )
+            return None
         if meta.get("normalization") != EMBEDDING_NORMALIZATION:
             logger.warning(
                 f"Embedding cache normalization mismatch for {paper_id}/{run_id}: "

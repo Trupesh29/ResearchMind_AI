@@ -54,6 +54,8 @@ dist-ssr/
 !/data/models/.gitkeep
 /data/reports/*
 !/data/reports/.gitkeep
+/data/embeddings/*
+!/data/embeddings/.gitkeep
 
 # Environment variables & secrets
 .env

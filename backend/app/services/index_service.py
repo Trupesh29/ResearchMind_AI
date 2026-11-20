@@ -272,6 +272,38 @@ def verify_index_artifacts_integrity(
         logger.error(f"Active index {index_record.id} manifest missing on disk: {index_record.manifest_path}")
         return False
 
+    manifest_data: dict[str, Any] = {}
+    try:
+        with open(index_record.manifest_path, "r", encoding="utf-8") as f:
+            manifest_data = json.load(f)
+        if manifest_data.get("workspace_id") != index_record.workspace_id:
+            logger.error(
+                f"Active index {index_record.id} manifest workspace_id mismatch: "
+                f"{manifest_data.get('workspace_id')} != {index_record.workspace_id}"
+            )
+            return False
+        if manifest_data.get("version") != index_record.version:
+            logger.error(
+                f"Active index {index_record.id} manifest version mismatch: "
+                f"{manifest_data.get('version')} != {index_record.version}"
+            )
+            return False
+        if manifest_data.get("model_name") != EMBEDDING_MODEL_NAME:
+            logger.error(
+                f"Active index {index_record.id} manifest model_name mismatch: "
+                f"{manifest_data.get('model_name')} != {EMBEDDING_MODEL_NAME}"
+            )
+            return False
+        if manifest_data.get("dimension") != EMBEDDING_DIMENSION:
+            logger.error(
+                f"Active index {index_record.id} manifest dimension mismatch: "
+                f"{manifest_data.get('dimension')} != {EMBEDDING_DIMENSION}"
+            )
+            return False
+    except Exception as exc:
+        logger.error(f"Failed to read/verify manifest for index {index_record.id}: {exc}")
+        return False
+
     if index_record.index_checksums_json:
         try:
             checksums = json.loads(index_record.index_checksums_json)
@@ -309,6 +341,11 @@ def verify_index_artifacts_integrity(
             if bm25.corpus_size != db_chunk_count:
                 logger.error(
                     f"Active index {index_record.id} BM25 corpus_size {bm25.corpus_size} != db_chunk_count {db_chunk_count}"
+                )
+                return False
+            if manifest_data.get("chunk_count") is not None and manifest_data.get("chunk_count") != db_chunk_count:
+                logger.error(
+                    f"Active index {index_record.id} manifest chunk_count {manifest_data.get('chunk_count')} != db_chunk_count {db_chunk_count}"
                 )
                 return False
         except Exception as exc:
