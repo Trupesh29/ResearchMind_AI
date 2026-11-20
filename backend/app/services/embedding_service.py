@@ -12,8 +12,11 @@ Features:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -157,28 +160,52 @@ def save_generation_embeddings(
     run_id: str,
     chunk_ids: list[str],
     vectors: np.ndarray,
+    chunk_texts: list[str] | None = None,
     data_dir: Path | None = None,
 ) -> tuple[Path, Path]:
-    """Persist generated embeddings and chunk ID manifest for a paper generation run."""
+    """Persist generated embeddings and chunk ID manifest for a paper generation run.
+
+    Uses an atomic staging file write and rename to prevent partial/corrupt caches.
+    Computes and records SHA-256 checksums, exact model metadata, float32 dtype, and L2 normalization.
+    """
     cache_dir = get_embedding_cache_dir(paper_id, data_dir=data_dir)
     vec_path = cache_dir / f"{run_id}_vectors.npy"
     meta_path = cache_dir / f"{run_id}_meta.json"
+    vec_tmp = cache_dir / f"{run_id}_vectors_{uuid.uuid4().hex[:8]}.tmp.npy"
+    meta_tmp = cache_dir / f"{run_id}_meta_{uuid.uuid4().hex[:8]}.tmp.json"
 
-    # Write vectors
-    np.save(str(vec_path), vectors)
+    vecs_f32 = vectors.astype(np.float32)
+    with open(vec_tmp, "wb") as f:
+        np.save(f, vecs_f32)
 
-    # Write chunk ID mapping
+    hasher = hashlib.sha256()
+    with open(vec_tmp, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    vec_sha256 = hasher.hexdigest()
+
+    chunk_hashes: list[str] = []
+    if chunk_texts is not None:
+        chunk_hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in chunk_texts]
+
     meta = {
         "paper_id": paper_id,
         "run_id": run_id,
         "chunk_ids": chunk_ids,
+        "chunk_hashes": chunk_hashes,
         "count": len(chunk_ids),
-        "dimension": vectors.shape[1] if vectors.ndim > 1 else EMBEDDING_DIMENSION,
+        "dimension": vecs_f32.shape[1] if vecs_f32.ndim > 1 else EMBEDDING_DIMENSION,
+        "dtype": "float32",
+        "normalization": EMBEDDING_NORMALIZATION,
         "model_name": EMBEDDING_MODEL_NAME,
         "model_revision": EMBEDDING_MODEL_REVISION,
+        "vectors_sha256": vec_sha256,
     }
-    with open(meta_path, "w", encoding="utf-8") as f:
+    with open(meta_tmp, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+
+    os.replace(vec_tmp, vec_path)
+    os.replace(meta_tmp, meta_path)
 
     return vec_path, meta_path
 
@@ -187,8 +214,20 @@ def load_generation_embeddings(
     paper_id: str,
     run_id: str,
     data_dir: Path | None = None,
+    expected_chunk_ids: list[str] | None = None,
+    expected_chunk_texts: list[str] | None = None,
 ) -> tuple[list[str], np.ndarray] | None:
-    """Load cached embeddings and chunk IDs for a paper generation run if available."""
+    """Load cached embeddings and chunk IDs for a paper generation run if available and valid.
+
+    Strictly validates:
+    - Metadata model name, model revision, dimension, and normalization
+    - Vector file SHA-256 checksum matching metadata
+    - Array shape, float32 type, and non-empty vector dimensions
+    - Finite float values (strictly rejects NaN and Inf)
+    - Unit L2 normalization (tolerance 1e-3)
+    - Consistency with expected chunk IDs and chunk content hashes if provided
+    Returns None on any corruption, mismatch, or error, triggering clean re-embedding.
+    """
     cache_dir = get_embedding_cache_dir(paper_id, data_dir=data_dir)
     vec_path = cache_dir / f"{run_id}_vectors.npy"
     meta_path = cache_dir / f"{run_id}_meta.json"
@@ -199,11 +238,84 @@ def load_generation_embeddings(
     try:
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
+
+        # 1. Model and parameter verification
+        if meta.get("model_name") != EMBEDDING_MODEL_NAME:
+            logger.warning(
+                f"Embedding cache model mismatch for {paper_id}/{run_id}: "
+                f"{meta.get('model_name')} != {EMBEDDING_MODEL_NAME}"
+            )
+            return None
+        if meta.get("model_revision") != EMBEDDING_MODEL_REVISION:
+            logger.warning(
+                f"Embedding cache revision mismatch for {paper_id}/{run_id}: "
+                f"{meta.get('model_revision')} != {EMBEDDING_MODEL_REVISION}"
+            )
+            return None
+        if meta.get("dimension") != EMBEDDING_DIMENSION:
+            logger.warning(
+                f"Embedding cache dimension mismatch for {paper_id}/{run_id}: "
+                f"{meta.get('dimension')} != {EMBEDDING_DIMENSION}"
+            )
+            return None
+        if meta.get("normalization") != EMBEDDING_NORMALIZATION:
+            logger.warning(
+                f"Embedding cache normalization mismatch for {paper_id}/{run_id}: "
+                f"{meta.get('normalization')} != {EMBEDDING_NORMALIZATION}"
+            )
+            return None
+
+        # 2. Vector file checksum verification
+        expected_sha = meta.get("vectors_sha256")
+        if expected_sha:
+            hasher = hashlib.sha256()
+            with open(vec_path, "rb") as f:
+                while chunk := f.read(65536):
+                    hasher.update(chunk)
+            actual_sha = hasher.hexdigest()
+            if actual_sha != expected_sha:
+                logger.warning(
+                    f"Embedding cache checksum mismatch for {paper_id}/{run_id}: {actual_sha} != {expected_sha}"
+                )
+                return None
+
+        # 3. Load vectors and validate dimensions and counts
         vectors = np.load(str(vec_path))
         chunk_ids = meta.get("chunk_ids", [])
         if len(chunk_ids) != len(vectors):
             logger.warning(f"Cache mismatch for {paper_id}/{run_id}: {len(chunk_ids)} chunk_ids != {len(vectors)} vecs")
             return None
+
+        if len(vectors) > 0 and (vectors.ndim != 2 or vectors.shape[1] != EMBEDDING_DIMENSION):
+            logger.warning(
+                f"Embedding cache invalid shape for {paper_id}/{run_id}: expected (N, {EMBEDDING_DIMENSION}), got {vectors.shape}"
+            )
+            return None
+
+        # 4. Finite checks (NaN / Inf)
+        if not np.all(np.isfinite(vectors)):
+            logger.warning(f"Embedding cache contains non-finite values (NaN / Inf) for {paper_id}/{run_id}")
+            return None
+
+        # 5. Unit L2 norm verification
+        if len(vectors) > 0:
+            norms = np.linalg.norm(vectors, axis=1)
+            if not np.all(np.abs(norms - 1.0) < 1e-3):
+                logger.warning(f"Embedding cache contains unnormalized vectors for {paper_id}/{run_id}")
+                return None
+
+        # 6. Expected chunk IDs / hashes verification if supplied
+        if expected_chunk_ids is not None and chunk_ids != expected_chunk_ids:
+            logger.warning(f"Embedding cache chunk ID ordering mismatch for {paper_id}/{run_id}")
+            return None
+
+        if expected_chunk_texts is not None:
+            expected_hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in expected_chunk_texts]
+            cached_hashes = meta.get("chunk_hashes", [])
+            if cached_hashes and cached_hashes != expected_hashes:
+                logger.warning(f"Embedding cache chunk text content hash mismatch for {paper_id}/{run_id}")
+                return None
+
         return chunk_ids, vectors.astype(np.float32)
     except Exception as exc:
         logger.warning(f"Failed to load cached embeddings for {paper_id}/{run_id}: {exc}")
@@ -217,15 +329,29 @@ def get_or_compute_generation_embeddings(
     chunks: list[dict],
 ) -> tuple[np.ndarray, list[str]]:
     """Retrieve cached generation embeddings or compute, validate, and cache them idempotently."""
-    cached = load_generation_embeddings(paper_id, run_id, data_dir=data_dir)
-    if cached is not None:
-        chunk_ids, vectors = cached
-        return vectors, chunk_ids
-
     chunk_ids = [c["id"] for c in chunks]
     texts = [c["text"] for c in chunks]
+
+    cached = load_generation_embeddings(
+        paper_id,
+        run_id,
+        data_dir=data_dir,
+        expected_chunk_ids=chunk_ids,
+        expected_chunk_texts=texts,
+    )
+    if cached is not None:
+        cached_chunk_ids, vectors = cached
+        return vectors, cached_chunk_ids
+
     vectors = embed_texts(texts)
-    save_generation_embeddings(paper_id, run_id, chunk_ids, vectors, data_dir=data_dir)
+    save_generation_embeddings(
+        paper_id,
+        run_id,
+        chunk_ids,
+        vectors,
+        chunk_texts=texts,
+        data_dir=data_dir,
+    )
     return vectors, chunk_ids
 
 

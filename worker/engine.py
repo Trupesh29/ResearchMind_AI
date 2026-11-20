@@ -35,10 +35,7 @@ from backend.app.services import (
 logger = logging.getLogger("worker.engine")
 
 
-class WorkerFencingViolation(Exception):
-    """Raised when an operation is attempted with an expired or superseded claim token."""
-
-    pass
+WorkerFencingViolation = index_service.WorkerFencingViolation
 
 
 def sanitize_error_message(err: Exception | str, storage_path: str | None = None) -> str:
@@ -1067,8 +1064,6 @@ class WorkerEngine:
 
         indexing_error: str | None = None
         new_index = None
-        new_index_id: str | None = None
-        new_index_version: int | None = None
 
         try:
             db_action: Session = factory()
@@ -1080,24 +1075,36 @@ class WorkerEngine:
                     indexing_error = "Generation superseded by newer run."
                 else:
                     workspace_id = paper.workspace_id
+                    # P5-R1: Ensure lease has not expired/lost ownership prior to publication
+                    if heartbeat.has_lost_ownership:
+                        logger.warning(f"Indexing job {job_id} lost ownership prior to publication.")
+                        return
+
                     new_index = index_service.build_and_publish_workspace_index(
                         db_action,
                         workspace_id=workspace_id,
                         target_paper_id=paper_id,
                         target_run_id=run_id,
                         data_dir=Path(self.settings.DATA_DIR),
+                        job_id=job_id,
+                        claim_token=token,
                     )
                     if not new_index:
                         indexing_error = "Index build produced no eligible chunks."
-                    else:
-                        new_index_id = new_index.id
-                        new_index_version = new_index.version
             finally:
                 db_action.close()
+        except WorkerFencingViolation:
+            logger.warning(f"Indexing job {job_id} encountered WorkerFencingViolation; dropping publication.")
+            return
         except Exception as exc:
             indexing_error = sanitize_error_message(exc, storage_path=storage_path)
         finally:
             active_lease = heartbeat.stop()
+
+        # If publication succeeded atomically (new_index was returned and no error), publication is complete
+        if new_index and not indexing_error:
+            logger.info(f"Indexing succeeded for paper {paper_id} run {run_id}. Document is now READY.")
+            return
 
         if not active_lease:
             logger.warning(f"Indexing job {job_id} lost lease during execution; aborting publication.")
@@ -1117,59 +1124,25 @@ class WorkerEngine:
                 return
 
             now = utcnow_iso()
-
-            if indexing_error:
-                stmt = (
-                    update(ProcessingJob)
-                    .where(
-                        ProcessingJob.id == job_id,
-                        ProcessingJob.status == "running",
-                        ProcessingJob.claim_token == token,
-                    )
-                    .values(
-                        status="failed",
-                        finished_at=now,
-                        error_message=indexing_error,
-                    )
+            stmt = (
+                update(ProcessingJob)
+                .where(
+                    ProcessingJob.id == job_id,
+                    ProcessingJob.status == "running",
+                    ProcessingJob.claim_token == token,
                 )
-                res = db.execute(stmt)
-                if res.rowcount == 0:
-                    db.rollback()
-                    raise WorkerFencingViolation(f"Lost claim token on indexing job {job_id}")
-                paper.status = "failed"
-                paper.updated_at = now
-                db.commit()
-            else:
-                stmt = (
-                    update(ProcessingJob)
-                    .where(
-                        ProcessingJob.id == job_id,
-                        ProcessingJob.status == "running",
-                        ProcessingJob.claim_token == token,
-                    )
-                    .values(
-                        status="succeeded",
-                        finished_at=now,
-                        versions_json=json.dumps(
-                            {
-                                "index_id": new_index_id,
-                                "index_version": new_index_version,
-                                "model_name": embedding_service.EMBEDDING_MODEL_NAME,
-                            }
-                        ),
-                    )
+                .values(
+                    status="failed",
+                    finished_at=now,
+                    error_message=indexing_error or "Indexing stage failed.",
                 )
-                res = db.execute(stmt)
-                if res.rowcount == 0:
-                    db.rollback()
-                    raise WorkerFencingViolation(f"Lost claim token on indexing job {job_id}")
-
-                paper.status = "ready"
-                paper.published_run_id = run_id
-                paper.updated_at = now
-                db.commit()
-                logger.info(
-                    f"Indexing succeeded for paper {paper_id} run {run_id}. Document is now READY."
-                )
+            )
+            res = db.execute(stmt)
+            if res.rowcount == 0:
+                db.rollback()
+                raise WorkerFencingViolation(f"Lost claim token on indexing job {job_id}")
+            paper.status = "failed"
+            paper.updated_at = now
+            db.commit()
         finally:
             db.close()

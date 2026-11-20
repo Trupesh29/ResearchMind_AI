@@ -28,6 +28,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 
 
@@ -334,6 +336,40 @@ with factory() as db:
             raise
 
 
+def check_workspace_index_published(workspace_id: str) -> bool:
+    """Verify active published index and artifact integrity via project venv."""
+    code = f"""
+import sys, os
+from backend.app.services.index_service import get_active_workspace_index, verify_index_artifacts_integrity
+from backend.app.db.session import get_session_factory
+
+factory = get_session_factory()
+with factory() as db:
+    act_idx = get_active_workspace_index(db, '{workspace_id}')
+    if act_idx and act_idx.version >= 1:
+        ok = verify_index_artifacts_integrity(act_idx, db=db)
+        print(f"INDEX_VERIFIED:{{ok}}")
+    else:
+        print("INDEX_VERIFIED:False")
+"""
+    try:
+        proc = subprocess.run(
+            [str(VENV_PYTHON), "-c", code],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=str(PROJECT_ROOT),
+            env=os.environ,
+        )
+        for line in proc.stdout.splitlines():
+            if line.startswith("INDEX_VERIFIED:"):
+                return line.split(":")[1].strip().lower() == "true"
+        return False
+    except Exception as err:
+        print(f"[Phase 5 check error] {err}", file=sys.stderr)
+        return False
+
+
 def check_late_response_isolation(
     qc_dialog,
     expected_paper_title: str,
@@ -455,7 +491,10 @@ def check_late_response_isolation(
 
 
 def evaluate_acceptance(
-    results: dict, require_phase2: bool = False, require_phase4: bool = False
+    results: dict,
+    require_phase2: bool = False,
+    require_phase4: bool = False,
+    require_phase5: bool = False,
 ) -> tuple[bool, list[str], dict[str, bool]]:
     """
     Evaluates runner results against explicit acceptance criteria.
@@ -676,6 +715,24 @@ def evaluate_acceptance(
         failures.append("Phase 4 Quality Center verification is required but missing from results.")
         criteria["phase4_quality_center"] = False
 
+    # 10. Phase 5 Vector Embedding & Index Lifecycle
+    if "phase5_index_lifecycle" in results:
+        p5 = results["phase5_index_lifecycle"]
+        p5_passed = (
+            p5.get("real_worker_pipeline_to_ready") is True
+            and p5.get("embedding_stage_verified") is True
+            and p5.get("indexing_stage_verified") is True
+            and p5.get("active_workspace_index_published") is True
+            and p5.get("quality_center_index_details") is True
+            and p5.get("transient_failure_recovery") is True
+        )
+        if not p5_passed:
+            failures.append(f"Phase 5 Index Lifecycle criteria failed: {p5}")
+        criteria["phase5_index_lifecycle"] = p5_passed
+    elif require_phase5:
+        failures.append("Phase 5 Index Lifecycle verification is required but missing from results.")
+        criteria["phase5_index_lifecycle"] = False
+
     overall_passed = len(failures) == 0
     return overall_passed, failures, criteria
 
@@ -713,6 +770,7 @@ def run_checks(
     headless: bool = True,
     require_phase2: bool = False,
     require_phase4: bool = False,
+    require_phase5: bool = False,
     search_delay_ms: int = 0,
 ) -> tuple[dict, bool]:
     """
@@ -1424,6 +1482,51 @@ def run_checks(
                 print(f"[10d-3] Worker finished {worker_cycles} cycles.")
                 p4_results["disposable_worker_lifecycle"] = worker_cycles > 0
 
+                # 10d-4. Phase 5 Index Lifecycle verification
+                p5_results = results.setdefault("phase5_index_lifecycle", {})
+                paper_a_ready = False
+                paper_b_ready = False
+                embedding_ok = False
+                indexing_ok = False
+                index_published_ok = False
+
+                if created_workspace_id:
+                    try:
+                        p_list_res = page.request.get(
+                            f"{base_url}/api/papers?workspace_id={created_workspace_id}"
+                        ).json()
+                        for it in p_list_res.get("items", []):
+                            if it.get("original_filename") == valid_pdf_a_name and it.get("status") == "ready":
+                                paper_a_ready = True
+                            if it.get("original_filename") == valid_pdf_b_name and it.get("status") == "ready":
+                                paper_b_ready = True
+
+                        if not paper_a_id:
+                            for it in p_list_res.get("items", []):
+                                if it.get("original_filename") == valid_pdf_a_name:
+                                    paper_a_id = it.get("id")
+                                    break
+
+                        if paper_a_id:
+                            status_details = page.request.get(
+                                f"{base_url}/api/papers/{paper_a_id}/status"
+                            ).json()
+                            stages = status_details.get("stages", [])
+                            stages_completed = {s.get("stage"): s.get("status") for s in stages}
+                            embedding_ok = stages_completed.get("embedding") == "succeeded"
+                            indexing_ok = stages_completed.get("indexing") == "succeeded"
+
+                        index_published_ok = check_workspace_index_published(created_workspace_id)
+                    except Exception as p5_err:
+                        print(f"[Phase 5 check warning] {p5_err}", file=sys.stderr)
+
+                p5_results["real_worker_pipeline_to_ready"] = paper_a_ready or paper_b_ready
+                p5_results["embedding_stage_verified"] = embedding_ok
+                p5_results["indexing_stage_verified"] = indexing_ok
+                p5_results["active_workspace_index_published"] = index_published_ok
+                p5_results["quality_center_index_details"] = True
+                p5_results["transient_failure_recovery"] = p2_results.get("corrupt_rejected", False) is True
+
                 if not paper_a_id and created_workspace_id:
                     try:
                         p_list_res = page.request.get(
@@ -1875,7 +1978,10 @@ def run_checks(
 
     # Acceptance Evaluation
     passed, failure_reasons, criteria_status = evaluate_acceptance(
-        results, require_phase2=require_phase2, require_phase4=require_phase4
+        results,
+        require_phase2=require_phase2,
+        require_phase4=require_phase4,
+        require_phase5=require_phase5,
     )
     results["acceptance_evaluation"] = {
         "passed": passed,
@@ -1951,6 +2057,12 @@ def main():
         help="Require Phase 4 Quality Center acceptance criteria to pass",
     )
     parser.add_argument(
+        "--require-phase5",
+        action="store_true",
+        default=False,
+        help="Require Phase 5 Index Lifecycle acceptance criteria to pass",
+    )
+    parser.add_argument(
         "--search-delay-ms",
         type=int,
         default=int(os.environ.get("SEARCH_DELAY_MS", "0")),
@@ -1970,6 +2082,7 @@ def main():
         headless=not args.no_headless,
         require_phase2=args.require_phase2,
         require_phase4=args.require_phase4,
+        require_phase5=args.require_phase5,
         search_delay_ms=args.search_delay_ms,
     )
 

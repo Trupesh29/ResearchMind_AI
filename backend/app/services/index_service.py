@@ -43,6 +43,12 @@ from backend.app.services.embedding_service import (
 logger = logging.getLogger(__name__)
 
 
+class WorkerFencingViolation(Exception):
+    """Raised when an index publication or worker operation is attempted with an expired or superseded claim token."""
+
+    pass
+
+
 def compute_file_sha256(file_path: Path | str) -> str:
     """Compute hex SHA-256 checksum of a file on disk."""
     hasher = hashlib.sha256()
@@ -74,6 +80,86 @@ def get_workspace_index_base_dir(workspace_id: str, data_dir: Path | None = None
     return path
 
 
+def cleanup_stale_staging_directories(workspace_id: str, data_dir: Path | None = None) -> int:
+    """Prune any orphaned staging directories (.tmp) left by crashes or aborted attempts."""
+    ws_dir = get_workspace_index_base_dir(workspace_id, data_dir=data_dir)
+    if not ws_dir.exists():
+        return 0
+    removed = 0
+    for item in ws_dir.iterdir():
+        if item.is_dir() and item.name.endswith(".tmp"):
+            try:
+                shutil.rmtree(item, ignore_errors=True)
+                removed += 1
+            except Exception as exc:
+                logger.warning(f"Could not remove stale staging directory {item}: {exc}")
+    return removed
+
+
+def verify_index_artifacts_integrity(
+    index_record: EmbeddingIndex,
+    db: Session | None = None,
+) -> bool:
+    """Validate that index artifacts exist on disk, match SHA-256 checksums, and match DB count.
+
+    Fails closed on any corruption, missing artifact, or mismatch.
+    """
+    if not index_record.faiss_path or not os.path.exists(index_record.faiss_path):
+        logger.error(f"Active index {index_record.id} FAISS artifact missing on disk: {index_record.faiss_path}")
+        return False
+    if not index_record.bm25_path or not os.path.exists(index_record.bm25_path):
+        logger.error(f"Active index {index_record.id} BM25 artifact missing on disk: {index_record.bm25_path}")
+        return False
+    if not index_record.manifest_path or not os.path.exists(index_record.manifest_path):
+        logger.error(f"Active index {index_record.id} manifest missing on disk: {index_record.manifest_path}")
+        return False
+
+    if index_record.index_checksums_json:
+        try:
+            checksums = json.loads(index_record.index_checksums_json)
+            exp_faiss = checksums.get("faiss_sha256")
+            exp_bm25 = checksums.get("bm25_sha256")
+            exp_manifest = checksums.get("manifest_sha256")
+
+            if exp_faiss and compute_file_sha256(index_record.faiss_path) != exp_faiss:
+                logger.error(f"Active index {index_record.id} FAISS checksum mismatch!")
+                return False
+            if exp_bm25 and compute_file_sha256(index_record.bm25_path) != exp_bm25:
+                logger.error(f"Active index {index_record.id} BM25 checksum mismatch!")
+                return False
+            if exp_manifest and compute_file_sha256(index_record.manifest_path) != exp_manifest:
+                logger.error(f"Active index {index_record.id} manifest checksum mismatch!")
+                return False
+        except Exception as exc:
+            logger.error(f"Failed to verify checksums for index {index_record.id}: {exc}")
+            return False
+
+    if db is not None:
+        try:
+            db_chunk_count = (
+                db.query(IndexChunk)
+                .filter(IndexChunk.index_id == index_record.id)
+                .count()
+            )
+            faiss_idx = faiss.read_index(index_record.faiss_path)
+            if faiss_idx.ntotal != db_chunk_count:
+                logger.error(
+                    f"Active index {index_record.id} FAISS ntotal {faiss_idx.ntotal} != db_chunk_count {db_chunk_count}"
+                )
+                return False
+            bm25 = BM25Index.load(index_record.bm25_path)
+            if bm25.corpus_size != db_chunk_count:
+                logger.error(
+                    f"Active index {index_record.id} BM25 corpus_size {bm25.corpus_size} != db_chunk_count {db_chunk_count}"
+                )
+                return False
+        except Exception as exc:
+            logger.error(f"Active index {index_record.id} structure check failed: {exc}")
+            return False
+
+    return True
+
+
 def get_active_workspace_index(db: Session, workspace_id: str) -> EmbeddingIndex | None:
     """Return the currently active EmbeddingIndex record for a workspace."""
     return (
@@ -95,10 +181,11 @@ def collect_eligible_workspace_chunks(
     """Collect all eligible chunk definitions for a workspace index.
 
     Includes:
-    - Ready papers whose published_run_id is set
+    - Ready papers whose published_run_id is set (and status is 'ready')
     - The target paper currently undergoing indexing (if provided with target_run_id)
     Excludes:
     - Deleted papers (not in database or status == 'failed')
+    - Reprocessing papers (status == 'processing') unless it is the target_paper_id
     - Reference chunks (is_excluded == 1)
     - Tombstoned chunks (is_deleted == 1)
     """
@@ -114,10 +201,20 @@ def collect_eligible_workspace_chunks(
 
     for paper in papers:
         effective_run_id: str | None = None
-        if target_paper_id and paper.id == target_paper_id:
-            effective_run_id = target_run_id or paper.current_run_id or paper.published_run_id
-        elif paper.published_run_id and paper.status != "failed":
-            effective_run_id = paper.published_run_id
+        if target_paper_id:
+            if paper.id == target_paper_id:
+                effective_run_id = target_run_id or paper.current_run_id or paper.published_run_id
+            elif paper.status == "ready" and paper.published_run_id:
+                effective_run_id = paper.published_run_id
+            else:
+                # Other paper is processing (reprocessing), failed, etc.
+                continue
+        else:
+            # Workspace-level build (e.g. index rebuild or testing)
+            if paper.status != "failed":
+                effective_run_id = paper.published_run_id or paper.current_run_id
+            else:
+                continue
 
         if not effective_run_id:
             continue
@@ -158,225 +255,307 @@ def build_and_publish_workspace_index(
     target_paper_id: str | None = None,
     target_run_id: str | None = None,
     data_dir: Path | None = None,
+    job_id: str | None = None,
+    claim_token: str | None = None,
+    max_retries: int = 3,
 ) -> EmbeddingIndex | None:
     """Build paired FAISS and BM25 index artifacts, validate them, and atomically publish a new index version.
 
     Follows a crash-safe filesystem and database protocol:
     1. Collects exact eligible chunk manifest across the workspace.
-    2. Builds FAISS FlatIP and BM25 in an isolated staging folder (v{version}.tmp).
+    2. Builds FAISS FlatIP and BM25 in an isolated, unique staging folder (v{version}_prep_{uuid}.tmp).
     3. Validates reloadability, count matching, and calculates SHA-256 checksums.
-    4. Atomically commits database pointers and updates paper ready statuses.
+    4. Enforces fencing token validation atomically before database pointer activation.
+    5. Atomically commits database pointers and updates ONLY the target paper ready status.
+    6. Automatically cleans up staging and rollback filesystem changes on failure.
     """
     workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not workspace:
         raise ValueError(f"Workspace {workspace_id} not found.")
 
-    # 1. Determine next version number
-    max_v = (
-        db.query(EmbeddingIndex.version)
-        .filter(EmbeddingIndex.workspace_id == workspace_id)
-        .order_by(EmbeddingIndex.version.desc())
-        .first()
-    )
-    next_version = (max_v[0] + 1) if max_v else 1
-
-    # 2. Collect eligible chunks
-    eligible_manifest = collect_eligible_workspace_chunks(
-        db,
-        workspace_id=workspace_id,
-        target_paper_id=target_paper_id,
-        target_run_id=target_run_id,
-    )
-
-    if not eligible_manifest:
-        logger.warning(f"No eligible chunks found for workspace {workspace_id}. Cannot publish empty index.")
-        return None
-
-    # 3. Setup staging filesystem directory
     ws_dir = get_workspace_index_base_dir(workspace_id, data_dir=data_dir)
-    staging_dir = ws_dir / f"v{next_version}.tmp"
-    final_dir = ws_dir / f"v{next_version}"
+    cleanup_stale_staging_directories(workspace_id, data_dir=data_dir)
 
-    if staging_dir.exists():
-        shutil.rmtree(staging_dir)
-    staging_dir.mkdir(parents=True, exist_ok=True)
+    for attempt in range(max_retries):
+        # 1. Determine next version number
+        max_v = (
+            db.query(EmbeddingIndex.version)
+            .filter(EmbeddingIndex.workspace_id == workspace_id)
+            .order_by(EmbeddingIndex.version.desc())
+            .first()
+        )
+        next_version = (max_v[0] + 1) if max_v else 1
 
-    try:
-        # 4. Generate / collect embeddings for each chunk in manifest
-        # Group by (paper_id, run_id) to leverage cached generation embeddings
-        manifest_chunks_with_vecs: list[tuple[dict[str, Any], np.ndarray]] = []
-        grouped_runs: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for item in eligible_manifest:
-            key = (item["paper_id"], item["run_id"])
-            grouped_runs.setdefault(key, []).append(item)
+        # 2. Collect eligible chunks
+        eligible_manifest = collect_eligible_workspace_chunks(
+            db,
+            workspace_id=workspace_id,
+            target_paper_id=target_paper_id,
+            target_run_id=target_run_id,
+        )
 
-        for (p_id, r_id), run_items in grouped_runs.items():
-            cached = load_generation_embeddings(p_id, r_id, data_dir=data_dir)
-            if cached is not None:
-                cached_chunk_ids, cached_vecs = cached
-                id_to_vec = {cid: cached_vecs[i] for i, cid in enumerate(cached_chunk_ids)}
-                # Verify all run items are in cached vectors
-                if all(item["chunk_id"] in id_to_vec for item in run_items):
-                    for item in run_items:
-                        manifest_chunks_with_vecs.append((item, id_to_vec[item["chunk_id"]]))
-                    continue
+        if not eligible_manifest:
+            logger.warning(f"No eligible chunks found for workspace {workspace_id}. Cannot publish empty index.")
+            return None
 
-            # Compute embeddings if not cached
-            texts = [item["text"] for item in run_items]
-            chunk_ids = [item["chunk_id"] for item in run_items]
-            computed_vecs = embed_texts(texts)
-            save_generation_embeddings(p_id, r_id, chunk_ids, computed_vecs, data_dir=data_dir)
-            for i, item in enumerate(run_items):
-                manifest_chunks_with_vecs.append((item, computed_vecs[i]))
+        # 3. Setup staging filesystem directory with unique attempt suffix
+        staging_dir = ws_dir / f"v{next_version}_prep_{uuid.uuid4().hex[:8]}.tmp"
+        final_dir = ws_dir / f"v{next_version}"
 
-        # Ensure order matches eligible_manifest
-        all_vectors = np.vstack([vec for _, vec in manifest_chunks_with_vecs]).astype(np.float32)
-
-        # 5. Build FAISS FlatIP index
-        faiss_index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
-        faiss_index.add(all_vectors)
-        faiss_file = staging_dir / "index.faiss"
-        faiss.write_index(faiss_index, str(faiss_file))
-
-        # 6. Build BM25 index
-        bm25 = BM25Index()
-        bm25.fit(eligible_manifest)
-        bm25_file = staging_dir / "bm25.json"
-        bm25.save(bm25_file)
-
-        # 7. Compute artifact checksums
-        faiss_sha256 = compute_file_sha256(faiss_file)
-        bm25_sha256 = compute_file_sha256(bm25_file)
-
-        # 8. Write manifest.json
-        manifest_data = {
-            "workspace_id": workspace_id,
-            "version": next_version,
-            "model_name": EMBEDDING_MODEL_NAME,
-            "model_revision": EMBEDDING_MODEL_REVISION,
-            "dimension": EMBEDDING_DIMENSION,
-            "normalization": EMBEDDING_NORMALIZATION,
-            "count": len(eligible_manifest),
-            "chunk_count": len(eligible_manifest),
-            "faiss_sha256": faiss_sha256,
-            "bm25_sha256": bm25_sha256,
-            "chunks": [
-                {
-                    "faiss_id": i,
-                    "chunk_id": item["chunk_id"],
-                    "paper_id": item["paper_id"],
-                    "run_id": item["run_id"],
-                    "token_count": item["token_count"],
-                    "page_start": item["page_start"],
-                    "page_end": item["page_end"],
-                    "section": item["section"],
-                }
-                for i, item in enumerate(eligible_manifest)
-            ],
-        }
-        manifest_file = staging_dir / "manifest.json"
-        with open(manifest_file, "w", encoding="utf-8") as f:
-            json.dump(manifest_data, f, indent=2)
-
-        # 9. Reload and validate artifacts before commit (Fail-Closed Barrier)
-        reloaded_faiss = faiss.read_index(str(faiss_file))
-        if reloaded_faiss.ntotal != len(eligible_manifest):
-            raise RuntimeError(
-                f"FAISS artifact validation failed: reloaded ntotal {reloaded_faiss.ntotal} != {len(eligible_manifest)}"
-            )
-
-        reloaded_bm25 = BM25Index.load(bm25_file)
-        if reloaded_bm25.corpus_size != len(eligible_manifest):
-            raise RuntimeError(
-                f"BM25 artifact validation failed: reloaded corpus_size {reloaded_bm25.corpus_size} != {len(eligible_manifest)}"
-            )
-
-        # 10. Compute complete checksums bundle
-        checksums = {
-            "faiss_sha256": faiss_sha256,
-            "bm25_sha256": bm25_sha256,
-            "manifest_sha256": compute_file_sha256(manifest_file),
-        }
-
-        # 11. Atomic directory switch
-        if final_dir.exists():
-            shutil.rmtree(final_dir)
-        staging_dir.rename(final_dir)
-
-    except Exception:
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
-        raise
+        staging_dir.mkdir(parents=True, exist_ok=True)
 
-    # 12. Transactional Database Publication
-    now = utcnow_iso()
-    final_faiss_path = str(final_dir / "index.faiss")
-    final_bm25_path = str(final_dir / "bm25.json")
-    final_manifest_path = str(final_dir / "manifest.json")
+        try:
+            # 4. Generate / collect embeddings for each chunk in manifest
+            manifest_chunks_with_vecs: list[tuple[dict[str, Any], np.ndarray]] = []
+            grouped_runs: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for item in eligible_manifest:
+                key = (item["paper_id"], item["run_id"])
+                grouped_runs.setdefault(key, []).append(item)
 
-    # Retire existing active index for this workspace
-    db.query(EmbeddingIndex).filter(
-        EmbeddingIndex.workspace_id == workspace_id,
-        EmbeddingIndex.status == "active",
-    ).update({"status": "retired", "updated_at": now})
+            for (p_id, r_id), run_items in grouped_runs.items():
+                expected_ids = [item["chunk_id"] for item in run_items]
+                expected_texts = [item["text"] for item in run_items]
+                cached = load_generation_embeddings(
+                    p_id,
+                    r_id,
+                    data_dir=data_dir,
+                    expected_chunk_ids=expected_ids,
+                    expected_chunk_texts=expected_texts,
+                )
+                if cached is not None:
+                    cached_chunk_ids, cached_vecs = cached
+                    id_to_vec = {cid: cached_vecs[i] for i, cid in enumerate(cached_chunk_ids)}
+                    if all(item["chunk_id"] in id_to_vec for item in run_items):
+                        for item in run_items:
+                            manifest_chunks_with_vecs.append((item, id_to_vec[item["chunk_id"]]))
+                        continue
 
-    # Create new active index record
-    chunk_params = {
-        "model_name": EMBEDDING_MODEL_NAME,
-        "model_revision": EMBEDDING_MODEL_REVISION,
-        "dimension": EMBEDDING_DIMENSION,
-        "normalization": EMBEDDING_NORMALIZATION,
-        "chunk_count": len(eligible_manifest),
-    }
+                # Compute embeddings if not cached or cache invalid
+                texts = [item["text"] for item in run_items]
+                chunk_ids = [item["chunk_id"] for item in run_items]
+                computed_vecs = embed_texts(texts)
+                save_generation_embeddings(
+                    p_id,
+                    r_id,
+                    chunk_ids,
+                    computed_vecs,
+                    chunk_texts=texts,
+                    data_dir=data_dir,
+                )
+                for i, item in enumerate(run_items):
+                    manifest_chunks_with_vecs.append((item, computed_vecs[i]))
 
-    new_index = EmbeddingIndex(
-        id=str(uuid.uuid4()),
-        workspace_id=workspace_id,
-        version=next_version,
-        model_name=EMBEDDING_MODEL_NAME,
-        model_revision=EMBEDDING_MODEL_REVISION,
-        dimension=EMBEDDING_DIMENSION,
-        normalization=EMBEDDING_NORMALIZATION,
-        chunk_params_json=json.dumps(chunk_params),
-        faiss_path=final_faiss_path,
-        bm25_path=final_bm25_path,
-        manifest_path=final_manifest_path,
-        index_checksums_json=json.dumps(checksums),
-        status="active",
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(new_index)
+            all_vectors = np.vstack([vec for _, vec in manifest_chunks_with_vecs]).astype(np.float32)
 
-    # Insert explicit IndexChunk membership rows
-    for i, item in enumerate(eligible_manifest):
-        ic_row = IndexChunk(
-            id=str(uuid.uuid4()),
-            index_id=new_index.id,
-            paper_id=item["paper_id"],
-            run_id=item["run_id"],
-            chunk_id=item["chunk_id"],
-            faiss_id=i,
-            created_at=now,
-        )
-        db.add(ic_row)
+            # 5. Build FAISS FlatIP index
+            faiss_index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+            faiss_index.add(all_vectors)
+            faiss_file = staging_dir / "index.faiss"
+            faiss.write_index(faiss_index, str(faiss_file))
 
-    # Atomically mark all constituent papers as 'ready'
-    distinct_paper_ids = list({item["paper_id"] for item in eligible_manifest})
-    for p_id in distinct_paper_ids:
-        paper = db.query(Paper).filter(Paper.id == p_id).first()
-        if paper:
-            paper.status = "ready"
-            if target_paper_id and paper.id == target_paper_id and target_run_id:
-                paper.published_run_id = target_run_id
-            paper.updated_at = now
+            # 6. Build BM25 index
+            bm25 = BM25Index()
+            bm25.fit(eligible_manifest)
+            bm25_file = staging_dir / "bm25.json"
+            bm25.save(bm25_file)
 
-    db.commit()
-    logger.info(
-        f"Successfully published active EmbeddingIndex v{next_version} for workspace {workspace_id} "
-        f"with {len(eligible_manifest)} chunks across {len(distinct_paper_ids)} papers."
-    )
-    return new_index
+            # 7. Compute artifact checksums
+            faiss_sha256 = compute_file_sha256(faiss_file)
+            bm25_sha256 = compute_file_sha256(bm25_file)
+
+            # 8. Write manifest.json
+            manifest_data = {
+                "workspace_id": workspace_id,
+                "version": next_version,
+                "model_name": EMBEDDING_MODEL_NAME,
+                "model_revision": EMBEDDING_MODEL_REVISION,
+                "dimension": EMBEDDING_DIMENSION,
+                "normalization": EMBEDDING_NORMALIZATION,
+                "count": len(eligible_manifest),
+                "chunk_count": len(eligible_manifest),
+                "faiss_sha256": faiss_sha256,
+                "bm25_sha256": bm25_sha256,
+                "chunks": [
+                    {
+                        "faiss_id": i,
+                        "chunk_id": item["chunk_id"],
+                        "paper_id": item["paper_id"],
+                        "run_id": item["run_id"],
+                        "token_count": item["token_count"],
+                        "page_start": item["page_start"],
+                        "page_end": item["page_end"],
+                        "section": item["section"],
+                    }
+                    for i, item in enumerate(eligible_manifest)
+                ],
+            }
+            manifest_file = staging_dir / "manifest.json"
+            with open(manifest_file, "w", encoding="utf-8") as f:
+                json.dump(manifest_data, f, indent=2)
+
+            manifest_sha256 = compute_file_sha256(manifest_file)
+
+            # 9. Reload and validate artifacts before commit (Fail-Closed Barrier)
+            reloaded_faiss = faiss.read_index(str(faiss_file))
+            if reloaded_faiss.ntotal != len(eligible_manifest):
+                raise RuntimeError(
+                    f"FAISS artifact validation failed: reloaded ntotal {reloaded_faiss.ntotal} != {len(eligible_manifest)}"
+                )
+
+            reloaded_bm25 = BM25Index.load(bm25_file)
+            if reloaded_bm25.corpus_size != len(eligible_manifest):
+                raise RuntimeError(
+                    f"BM25 artifact validation failed: reloaded corpus_size {reloaded_bm25.corpus_size} != {len(eligible_manifest)}"
+                )
+
+            checksums = {
+                "faiss_sha256": faiss_sha256,
+                "bm25_sha256": bm25_sha256,
+                "manifest_sha256": manifest_sha256,
+            }
+
+            # Pre-publication CAS check: Did another build publish a new version while we prepared?
+            latest_v_check = (
+                db.query(EmbeddingIndex.version)
+                .filter(EmbeddingIndex.workspace_id == workspace_id)
+                .order_by(EmbeddingIndex.version.desc())
+                .first()
+            )
+            current_max_v = latest_v_check[0] if latest_v_check else 0
+            if current_max_v >= next_version:
+                logger.info(
+                    f"Workspace {workspace_id} version advanced from {next_version - 1} to {current_max_v} "
+                    f"during preparation; retrying build (attempt {attempt + 1}/{max_retries})."
+                )
+                if staging_dir.exists():
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                continue
+
+            # 11. Atomic promotion and transactional publication
+            if final_dir.exists():
+                shutil.rmtree(final_dir)
+            staging_dir.rename(final_dir)
+
+            try:
+                now = utcnow_iso()
+                final_faiss_path = str(final_dir / "index.faiss")
+                final_bm25_path = str(final_dir / "bm25.json")
+                final_manifest_path = str(final_dir / "manifest.json")
+
+                # Retire existing active index for this workspace
+                db.query(EmbeddingIndex).filter(
+                    EmbeddingIndex.workspace_id == workspace_id,
+                    EmbeddingIndex.status == "active",
+                ).update({"status": "retired", "updated_at": now})
+
+                # Create new active index record
+                chunk_params = {
+                    "model_name": EMBEDDING_MODEL_NAME,
+                    "model_revision": EMBEDDING_MODEL_REVISION,
+                    "dimension": EMBEDDING_DIMENSION,
+                    "normalization": EMBEDDING_NORMALIZATION,
+                    "chunk_count": len(eligible_manifest),
+                }
+
+                new_index = EmbeddingIndex(
+                    id=str(uuid.uuid4()),
+                    workspace_id=workspace_id,
+                    version=next_version,
+                    model_name=EMBEDDING_MODEL_NAME,
+                    model_revision=EMBEDDING_MODEL_REVISION,
+                    dimension=EMBEDDING_DIMENSION,
+                    normalization=EMBEDDING_NORMALIZATION,
+                    chunk_params_json=json.dumps(chunk_params),
+                    faiss_path=final_faiss_path,
+                    bm25_path=final_bm25_path,
+                    manifest_path=final_manifest_path,
+                    index_checksums_json=json.dumps(checksums),
+                    status="active",
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(new_index)
+
+                # Insert explicit IndexChunk membership rows
+                for i, item in enumerate(eligible_manifest):
+                    ic_row = IndexChunk(
+                        id=str(uuid.uuid4()),
+                        index_id=new_index.id,
+                        paper_id=item["paper_id"],
+                        run_id=item["run_id"],
+                        chunk_id=item["chunk_id"],
+                        faiss_id=i,
+                        created_at=now,
+                    )
+                    db.add(ic_row)
+
+                # P5-R1: If job_id and claim_token provided, atomically validate fencing and complete job
+                if job_id and claim_token:
+                    from backend.app.db.models import ProcessingJob
+
+                    job = (
+                        db.query(ProcessingJob)
+                        .filter(
+                            ProcessingJob.id == job_id,
+                            ProcessingJob.claim_token == claim_token,
+                            ProcessingJob.status == "running",
+                        )
+                        .first()
+                    )
+                    if not job:
+                        raise WorkerFencingViolation(
+                            f"Lost claim token or job {job_id} is no longer running at index publication boundary"
+                        )
+                    job.status = "succeeded"
+                    job.finished_at = now
+                    job.versions_json = json.dumps(
+                        {
+                            "index_id": new_index.id,
+                            "index_version": new_index.version,
+                            "model_name": EMBEDDING_MODEL_NAME,
+                        }
+                    )
+
+                # P5-R3: ONLY mark the target paper ready if its current run matches target_run_id
+                if target_paper_id:
+                    target_paper = db.query(Paper).filter(Paper.id == target_paper_id).first()
+                    if target_paper and (target_paper.current_run_id == target_run_id or not target_run_id):
+                        target_paper.status = "ready"
+                        if target_run_id:
+                            target_paper.published_run_id = target_run_id
+                        target_paper.updated_at = now
+                else:
+                    # Workspace-level build without explicit target paper
+                    distinct_paper_ids = list({item["paper_id"] for item in eligible_manifest})
+                    for p_id in distinct_paper_ids:
+                        p = db.query(Paper).filter(Paper.id == p_id).first()
+                        if p and (p.current_run_id == p.published_run_id or not p.current_run_id or p.status == "processing"):
+                            p.status = "ready"
+                            if p.current_run_id and not p.published_run_id:
+                                p.published_run_id = p.current_run_id
+                            p.updated_at = now
+
+                db.commit()
+                logger.info(
+                    f"Successfully published active EmbeddingIndex v{next_version} for workspace {workspace_id} "
+                    f"with {len(eligible_manifest)} chunks."
+                )
+                return new_index
+
+            except Exception:
+                db.rollback()
+                if final_dir.exists():
+                    shutil.rmtree(final_dir, ignore_errors=True)
+                raise
+
+        except Exception:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+
+    raise RuntimeError(f"Failed to publish workspace index for {workspace_id} after {max_retries} attempts.")
 
 
 def search_dense(
@@ -389,6 +568,11 @@ def search_dense(
     """Internal dense search probe for index verification and retrieval correctness."""
     active_idx = get_active_workspace_index(db, workspace_id)
     if not active_idx or not active_idx.faiss_path or not os.path.exists(active_idx.faiss_path):
+        return []
+
+    # P5-R6: Artifact integrity & checksum verification (Fail-closed)
+    if not verify_index_artifacts_integrity(active_idx, db=db):
+        logger.error(f"Integrity check failed for active index {active_idx.id}; returning empty results.")
         return []
 
     # 1. Load active FAISS index
@@ -465,6 +649,11 @@ def search_sparse(
     """Internal sparse BM25 search probe for index verification and retrieval correctness."""
     active_idx = get_active_workspace_index(db, workspace_id)
     if not active_idx or not active_idx.bm25_path or not os.path.exists(active_idx.bm25_path):
+        return []
+
+    # P5-R6: Artifact integrity & checksum verification (Fail-closed)
+    if not verify_index_artifacts_integrity(active_idx, db=db):
+        logger.error(f"Integrity check failed for active index {active_idx.id}; returning empty results.")
         return []
 
     # 1. Load BM25 index

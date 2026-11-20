@@ -7,6 +7,7 @@ param(
     [switch]$Attach,
     [switch]$RequirePhase2,
     [switch]$RequirePhase4,
+    [switch]$RequirePhase5,
     [string]$BackendCommand = "",
     [string]$FrontendCommand = "",
     [string]$RunnerCommand = "",
@@ -87,11 +88,11 @@ try {
         if (-not (Test-PortListening $FrontendPort)) {
             throw "Attach mode failed: No process is listening on port $FrontendPort."
         }
-        if ($RequirePhase2 -or $RequirePhase4) {
+        if ($RequirePhase2 -or $RequirePhase4 -or $RequirePhase5) {
             try {
                 $publicConfig = Invoke-RestMethod -Uri "http://127.0.0.1:$BackendPort/api/config/public" -TimeoutSec 3 -ErrorAction Stop
                 if ($publicConfig.disposable_test_env -ne $true) {
-                    throw "Target backend on port $BackendPort does not have disposable_test_env enabled. Refusing to run mutating Phase 2/4 tests against non-disposable target."
+                    throw "Target backend on port $BackendPort does not have disposable_test_env enabled. Refusing to run mutating Phase 2/4/5 tests against non-disposable target."
                 }
                 if (-not $publicConfig.database_identity) {
                     throw "Target backend on port $BackendPort did not return database_identity. Refusing mutating tests."
@@ -229,6 +230,9 @@ try {
         }
         if ($RequirePhase4 -or (-not $Attach)) {
             $p2Args += "--require-phase4"
+        }
+        if ($RequirePhase5 -or (-not $Attach)) {
+            $p2Args += "--require-phase5"
         }
         if ($SearchDelayMs -gt 0) {
             $p2Args += "--search-delay-ms"

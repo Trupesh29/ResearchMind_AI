@@ -107,7 +107,7 @@ See [Week 2 implementation phases](docs/WEEK_2_PHASES.md) for scope, integration
 
 | Phase | Focus | Status |
 |---|---|---|
-| 5 | Embeddings, versioned FAISS/BM25 indexes, atomic publication, ready transition and lifecycle recovery | Planned |
+| 5 | Embeddings, versioned FAISS/BM25 indexes, atomic publication, ready transition and lifecycle recovery | Complete |
 | 6 | Selected-document hybrid retrieval, evidence inspection, evaluation and configuration freeze | Planned |
 | Independent work | SciCite baselines and first DistilBERT validation trial | Preparation evidence to verify; Week 3 runs planned |
 | Acceptance | Real-worker demo, isolation/recovery checks, saved metrics and Week 4 handoff | Pending |

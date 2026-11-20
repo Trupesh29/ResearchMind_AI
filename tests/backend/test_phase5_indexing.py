@@ -36,6 +36,7 @@ from backend.app.db.models import (
     Chunk,
     IndexChunk,
     Paper,
+    ProcessingJob,
     Workspace,
     utcnow_iso,
 )
@@ -43,15 +44,22 @@ from backend.app.db.session import get_session_factory, set_session_factory
 from backend.app.main import app
 from backend.app.services.bm25_service import BM25Index
 from backend.app.services.embedding_service import (
+    EMBEDDING_DIMENSION,
+    EMBEDDING_MODEL_REVISION,
     embed_texts,
     get_or_compute_generation_embeddings,
+    load_generation_embeddings,
+    save_generation_embeddings,
     validate_text_for_embedding,
 )
 from backend.app.services.index_service import (
+    WorkerFencingViolation,
     build_and_publish_workspace_index,
+    cleanup_stale_staging_directories,
     get_active_workspace_index,
     search_dense,
     search_sparse,
+    verify_index_artifacts_integrity,
 )
 from backend.app.services.processing_service import get_paper_status_details
 from worker.engine import WorkerEngine
@@ -681,3 +689,382 @@ def test_full_worker_pipeline_to_ready(p5_env):
     assert "transformer" in dense_matches[0]["text"].lower()
 
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Embedding Cache Hardening & Rejection of Corrupt/Incompatible Data (P5-R4)
+# ---------------------------------------------------------------------------
+def test_embedding_cache_corrupt_data_rejected(p5_env):
+    """Verifies that corrupted, tampered, non-finite, or incompatible cached embeddings fail closed (return None)."""
+    data_dir = p5_env["test_dir"]
+    paper_id = "paper-cache-test"
+    run_id = "run-cache-test"
+
+    chunks = [
+        {"id": "c1", "text": "Self-attention mechanism in Transformers."},
+        {"id": "c2", "text": "Positional encodings inject token order."},
+    ]
+    texts = [c["text"] for c in chunks]
+    chunk_ids = [c["id"] for c in chunks]
+
+    # 1. Normal save
+    vecs = embed_texts(texts)
+    vec_path, meta_path = save_generation_embeddings(
+        paper_id, run_id, chunk_ids, vecs, chunk_texts=texts, data_dir=data_dir
+    )
+    assert vec_path.exists()
+    assert meta_path.exists()
+
+    # Verify normal load works
+    loaded = load_generation_embeddings(paper_id, run_id, data_dir=data_dir, expected_chunk_ids=chunk_ids)
+    assert loaded is not None
+    loaded_ids, loaded_vecs = loaded
+    assert loaded_ids == chunk_ids
+    assert loaded_vecs.shape == (2, EMBEDDING_DIMENSION)
+
+    # 2. Corrupted vector file (checksum mismatch)
+    with open(vec_path, "wb") as f:
+        f.write(b"corrupted bytes invalid npy")
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir) is None
+
+    # Resave valid
+    save_generation_embeddings(paper_id, run_id, chunk_ids, vecs, chunk_texts=texts, data_dir=data_dir)
+
+    # 3. Model revision mismatch
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    meta["model_revision"] = "wrong_revision_hash_12345"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir) is None
+
+    # 4. Dimension mismatch
+    meta["model_revision"] = EMBEDDING_MODEL_REVISION
+    meta["dimension"] = 512
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    assert load_generation_embeddings(paper_id, run_id, data_dir=data_dir) is None
+
+    # 5. Non-finite values (NaN / Inf)
+    nan_vecs = vecs.copy()
+    nan_vecs[0, 0] = np.nan
+    save_generation_embeddings(paper_id, "run-nan", chunk_ids, nan_vecs, data_dir=data_dir)
+    assert load_generation_embeddings(paper_id, "run-nan", data_dir=data_dir) is None
+
+    # 6. Unnormalized vectors
+    unnorm_vecs = vecs.copy() * 5.0
+    save_generation_embeddings(paper_id, "run-unnorm", chunk_ids, unnorm_vecs, data_dir=data_dir)
+    assert load_generation_embeddings(paper_id, "run-unnorm", data_dir=data_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Stale Worker Fencing & Publication Rejection (P5-R1)
+# ---------------------------------------------------------------------------
+def test_stale_worker_publication_fencing_rejection(p5_env):
+    """Verifies that a worker attempting to publish with an expired/superseded claim token is rejected."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    db = factory()
+    now = utcnow_iso()
+
+    # Create paper
+    paper = Paper(
+        id="paper-fencing-test",
+        workspace_id=ws_id,
+        original_filename="fencing.pdf",
+        storage_path=str(data_dir / "pdfs" / "fencing.pdf"),
+        sha256="dummy_hash_fencing",
+        size_bytes=1024,
+        status="processing",
+        current_run_id="run-fence-1",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(paper)
+    chunk = Chunk(
+        id="c-fence-1",
+        paper_id=paper.id,
+        run_id="run-fence-1",
+        chunk_index=0,
+        text="A test chunk for fencing token validation.",
+        token_count=10,
+        section="Intro",
+        page_start=1,
+        page_end=1,
+        is_excluded=0,
+        is_deleted=0,
+        created_at=now,
+    )
+    db.add(chunk)
+
+    job = ProcessingJob(
+        id="job-fence-1",
+        paper_id=paper.id,
+        run_id="run-fence-1",
+        stage="indexing",
+        status="running",
+        claim_token="valid-token-alpha",
+        attempt=1,
+        created_at=now,
+    )
+    db.add(job)
+    db.commit()
+
+    # 1. Stale token attempt: token does not match job.claim_token
+    with pytest.raises(WorkerFencingViolation):
+        build_and_publish_workspace_index(
+            db,
+            workspace_id=ws_id,
+            target_paper_id=paper.id,
+            target_run_id="run-fence-1",
+            data_dir=data_dir,
+            job_id=job.id,
+            claim_token="stale-invalid-token",
+        )
+
+    # Verify no index was published
+    assert get_active_workspace_index(db, ws_id) is None
+    paper_check = db.query(Paper).filter(Paper.id == paper.id).first()
+    assert paper_check.status == "processing"
+    assert paper_check.published_run_id is None
+
+    # 2. Valid token attempt succeeds
+    idx = build_and_publish_workspace_index(
+        db,
+        workspace_id=ws_id,
+        target_paper_id=paper.id,
+        target_run_id="run-fence-1",
+        data_dir=data_dir,
+        job_id=job.id,
+        claim_token="valid-token-alpha",
+    )
+    assert idx is not None
+    assert idx.status == "active"
+    paper_check = db.query(Paper).filter(Paper.id == paper.id).first()
+    assert paper_check.status == "ready"
+    assert paper_check.published_run_id == "run-fence-1"
+
+    # Verify job was marked succeeded atomically
+    job_check = db.query(ProcessingJob).filter(ProcessingJob.id == job.id).first()
+    assert job_check.status == "succeeded"
+
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 13: Reprocessing Paper Isolation — Not Prematurely Marked Ready (P5-R3)
+# ---------------------------------------------------------------------------
+def test_reprocessing_paper_isolation_not_marked_ready(p5_env):
+    """Verifies that publishing an index for Paper A does NOT mark reprocessing Paper B as ready."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    db = factory()
+    now = utcnow_iso()
+
+    # Paper A: about to publish run A
+    paper_a = Paper(
+        id="paper-a-iso",
+        workspace_id=ws_id,
+        original_filename="a.pdf",
+        storage_path="a.pdf",
+        sha256="hash_a",
+        size_bytes=100,
+        status="processing",
+        current_run_id="run-a-1",
+        created_at=now,
+        updated_at=now,
+    )
+    # Paper B: currently reprocessing
+    paper_b = Paper(
+        id="paper-b-iso",
+        workspace_id=ws_id,
+        original_filename="b.pdf",
+        storage_path="b.pdf",
+        sha256="hash_b",
+        size_bytes=100,
+        status="processing",
+        current_run_id="run-b-2",
+        published_run_id="run-b-1",  # previous old run
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(paper_a)
+    db.add(paper_b)
+
+    db.add(
+        Chunk(
+            id="c-a-1",
+            paper_id=paper_a.id,
+            run_id="run-a-1",
+            chunk_index=0,
+            text="Paper A introduction text.",
+            token_count=10,
+            section="Intro",
+            page_start=1,
+            page_end=1,
+            is_excluded=0,
+            is_deleted=0,
+            created_at=now,
+        )
+    )
+    db.add(
+        Chunk(
+            id="c-b-old",
+            paper_id=paper_b.id,
+            run_id="run-b-1",
+            chunk_index=0,
+            text="Paper B old generation text.",
+            token_count=10,
+            section="Intro",
+            page_start=1,
+            page_end=1,
+            is_excluded=0,
+            is_deleted=0,
+            created_at=now,
+        )
+    )
+    db.add(
+        Chunk(
+            id="c-b-new",
+            paper_id=paper_b.id,
+            run_id="run-b-2",
+            chunk_index=0,
+            text="Paper B new generation text.",
+            token_count=10,
+            section="Intro",
+            page_start=1,
+            page_end=1,
+            is_excluded=0,
+            is_deleted=0,
+            created_at=now,
+        )
+    )
+    db.commit()
+
+    # Publish index for Paper A
+    idx = build_and_publish_workspace_index(
+        db,
+        workspace_id=ws_id,
+        target_paper_id=paper_a.id,
+        target_run_id="run-a-1",
+        data_dir=data_dir,
+    )
+    assert idx is not None
+
+    # Check statuses
+    pa_check = db.query(Paper).filter(Paper.id == paper_a.id).first()
+    pb_check = db.query(Paper).filter(Paper.id == paper_b.id).first()
+
+    assert pa_check.status == "ready"
+    assert pa_check.published_run_id == "run-a-1"
+
+    # CRITICAL: Paper B must STILL be 'processing' and NOT marked ready!
+    assert pb_check.status == "processing"
+    assert pb_check.published_run_id == "run-b-1"
+
+    # Index chunks should ONLY contain Paper A's chunks (Paper B was reprocessing so its old generation was not included)
+    member_chunks = db.query(IndexChunk).filter(IndexChunk.index_id == idx.id).all()
+    member_paper_ids = {mc.paper_id for mc in member_chunks}
+    assert paper_a.id in member_paper_ids
+    assert paper_b.id not in member_paper_ids
+
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 14: Artifact Integrity Verification & Fail-Closed Behavior (P5-R6)
+# ---------------------------------------------------------------------------
+def test_artifact_integrity_verification_fail_closed(p5_env):
+    """Verifies that modified/corrupted physical artifacts fail closed and prevent retrieval."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    db = factory()
+    now = utcnow_iso()
+
+    paper = Paper(
+        id="paper-integ-test",
+        workspace_id=ws_id,
+        original_filename="integ.pdf",
+        storage_path="integ.pdf",
+        sha256="hash_integ",
+        size_bytes=100,
+        status="processing",
+        current_run_id="run-integ-1",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(paper)
+    db.add(
+        Chunk(
+            id="c-integ-1",
+            paper_id=paper.id,
+            run_id="run-integ-1",
+            chunk_index=0,
+            text="Integrity verification test chunk text.",
+            token_count=10,
+            section="Intro",
+            page_start=1,
+            page_end=1,
+            is_excluded=0,
+            is_deleted=0,
+            created_at=now,
+        )
+    )
+    db.commit()
+
+    idx = build_and_publish_workspace_index(
+        db,
+        workspace_id=ws_id,
+        target_paper_id=paper.id,
+        target_run_id="run-integ-1",
+        data_dir=data_dir,
+    )
+    assert idx is not None
+    assert verify_index_artifacts_integrity(idx, db=db) is True
+
+    # Search works before corruption
+    dense_results = search_dense(db, ws_id, "Integrity verification", top_k=5)
+    assert len(dense_results) > 0
+    sparse_results = search_sparse(db, ws_id, "verification", top_k=5)
+    assert len(sparse_results) > 0
+
+    # Corrupt FAISS file
+    with open(idx.faiss_path, "ab") as f:
+        f.write(b"tampered byte append")
+
+    # Integrity check must fail closed
+    assert verify_index_artifacts_integrity(idx, db=db) is False
+
+    # Queries must fail closed and return []
+    assert search_dense(db, ws_id, "Integrity verification", top_k=5) == []
+
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Concurrent Workspace Staging & Cleanup (P5-R2, P5-R5)
+# ---------------------------------------------------------------------------
+def test_concurrent_workspace_staging_and_cleanup(p5_env):
+    """Verifies that abandoned staging directories (.tmp) are cleanly pruned."""
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    ws_base = data_dir / "indexes" / ws_id
+    ws_base.mkdir(parents=True, exist_ok=True)
+
+    # Create dummy abandoned .tmp directories
+    (ws_base / "v1_prep_abcd1234.tmp").mkdir(parents=True, exist_ok=True)
+    (ws_base / "v2_prep_ef567890.tmp").mkdir(parents=True, exist_ok=True)
+    (ws_base / "v1").mkdir(parents=True, exist_ok=True)
+
+    removed = cleanup_stale_staging_directories(ws_id, data_dir=data_dir)
+    assert removed == 2
+    assert not (ws_base / "v1_prep_abcd1234.tmp").exists()
+    assert not (ws_base / "v2_prep_ef567890.tmp").exists()
+    assert (ws_base / "v1").exists()  # Final version directory is preserved

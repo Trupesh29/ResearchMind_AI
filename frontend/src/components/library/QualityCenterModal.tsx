@@ -806,62 +806,65 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               </div>
             )}
 
-            {statusData?.status === "processing" && statusData?.substate === "awaiting_indexing" && (
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  padding: "4px 10px",
-                  background: "var(--blue-surface)",
-                  borderRadius: "var(--r-pill)",
-                  color: "var(--blue-text)",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                <Clock size={14} />
-                <span>Awaiting Semantic Indexing</span>
-              </div>
-            )}
+            {statusData?.status === "processing" &&
+              statusData?.substate === "awaiting_indexing" && (
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "4px 10px",
+                    background: "var(--blue-surface)",
+                    borderRadius: "var(--r-pill)",
+                    color: "var(--blue-text)",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                  }}
+                >
+                  <Clock size={14} />
+                  <span>Awaiting Semantic Indexing</span>
+                </div>
+              )}
 
-            {statusData?.status === "processing" && statusData?.substate === "embedding" && (
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  padding: "4px 10px",
-                  background: "var(--blue-surface)",
-                  borderRadius: "var(--r-pill)",
-                  color: "var(--blue-text)",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                <RefreshCw size={14} className="animate-spin" />
-                <span>Computing Embeddings</span>
-              </div>
-            )}
+            {statusData?.status === "processing" &&
+              statusData?.substate === "embedding" && (
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "4px 10px",
+                    background: "var(--blue-surface)",
+                    borderRadius: "var(--r-pill)",
+                    color: "var(--blue-text)",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                  }}
+                >
+                  <RefreshCw size={14} className="animate-spin" />
+                  <span>Computing Embeddings</span>
+                </div>
+              )}
 
-            {statusData?.status === "processing" && statusData?.substate === "indexing" && (
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  padding: "4px 10px",
-                  background: "var(--blue-surface)",
-                  borderRadius: "var(--r-pill)",
-                  color: "var(--blue-text)",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                <RefreshCw size={14} className="animate-spin" />
-                <span>Building Semantic Index</span>
-              </div>
-            )}
+            {statusData?.status === "processing" &&
+              statusData?.substate === "indexing" && (
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "4px 10px",
+                    background: "var(--blue-surface)",
+                    borderRadius: "var(--r-pill)",
+                    color: "var(--blue-text)",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                  }}
+                >
+                  <RefreshCw size={14} className="animate-spin" />
+                  <span>Building Semantic Index</span>
+                </div>
+              )}
 
             {statusData?.status === "failed" && (
               <div
