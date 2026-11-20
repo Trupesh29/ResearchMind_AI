@@ -113,12 +113,19 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
 
   // PDF Viewer Modal
   const [isViewingPdf, setIsViewingPdf] = useState<boolean>(false);
-  const selectedViewerPage = 1;
+  const [selectedViewerPage, setSelectedViewerPage] = useState<number>(1);
 
   // Request & Polling guards
   const activeReqRef = useRef<number>(0);
   const abortCtrlRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<any>(null);
+  const reprocessActionTokenRef = useRef<number>(0);
+  const loadMoreActionTokenRef = useRef<number>(0);
+  const currentPaperIdRef = useRef<string>("");
+
+  useEffect(() => {
+    currentPaperIdRef.current = selectedPaperId;
+  }, [selectedPaperId]);
 
   // 1. Initial Workspace Load
   useEffect(() => {
@@ -198,6 +205,13 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
     const handlePopState = () => {
       const params = new URLSearchParams(window.location.search);
       const urlPaperId = params.get("paper");
+      if (urlPaperId !== currentPaperIdRef.current) {
+        reprocessActionTokenRef.current += 1;
+        loadMoreActionTokenRef.current += 1;
+        setIsReprocessing(false);
+        setIsLoadingMoreChunks(false);
+        setReprocessMsg(null);
+      }
       if (urlPaperId) {
         const found = papers.find((p) => p.id === urlPaperId);
         if (found) {
@@ -218,6 +232,10 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
 
   // 4. Handle paper selection change
   const handleSelectPaper = (paperId: string) => {
+    reprocessActionTokenRef.current += 1;
+    loadMoreActionTokenRef.current += 1;
+    setIsReprocessing(false);
+    setIsLoadingMoreChunks(false);
     setSelectedPaperId(paperId);
     setPaperNotFound(null);
     setReprocessMsg(null);
@@ -261,7 +279,7 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
           api.getPaperChunks(selectedPaperId, {
             section: sectionFilter || undefined,
             page: pageFilter ? parseInt(pageFilter, 10) : undefined,
-            limit: 50,
+            limit: 100,
             signal: abortCtrl.signal,
           }),
           api.getPaperSections(selectedPaperId, abortCtrl.signal),
@@ -269,6 +287,7 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
 
         if (reqId !== activeReqRef.current) return;
 
+        setInspectionError(null);
         setStatusData(statusRes);
         setChunks(chunksRes.items);
         setTotalChunks(chunksRes.total);
@@ -297,6 +316,10 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
             setInspectionError(
               err?.message || "Failed to inspect paper quality data.",
             );
+            // Automatic retry on transient error
+            pollTimerRef.current = setTimeout(() => {
+              loadInspectionData(true);
+            }, 2000);
           }
         }
       }
@@ -315,30 +338,57 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
   // Load More Chunks pagination
   const handleLoadMoreChunks = async () => {
     if (!selectedPaperId || !nextChunkCursor || isLoadingMoreChunks) return;
+    const targetPaperId = selectedPaperId;
+    const actionToken = ++loadMoreActionTokenRef.current;
     setIsLoadingMoreChunks(true);
     try {
-      const res = await api.getPaperChunks(selectedPaperId, {
+      const res = await api.getPaperChunks(targetPaperId, {
         section: sectionFilter || undefined,
         page: pageFilter ? parseInt(pageFilter, 10) : undefined,
         cursor: nextChunkCursor,
-        limit: 50,
+        limit: 100,
       });
+      if (
+        actionToken !== loadMoreActionTokenRef.current ||
+        targetPaperId !== currentPaperIdRef.current
+      ) {
+        return;
+      }
       setChunks((prev) => [...prev, ...res.items]);
       setNextChunkCursor(res.next_cursor || null);
     } catch (err: any) {
+      if (
+        actionToken !== loadMoreActionTokenRef.current ||
+        targetPaperId !== currentPaperIdRef.current
+      ) {
+        return;
+      }
       setInspectionError(err?.message || "Failed to load more chunks.");
     } finally {
-      setIsLoadingMoreChunks(false);
+      if (
+        actionToken === loadMoreActionTokenRef.current &&
+        targetPaperId === currentPaperIdRef.current
+      ) {
+        setIsLoadingMoreChunks(false);
+      }
     }
   };
 
   // Reprocess action
   const handleReprocess = async () => {
     if (!selectedPaperId || isReprocessing) return;
+    const targetPaperId = selectedPaperId;
+    const actionToken = ++reprocessActionTokenRef.current;
     setIsReprocessing(true);
     setReprocessMsg(null);
     try {
-      await api.reprocessPaper(selectedPaperId);
+      await api.reprocessPaper(targetPaperId);
+      if (
+        actionToken !== reprocessActionTokenRef.current ||
+        targetPaperId !== currentPaperIdRef.current
+      ) {
+        return;
+      }
       setReprocessMsg({
         type: "success",
         text: "Reprocessing job dispatched to worker.",
@@ -346,12 +396,23 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
       await loadInspectionData(false);
       if (selectedWorkspaceId) await loadPapers(selectedWorkspaceId);
     } catch (err: any) {
+      if (
+        actionToken !== reprocessActionTokenRef.current ||
+        targetPaperId !== currentPaperIdRef.current
+      ) {
+        return;
+      }
       setReprocessMsg({
         type: "error",
         text: err?.message || "Failed to initiate document reprocessing.",
       });
     } finally {
-      setIsReprocessing(false);
+      if (
+        actionToken === reprocessActionTokenRef.current &&
+        targetPaperId === currentPaperIdRef.current
+      ) {
+        setIsReprocessing(false);
+      }
     }
   };
 
@@ -375,6 +436,15 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
         width: "100%",
       }}
     >
+      {/* Inspection Guidance Region */}
+      <div
+        role="region"
+        aria-label="Quality Center Inspection Guidance"
+        style={{ display: "none" }}
+      >
+        Quality Center · Inspection Mode
+      </div>
+
       {/* Page Header */}
       <div
         style={{
@@ -830,11 +900,16 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
                 <Button
                   variant="soft"
                   size="sm"
+                  aria-label="Reprocess document"
                   onClick={handleReprocess}
                   isLoading={isReprocessing}
+                  disabled={isReprocessing}
                 >
-                  <RefreshCw size={14} />
-                  <span>Reprocess Paper</span>
+                  <RefreshCw
+                    size={14}
+                    className={isReprocessing ? "animate-spin" : ""}
+                  />
+                  <span>{isReprocessing ? "Enqueueing..." : "Reprocess"}</span>
                 </Button>
               </div>
             </div>
@@ -967,6 +1042,8 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
             }}
           >
             <button
+              role="tab"
+              aria-selected={activeTab === "pipeline"}
               onClick={() => setActiveTab("pipeline")}
               style={{
                 padding: "8px 14px",
@@ -985,9 +1062,11 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
                 cursor: "pointer",
               }}
             >
-              Pipeline & History
+              Stage History
             </button>
             <button
+              role="tab"
+              aria-selected={activeTab === "chunks"}
               onClick={() => setActiveTab("chunks")}
               style={{
                 padding: "8px 14px",
@@ -1006,9 +1085,11 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
                 cursor: "pointer",
               }}
             >
-              Extracted Chunks ({totalChunks})
+              Chunks ({totalChunks})
             </button>
             <button
+              role="tab"
+              aria-selected={activeTab === "metadata"}
               onClick={() => setActiveTab("metadata")}
               style={{
                 padding: "8px 14px",
@@ -1122,13 +1203,46 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
                   gap: "12px",
                   flexWrap: "wrap",
                   alignItems: "center",
+                  justifyContent: "space-between",
                 }}
               >
-                {sections.length > 0 && (
-                  <select
-                    aria-label="Filter Chunks by Section"
-                    value={sectionFilter}
-                    onChange={(e) => setSectionFilter(e.target.value)}
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                  }}
+                >
+                  {sections.length > 0 && (
+                    <select
+                      aria-label="Filter by section"
+                      value={sectionFilter}
+                      onChange={(e) => setSectionFilter(e.target.value)}
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: "var(--r-md)",
+                        border: "1px solid var(--border-control)",
+                        background: "var(--surface)",
+                        color: "var(--text-primary)",
+                        fontSize: "13px",
+                        outline: "none",
+                      }}
+                    >
+                      <option value="">All Sections</option>
+                      {sections.map((s) => (
+                        <option key={s.id} value={s.section}>
+                          {s.section}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  <input
+                    type="text"
+                    placeholder="Filter chunk text..."
+                    value={searchFilter}
+                    onChange={(e) => setSearchFilter(e.target.value)}
                     style={{
                       padding: "8px 12px",
                       borderRadius: "var(--r-md)",
@@ -1136,47 +1250,28 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
                       background: "var(--surface)",
                       color: "var(--text-primary)",
                       fontSize: "13px",
+                      minWidth: "220px",
                       outline: "none",
                     }}
-                  >
-                    <option value="">All Sections</option>
-                    {sections.map((s) => (
-                      <option key={s.id} value={s.section}>
-                        {s.section}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                  />
 
-                <input
-                  type="text"
-                  placeholder="Filter chunk text..."
-                  value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: "var(--r-md)",
-                    border: "1px solid var(--border-control)",
-                    background: "var(--surface)",
-                    color: "var(--text-primary)",
-                    fontSize: "13px",
-                    minWidth: "220px",
-                    outline: "none",
-                  }}
-                />
+                  {(sectionFilter || searchFilter) && (
+                    <Button
+                      variant="soft"
+                      size="sm"
+                      onClick={() => {
+                        setSectionFilter("");
+                        setSearchFilter("");
+                      }}
+                    >
+                      Clear Filters
+                    </Button>
+                  )}
+                </div>
 
-                {(sectionFilter || searchFilter) && (
-                  <Button
-                    variant="soft"
-                    size="sm"
-                    onClick={() => {
-                      setSectionFilter("");
-                      setSearchFilter("");
-                    }}
-                  >
-                    Clear Filters
-                  </Button>
-                )}
+                <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                  Loaded {chunks.length} of {totalChunks} chunks
+                </span>
               </div>
 
               {/* Chunks List */}
@@ -1202,91 +1297,111 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
                   }}
                 >
                   {filteredChunks.map((c) => (
-                    <Card key={c.id} elevation={1}>
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: "8px",
-                        }}
-                      >
+                    <article
+                      key={c.id}
+                      className="chunk-card"
+                      data-testid="chunk-card"
+                    >
+                      <Card elevation={1}>
                         <div
                           style={{
                             display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            flexWrap: "wrap",
+                            flexDirection: "column",
                             gap: "8px",
                           }}
                         >
                           <div
                             style={{
                               display: "flex",
+                              justifyContent: "space-between",
                               alignItems: "center",
+                              flexWrap: "wrap",
                               gap: "8px",
                             }}
                           >
-                            <Badge variant="neutral">
-                              Chunk #{c.chunk_index}
-                            </Badge>
-                            <span
+                            <div
                               style={{
-                                fontSize: "13px",
-                                fontWeight: 600,
-                                color: "var(--text-primary)",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "8px",
                               }}
                             >
-                              {c.section || "Body"}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: "12px",
-                                color: "var(--text-muted)",
-                              }}
-                            >
-                              Page{" "}
-                              {c.page_start === c.page_end
-                                ? c.page_start
-                                : `${c.page_start}–${c.page_end}`}
-                            </span>
-                          </div>
-
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "8px",
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontSize: "11px",
-                                color: "var(--text-muted)",
-                              }}
-                            >
-                              {c.token_count} tokens (≤ 256)
-                            </span>
-                            {c.is_excluded && (
-                              <Badge variant="warning">
-                                Reference Zone (Excluded)
+                              <Badge variant="neutral">
+                                Chunk #{c.chunk_index}
                               </Badge>
-                            )}
-                          </div>
-                        </div>
+                              <span
+                                style={{
+                                  fontSize: "13px",
+                                  fontWeight: 600,
+                                  color: "var(--text-primary)",
+                                }}
+                              >
+                                {c.section || "Body"}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: "12px",
+                                  color: "var(--text-muted)",
+                                }}
+                              >
+                                Page{" "}
+                                {c.page_start === c.page_end
+                                  ? c.page_start
+                                  : `${c.page_start}–${c.page_end}`}
+                              </span>
+                            </div>
 
-                        <p
-                          style={{
-                            fontSize: "13px",
-                            color: "var(--text-secondary)",
-                            lineHeight: 1.6,
-                            margin: 0,
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          {c.text}
-                        </p>
-                      </div>
-                    </Card>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "8px",
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  color: "var(--text-muted)",
+                                }}
+                              >
+                                <strong>{c.token_count}</strong> tokens (MiniLM
+                                limit: 256)
+                              </span>
+                              {c.is_excluded && (
+                                <Badge variant="warning">
+                                  Reference Zone (Excluded)
+                                </Badge>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title={`Jump to page ${c.page_start} in PDF viewer`}
+                                onClick={() => {
+                                  setSelectedViewerPage(c.page_start);
+                                  setIsViewingPdf(true);
+                                }}
+                                style={{ padding: "4px 8px", fontSize: "12px" }}
+                              >
+                                <Eye size={12} />
+                                <span>View Page</span>
+                              </Button>
+                            </div>
+                          </div>
+
+                          <p
+                            style={{
+                              fontSize: "13px",
+                              color: "var(--text-secondary)",
+                              lineHeight: 1.6,
+                              margin: 0,
+                              whiteSpace: "pre-wrap",
+                            }}
+                          >
+                            {c.text}
+                          </p>
+                        </div>
+                      </Card>
+                    </article>
                   ))}
 
                   {/* Load More Button */}

@@ -4,7 +4,7 @@
     "base_url": "http://127.0.0.1:15173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-11-20T16:21:35Z",
+    "timestamp": "2026-11-20T18:19:44Z",
     "headless": true,
     "search_delay_ms": 0
   },
@@ -130,7 +130,7 @@
       "failure": "net::ERR_FAILED"
     },
     {
-      "url": "http://127.0.0.1:15173/api/papers/f2f66c10-37e2-41c1-837a-aea42131c2c6/chunks?section=abstract&limit=100",
+      "url": "http://127.0.0.1:15173/api/papers/83a26f86-7f78-42f1-8033-43bdb24f180b/chunks?section=abstract&limit=100",
       "failure": "net::ERR_FAILED"
     }
   ],
@@ -139,6 +139,7 @@
     "quality_route_guidance": true,
     "disposable_worker_lifecycle": true,
     "quality_modal_opened": true,
+    "quality_page_opened": true,
     "quality_tabs_present": true,
     "real_processed_chunks": true,
     "page_gt1_source_navigation": true,

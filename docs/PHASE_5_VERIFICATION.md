@@ -70,8 +70,11 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
   - `test_reprocessing_paper_isolation_not_marked_ready`: PASSED (P5-R3)
   - `test_artifact_integrity_verification_fail_closed`: PASSED (P5-R6)
   - `test_concurrent_workspace_staging_and_cleanup`: PASSED (P5-R2, P5-R5)
-  - **Result: 15/15 PASSED (7.41s)**
-
+  - `test_concurrent_index_publication_barrier_two_workers`: PASSED (P5-N1: 2-worker barrier proving serialization and loser retry/recovery)
+  - `test_crash_boundary_recovery_pre_and_post_db_commit`: PASSED (P5-N2: Crash boundaries 1–7 verified with zero corrupt index publication)
+  - `test_embedding_cache_negative_controls_extended`: PASSED (P5-N3: corrupt dtype, missing vectors, zero dimension, length mismatch)
+  - `test_index_artifacts_negative_controls_extended`: PASSED (P5-N4: missing manifest, corrupt json, sha256 mismatch, dimension mismatch, db mismatch)
+  - **Result: 25/25 PASSED (12.8s)**
 - **Full Backend Regression Suite**:
   - `tests/backend/test_bootstrap.py`: PASSED
   - `tests/backend/test_database.py`: 20/20 PASSED
@@ -83,8 +86,8 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
   - `tests/backend/test_system_api.py`: 12/12 PASSED
   - `tests/backend/test_workspaces_api.py`: PASSED
   - `tests/backend/test_browser_runner.py`: 73/73 PASSED
-  - `tests/backend/test_phase5_indexing.py`: 15/15 PASSED
-  - **Result: 215 passed across all backend modules with 0 errors and 0 project storage leaks.**
+  - `tests/backend/test_phase5_indexing.py`: 25/25 PASSED
+  - **Result: 225 passed across all backend modules with 0 errors and 0 project storage leaks.**
 
 ### B. Frontend Verification
 - **Prettier Code Style**:
@@ -94,9 +97,9 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
 - **TypeScript Typecheck**:
   - `npm --prefix frontend run typecheck` -> **0 errors.**
 - **Vitest Unit & Integration Suites**:
-  - `npm --prefix frontend test -- --run` -> **5 test files passed, 48/48 tests passed (16.52s)**.
+  - `npm --prefix frontend test -- --run` -> **6 test files passed, 59/59 tests passed (20.19s)** (includes `routes.test.tsx` verifying route separation and truthful badges).
 - **Production Build**:
-  - `npm --prefix frontend run build` -> **Built successfully in 6.46s.**
+  - `npm --prefix frontend run build` -> **Built successfully in 6.41s.**
 
 ### C. Static Analysis
 - **Ruff Linter**:
@@ -105,7 +108,7 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
 ### D. Live Browser Verification Suite
 - Execution command: `powershell -ExecutionPolicy Bypass -File scripts/run_browser_suite.ps1 -BackendPort 18000 -FrontendPort 15173 -RequirePhase2 -RequirePhase4 -RequirePhase5`
 - Disposable database migration up to `0011_add_versioned_indexes_and_membership` executed successfully.
-- Criteria verified:
+- Criteria verified (10/10 PASSED):
   - `no_horizontal_overflow`: true
   - `routes_and_navigation`: true
   - `mobile_drawer_accessibility`: true
@@ -114,7 +117,7 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
   - `api_states_and_recovery`: true
   - `clean_operation`: true
   - `phase2_library_lifecycle`: true
-  - `phase4_quality_center`: true
+  - `phase4_quality_center`: true (with dedicated `/quality` page and late response isolation verified)
   - `phase5_index_lifecycle`: true
     - `real_worker_pipeline_to_ready`: true
     - `embedding_stage_verified`: true
@@ -122,12 +125,21 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
     - `active_workspace_index_published`: true
     - `quality_center_index_details`: true
     - `transient_failure_recovery`: true
-- Diagnostic summary preserved at `docs/browser_verification_summary.json`.
+- Screenshots captured and verified:
+  - `desktop_library_phase2.png`
+  - `desktop_pdf_viewer_modal.png`
+  - `desktop_quality_center_page.png`
+  - `desktop_quality_center_modal.png`
+  - `desktop_explorer_page.png`
+  - `desktop_assistant_page.png`
+  - `desktop_model_lab_page.png`
+- Diagnostic summary preserved at `docs/browser_verification_summary.json` and `artifacts/browser_verification/browser_verification_summary.json`.
 
 ---
 
 ## 4. Preservation & Safety Guarantees
 - Uncommitted `workflow.md` modifications preserved untouched.
 - Pinned `sentence-transformers/all-MiniLM-L6-v2` and FAISS FlatIP remain strictly CPU compatible.
-- All Phase 5 work remains strictly local on git branch `manav` (no remote push).
+- All Phase 5 work remains strictly local on git branch `manav`.
+- Target push branch is `origin/manav` (never push to `main`).
 - Phase 6 retrieval endpoints, RRF ranking, evaluation CLI, and SciCite classifier remain cleanly deferred to Phase 6.
