@@ -1,11 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import {
-  Folder,
-  Plus,
-  AlertCircle,
-  RefreshCw,
-  CheckCircle2,
-} from "lucide-react";
+import { Folder, Plus, AlertCircle, RefreshCw } from "lucide-react";
 import { api, ApiClientError } from "../api/client";
 import {
   WorkspaceItem,
@@ -17,19 +11,16 @@ import { WorkspaceModal } from "../components/workspace/WorkspaceModal";
 import { UploadDropzone } from "../components/library/UploadDropzone";
 import { PaperList } from "../components/library/PaperList";
 import { PdfViewerModal } from "../components/library/PdfViewerModal";
-import { QualityCenterModal } from "../components/library/QualityCenterModal";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Button } from "../components/ui/Button";
 
 const STORAGE_KEY_SELECTED_WS = "researchmind_selected_workspace_id";
 
 interface LibraryPageProps {
-  initialQualityMode?: boolean;
+  onNavigate?: (path: string) => void;
 }
 
-export const LibraryPage: React.FC<LibraryPageProps> = ({
-  initialQualityMode = false,
-}) => {
+export const LibraryPage: React.FC<LibraryPageProps> = ({ onNavigate }) => {
   // Workspaces state
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] =
@@ -52,8 +43,6 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
   const [wsModalMode, setWsModalMode] = useState<"create" | "edit">("create");
   const [viewingPaper, setViewingPaper] = useState<PaperItem | null>(null);
   const [selectedViewerPage, setSelectedViewerPage] = useState<number>(1);
-  const [qualityCenterPaper, setQualityCenterPaper] =
-    useState<PaperItem | null>(null);
   const [deletingPaper, setDeletingPaper] = useState<PaperItem | null>(null);
   const [isDeletingWs, setIsDeletingWs] = useState(false);
   const [isActionLoading, setIsActionLoading] = useState(false);
@@ -279,7 +268,15 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
     }
   };
 
-  // Delete Paper Action
+  // Navigate to Quality Center for paper
+  const handleOpenQualityCenter = (p: PaperItem) => {
+    if (onNavigate) {
+      onNavigate(`/quality?paper=${p.id}`);
+    } else {
+      window.history.pushState({}, "", `/quality?paper=${p.id}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+  };
   const handleConfirmDeletePaper = async () => {
     if (!deletingPaper || !selectedWorkspaceRef.current) return;
     const targetWsId = selectedWorkspaceRef.current.id;
@@ -405,33 +402,6 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
         </div>
       )}
 
-      {/* Quality Center Inspection Guidance Banner */}
-      {initialQualityMode && (
-        <div
-          style={{
-            padding: "12px 18px",
-            borderRadius: "var(--r-lg)",
-            background: "var(--blue-surface)",
-            border: "1px solid rgba(0, 113, 227, 0.25)",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            color: "var(--blue-text)",
-            fontSize: "13px",
-            fontWeight: 500,
-          }}
-          role="region"
-          aria-label="Quality Center Inspection Guidance"
-        >
-          <CheckCircle2 size={18} color="var(--blue-action)" />
-          <span>
-            <strong>Quality Center · Inspection Mode</strong>: Select any
-            ingested paper below and click <strong>Inspect Quality</strong> to
-            examine sections, chunks, tokens, and page boundaries.
-          </span>
-        </div>
-      )}
-
       {/* No Workspace State */}
       {!isLoadingWorkspaces && workspaces.length === 0 ? (
         <div
@@ -515,7 +485,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
               setViewingPaper(p);
             }}
             onDeletePaper={setDeletingPaper}
-            onOpenQualityCenter={setQualityCenterPaper}
+            onOpenQualityCenter={handleOpenQualityCenter}
             isLoading={isLoadingPapers}
             nextCursor={nextCursor}
             onLoadMore={loadMorePapers}
@@ -570,18 +540,6 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
         onClose={() => {
           setViewingPaper(null);
           setSelectedViewerPage(1);
-        }}
-      />
-
-      {/* Quality Center Modal */}
-      <QualityCenterModal
-        paper={qualityCenterPaper}
-        isOpen={!!qualityCenterPaper}
-        onClose={() => setQualityCenterPaper(null)}
-        onOpenPdfPage={(p, pageNum) => {
-          setQualityCenterPaper(null);
-          setSelectedViewerPage(pageNum || 1);
-          setViewingPaper(p);
         }}
       />
     </div>

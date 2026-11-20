@@ -179,7 +179,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           Workspace
         </div>
         {navItems.map((item) => {
-          const isActive = currentPath === item.path;
+          const cleanPath = (currentPath || "/").split("?")[0];
+          const isActive = cleanPath === item.path;
           return (
             <button
               key={item.id}

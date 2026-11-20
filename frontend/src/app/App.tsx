@@ -3,7 +3,10 @@ import { AppShell } from "../components/layout/AppShell";
 import { LandingPage } from "../pages/LandingPage";
 import { DashboardPage } from "../pages/DashboardPage";
 import { LibraryPage } from "../pages/LibraryPage";
-import { PlannedFeaturePage } from "../pages/PlannedFeaturePage";
+import { QualityCenterPage } from "../pages/QualityCenterPage";
+import { ResearchExplorerPage } from "../pages/ResearchExplorerPage";
+import { ResearchAssistantPage } from "../pages/ResearchAssistantPage";
+import { ModelLabPage } from "../pages/ModelLabPage";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import { api, ApiClientError } from "../api/client";
 import { ReadyResponse, PublicConfigResponse } from "../api/types";
@@ -13,7 +16,7 @@ import { Button } from "../components/ui/Button";
 export const App: React.FC = () => {
   // Simple client-side route tracking
   const [currentPath, setCurrentPath] = useState<string>(() => {
-    return window.location.pathname || "/";
+    return window.location.pathname + window.location.search || "/";
   });
 
   // Backend connection state
@@ -55,7 +58,7 @@ export const App: React.FC = () => {
 
     // Listen for browser back/forward buttons
     const handlePopState = () => {
-      setCurrentPath(window.location.pathname || "/");
+      setCurrentPath(window.location.pathname + window.location.search || "/");
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -69,7 +72,8 @@ export const App: React.FC = () => {
 
   // Render view according to path
   const renderCurrentView = () => {
-    switch (currentPath) {
+    const cleanPath = (currentPath || "/").split("?")[0];
+    switch (cleanPath) {
       case "/":
         return (
           <LandingPage onOpenWorkspace={() => handleNavigate("/dashboard")} />
@@ -84,36 +88,15 @@ export const App: React.FC = () => {
           />
         );
       case "/library":
-        return <LibraryPage />;
+        return <LibraryPage onNavigate={handleNavigate} />;
       case "/quality":
-        return <LibraryPage initialQualityMode={true} />;
+        return <QualityCenterPage onNavigate={handleNavigate} />;
       case "/explorer":
-        return (
-          <PlannedFeaturePage
-            featureName="Research Explorer"
-            roadmapPhase={5}
-            description="Source sections, cited summaries, multi-dimensional document comparison, and verified research findings."
-            onNavigate={handleNavigate}
-          />
-        );
+        return <ResearchExplorerPage onNavigate={handleNavigate} />;
       case "/assistant":
-        return (
-          <PlannedFeaturePage
-            featureName="Research Assistant"
-            roadmapPhase={4}
-            description="Conversational synthesis, multi-paper QA, grounded claims, and counter-argument retrieval."
-            onNavigate={handleNavigate}
-          />
-        );
+        return <ResearchAssistantPage onNavigate={handleNavigate} />;
       case "/model-lab":
-        return (
-          <PlannedFeaturePage
-            featureName="Model Lab"
-            roadmapPhase={6}
-            description="SciCite classifier experiment, baseline comparison, training curves, and independently reproducible results."
-            onNavigate={handleNavigate}
-          />
-        );
+        return <ModelLabPage onNavigate={handleNavigate} />;
       default:
         return <NotFoundPage onGoHome={() => handleNavigate("/dashboard")} />;
     }
