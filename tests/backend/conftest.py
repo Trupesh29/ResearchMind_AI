@@ -16,6 +16,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Ensure local loopback bypasses any ambient environment proxy in sandbox
+os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+os.environ["no_proxy"] = "127.0.0.1,localhost"
+
 from backend.app.core.config import Settings
 from backend.app.db.bootstrap import bootstrap_default_user
 from backend.app.db.session import get_session_factory, set_session_factory

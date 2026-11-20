@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import UTC, datetime
 
@@ -65,6 +66,9 @@ class Workspace(Base):
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="workspaces")
     papers: Mapped[list["Paper"]] = relationship("Paper", back_populates="workspace", cascade="all, delete-orphan")
+    indexes: Mapped[list["EmbeddingIndex"]] = relationship(
+        "EmbeddingIndex", back_populates="workspace", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Workspace id={self.id} name={self.name}>"
@@ -291,3 +295,106 @@ class Chunk(Base):
 
     def __repr__(self) -> str:
         return f"<Chunk id={self.id} paper_id={self.paper_id} index={self.chunk_index} tokens={self.token_count}>"
+
+
+class EmbeddingIndex(Base):
+    __tablename__ = "embedding_indexes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    normalization: Mapped[str] = mapped_column(String(32), default="l2", server_default="l2", nullable=False)
+    chunk_params_json: Mapped[str] = mapped_column(Text, nullable=False)
+    faiss_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    bm25_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    manifest_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    index_checksums_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="building", server_default="building", nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, onupdate=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "version", name="uq_embedding_indexes_workspace_version"),
+        Index("idx_embedding_indexes_workspace", "workspace_id"),
+        Index("idx_embedding_indexes_workspace_status", "workspace_id", "status"),
+        Index(
+            "uq_embedding_active_per_workspace",
+            "workspace_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+        ),
+        CheckConstraint(
+            "status IN ('building', 'active', 'retired', 'failed')",
+            name="ck_embedding_indexes_status",
+        ),
+        CheckConstraint("version >= 1", name="ck_embedding_indexes_version"),
+        CheckConstraint("dimension > 0", name="ck_embedding_indexes_dimension"),
+    )
+
+    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="indexes")
+    chunks: Mapped[list["IndexChunk"]] = relationship(
+        "IndexChunk", back_populates="index", cascade="all, delete-orphan"
+    )
+
+    @property
+    def chunk_count(self) -> int:
+        if self.chunk_params_json:
+            try:
+                data = json.loads(self.chunk_params_json)
+                if isinstance(data, dict):
+                    return int(data.get("chunk_count", 0))
+            except Exception:
+                pass
+        return len(self.chunks) if self.chunks else 0
+
+    def __repr__(self) -> str:
+        return f"<EmbeddingIndex id={self.id} workspace_id={self.workspace_id} v={self.version} status={self.status}>"
+
+
+class IndexChunk(Base):
+    __tablename__ = "index_chunks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    index_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("embedding_indexes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    paper_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    chunk_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("chunks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    faiss_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("index_id", "chunk_id", name="uq_index_chunks_index_chunk"),
+        UniqueConstraint("index_id", "faiss_id", name="uq_index_chunks_index_faiss_id"),
+        Index("idx_index_chunks_index", "index_id"),
+        Index("idx_index_chunks_paper", "paper_id"),
+        Index("idx_index_chunks_run", "run_id"),
+        Index("idx_index_chunks_chunk", "chunk_id"),
+        Index("idx_index_chunks_index_paper", "index_id", "paper_id"),
+        CheckConstraint("faiss_id >= 0", name="ck_index_chunks_faiss_id"),
+    )
+
+    index: Mapped["EmbeddingIndex"] = relationship("EmbeddingIndex", back_populates="chunks")
+    paper: Mapped["Paper"] = relationship("Paper")
+    chunk: Mapped["Chunk"] = relationship("Chunk")
+
+    def __repr__(self) -> str:
+        return f"<IndexChunk id={self.id} index_id={self.index_id} chunk_id={self.chunk_id} faiss_id={self.faiss_id}>"

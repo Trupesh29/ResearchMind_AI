@@ -626,15 +626,19 @@ def test_reprocess_conflict_and_generation_consistency(p3_env: dict):
     worker.run_once()
     # Pass 3: processes sectioning -> enqueues chunking
     worker.run_once()
-    # Pass 4: processes chunking -> completes Week 2 ingestion
+    # Pass 4: processes chunking -> enqueues embedding
+    worker.run_once()
+    # Pass 5: processes embedding -> enqueues indexing
+    worker.run_once()
+    # Pass 6: processes indexing -> completes to ready
     worker.run_once()
 
     # Check status
     stat_res = client.get(f"/api/papers/{paper_id}/status")
     assert stat_res.status_code == 200
     stat_data = stat_res.json()
-    assert stat_data["status"] == "processing"
-    assert stat_data["stage"] == "chunking"
+    assert stat_data["status"] == "ready"
+    assert stat_data["stage"] == "indexing"
     assert stat_data["progress"] == 1.0
 
     # Check pages
@@ -701,6 +705,8 @@ def test_worker_multirun_migration_preservation(p3_env: dict):
     worker.run_once()  # extracting gen 1
     worker.run_once()  # sectioning gen 1
     worker.run_once()  # chunking gen 1
+    worker.run_once()  # embedding gen 1
+    worker.run_once()  # indexing gen 1
 
     # Reprocess to create gen 2
     rep_res = client.post(f"/api/papers/{paper_id}/reprocess")
@@ -709,6 +715,8 @@ def test_worker_multirun_migration_preservation(p3_env: dict):
     worker.run_once()  # extracting gen 2
     worker.run_once()  # sectioning gen 2
     worker.run_once()  # chunking gen 2
+    worker.run_once()  # embedding gen 2
+    worker.run_once()  # indexing gen 2
 
     # Database has 2 worker-produced page records
     db: Session = p3_env["factory"]()
@@ -997,6 +1005,8 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
     # Drain remaining stages for Paper 1 so no queued jobs remain before Part 2
     w1.run_once()  # sectioning
     w1.run_once()  # chunking
+    w1.run_once()  # embedding
+    w1.run_once()  # indexing
 
     # Part 2: Real worker subprocess kill and recovery with independent worker
     proc_paper_id = str(uuid.uuid4())
@@ -1023,6 +1033,7 @@ def test_r2_lease_liveness_and_worker_kill_recovery(p3_env: dict):
     root_dir = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     env["DATABASE_URL"] = p3_env["db_url"]
+    env["DATA_DIR"] = str(p3_env["data_dir"])
     env["PYTHONPATH"] = str(root_dir)
 
     subproc_cmd = (

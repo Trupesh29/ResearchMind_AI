@@ -15,6 +15,7 @@ import socket
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import case, update
@@ -23,7 +24,13 @@ from sqlalchemy.orm import Session
 from backend.app.core.config import get_settings
 from backend.app.db.models import Chunk, Page, Paper, ProcessingJob, Section, utcnow_iso
 from backend.app.db.session import get_session_factory
-from backend.app.services import chunking_service, extraction_service, sectioning_service
+from backend.app.services import (
+    chunking_service,
+    embedding_service,
+    extraction_service,
+    index_service,
+    sectioning_service,
+)
 
 logger = logging.getLogger("worker.engine")
 
@@ -132,13 +139,22 @@ class WorkerEngine:
         poll_interval: float = 1.0,
         lease_timeout_seconds: int = 30,
         max_retries: int = 3,
+        settings: Any | None = None,
     ) -> None:
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self.poll_interval = poll_interval
         self.lease_timeout_seconds = lease_timeout_seconds
         self.max_retries = max_retries
         self._stop_requested = False
-        self.settings = get_settings()
+        if settings is not None:
+            self.settings = settings
+        else:
+            try:
+                from backend.app.main import app
+
+                self.settings = getattr(app.state, "settings", None) or get_settings()
+            except Exception:
+                self.settings = get_settings()
 
     def request_stop(self) -> None:
         """Signal the worker to finish the current step and terminate."""
@@ -249,7 +265,9 @@ class WorkerEngine:
             db.query(ProcessingJob.id, ProcessingJob.paper_id)
             .filter(
                 ProcessingJob.status == "queued",
-                ProcessingJob.stage.in_(["validating", "extracting", "sectioning", "chunking"]),
+                ProcessingJob.stage.in_(
+                    ["validating", "extracting", "sectioning", "chunking", "embedding", "indexing"]
+                ),
             )
             .order_by(ProcessingJob.created_at.asc())
             .limit(10)
@@ -316,6 +334,10 @@ class WorkerEngine:
             self._handle_sectioning_stage(info)
         elif stage == "chunking":
             self._handle_chunking_stage(info)
+        elif stage == "embedding":
+            self._handle_embedding_stage(info)
+        elif stage == "indexing":
+            self._handle_indexing_stage(info)
         else:
             logger.error(f"Unsupported stage '{stage}' claimed by worker.")
 
@@ -877,13 +899,277 @@ class WorkerEngine:
                     )
                     db.add(chunk_row)
 
+                # Enqueue embedding stage
+                next_job = ProcessingJob(
+                    id=str(uuid.uuid4()),
+                    paper_id=paper_id,
+                    run_id=run_id,
+                    stage="embedding",
+                    status="queued",
+                    attempt=1,
+                    created_at=now,
+                )
+                db.add(next_job)
+
                 # Atomically publish this generation bundle (pages + sections + chunks)
                 paper.published_run_id = run_id
                 paper.status = "processing"
                 paper.updated_at = now
                 db.commit()
                 logger.info(
-                    f"Chunking succeeded for paper {paper_id} run {run_id}, published {len(chunks_data)} chunks. Full bundle published."
+                    f"Chunking succeeded for paper {paper_id} run {run_id}, published {len(chunks_data)} chunks. Enqueued embedding."
+                )
+        finally:
+            db.close()
+
+    def _handle_embedding_stage(self, info: dict[str, Any]) -> None:
+        """Compute and persist L2-normalized MiniLM embeddings for accepted chunks."""
+        job_id = info["job_id"]
+        paper_id = info["paper_id"]
+        token = info["claim_token"]
+        run_id = info["run_id"]
+        storage_path = info["storage_path"]
+
+        factory = get_session_factory()
+        heartbeat = LeaseHeartbeat(factory, job_id, token, interval=max(0.5, self.lease_timeout_seconds / 3.0))
+        heartbeat.start()
+
+        embedding_error: str | None = None
+        chunk_ids: list[str] = []
+
+        try:
+            db_read: Session = factory()
+            try:
+                chunk_rows = (
+                    db_read.query(Chunk)
+                    .filter(
+                        Chunk.paper_id == paper_id,
+                        Chunk.run_id == run_id,
+                        Chunk.is_excluded == 0,
+                        Chunk.is_deleted == 0,
+                    )
+                    .order_by(Chunk.chunk_index.asc())
+                    .all()
+                )
+                if not chunk_rows:
+                    embedding_error = "No non-excluded chunks found for embedding."
+                else:
+                    texts = [cr.text for cr in chunk_rows]
+                    chunk_ids = [cr.id for cr in chunk_rows]
+                    # Compute embeddings (validates token sequence lengths and finite values)
+                    vectors = embedding_service.embed_texts(texts)
+                    # Persist generation embeddings cache
+                    embedding_service.save_generation_embeddings(
+                        paper_id,
+                        run_id,
+                        chunk_ids,
+                        vectors,
+                        data_dir=Path(self.settings.DATA_DIR),
+                    )
+            finally:
+                db_read.close()
+        except Exception as exc:
+            logger.exception(f"Embedding stage failed for paper {paper_id} job {job_id}: {exc}")
+            embedding_error = sanitize_error_message(exc, storage_path=storage_path)
+        finally:
+            active_lease = heartbeat.stop()
+
+        if not active_lease:
+            logger.warning(f"Embedding job {job_id} lost lease during execution; aborting publication.")
+            return
+
+        db: Session = factory()
+        try:
+            paper = db.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                logger.info(f"Paper {paper_id} deleted during embedding; dropping publication.")
+                return
+
+            if paper.current_run_id and paper.current_run_id != run_id:
+                logger.warning(
+                    f"Paper {paper_id} has a newer generation ({paper.current_run_id} != {run_id}); discarding stale embedding."
+                )
+                return
+
+            now = utcnow_iso()
+
+            if embedding_error:
+                stmt = (
+                    update(ProcessingJob)
+                    .where(
+                        ProcessingJob.id == job_id,
+                        ProcessingJob.status == "running",
+                        ProcessingJob.claim_token == token,
+                    )
+                    .values(
+                        status="failed",
+                        finished_at=now,
+                        error_message=embedding_error,
+                    )
+                )
+                res = db.execute(stmt)
+                if res.rowcount == 0:
+                    db.rollback()
+                    raise WorkerFencingViolation(f"Lost claim token on embedding job {job_id}")
+                paper.status = "failed"
+                paper.updated_at = now
+                db.commit()
+            else:
+                stmt = (
+                    update(ProcessingJob)
+                    .where(
+                        ProcessingJob.id == job_id,
+                        ProcessingJob.status == "running",
+                        ProcessingJob.claim_token == token,
+                    )
+                    .values(
+                        status="succeeded",
+                        finished_at=now,
+                        versions_json=json.dumps(embedding_service.get_embedding_metadata()),
+                    )
+                )
+                res = db.execute(stmt)
+                if res.rowcount == 0:
+                    db.rollback()
+                    raise WorkerFencingViolation(f"Lost claim token on embedding job {job_id}")
+
+                # Enqueue indexing stage
+                next_job = ProcessingJob(
+                    id=str(uuid.uuid4()),
+                    paper_id=paper_id,
+                    run_id=run_id,
+                    stage="indexing",
+                    status="queued",
+                    attempt=1,
+                    created_at=now,
+                )
+                db.add(next_job)
+                paper.status = "processing"
+                paper.updated_at = now
+                db.commit()
+                logger.info(
+                    f"Embedding succeeded for paper {paper_id} run {run_id}, embedded {len(chunk_ids)} chunks. Enqueued indexing."
+                )
+        finally:
+            db.close()
+
+    def _handle_indexing_stage(self, info: dict[str, Any]) -> None:
+        """Build and atomically publish paired FAISS and BM25 index artifacts for the workspace."""
+        job_id = info["job_id"]
+        paper_id = info["paper_id"]
+        token = info["claim_token"]
+        run_id = info["run_id"]
+        storage_path = info["storage_path"]
+
+        factory = get_session_factory()
+        heartbeat = LeaseHeartbeat(factory, job_id, token, interval=max(0.5, self.lease_timeout_seconds / 3.0))
+        heartbeat.start()
+
+        indexing_error: str | None = None
+        new_index = None
+        new_index_id: str | None = None
+        new_index_version: int | None = None
+
+        try:
+            db_action: Session = factory()
+            try:
+                paper = db_action.query(Paper).filter(Paper.id == paper_id).first()
+                if not paper:
+                    indexing_error = "Paper record could not be found."
+                elif paper.current_run_id and paper.current_run_id != run_id:
+                    indexing_error = "Generation superseded by newer run."
+                else:
+                    workspace_id = paper.workspace_id
+                    new_index = index_service.build_and_publish_workspace_index(
+                        db_action,
+                        workspace_id=workspace_id,
+                        target_paper_id=paper_id,
+                        target_run_id=run_id,
+                        data_dir=Path(self.settings.DATA_DIR),
+                    )
+                    if not new_index:
+                        indexing_error = "Index build produced no eligible chunks."
+                    else:
+                        new_index_id = new_index.id
+                        new_index_version = new_index.version
+            finally:
+                db_action.close()
+        except Exception as exc:
+            indexing_error = sanitize_error_message(exc, storage_path=storage_path)
+        finally:
+            active_lease = heartbeat.stop()
+
+        if not active_lease:
+            logger.warning(f"Indexing job {job_id} lost lease during execution; aborting publication.")
+            return
+
+        db: Session = factory()
+        try:
+            paper = db.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                logger.info(f"Paper {paper_id} deleted during indexing; dropping publication.")
+                return
+
+            if paper.current_run_id and paper.current_run_id != run_id:
+                logger.warning(
+                    f"Paper {paper_id} has a newer generation ({paper.current_run_id} != {run_id}); discarding stale indexing."
+                )
+                return
+
+            now = utcnow_iso()
+
+            if indexing_error:
+                stmt = (
+                    update(ProcessingJob)
+                    .where(
+                        ProcessingJob.id == job_id,
+                        ProcessingJob.status == "running",
+                        ProcessingJob.claim_token == token,
+                    )
+                    .values(
+                        status="failed",
+                        finished_at=now,
+                        error_message=indexing_error,
+                    )
+                )
+                res = db.execute(stmt)
+                if res.rowcount == 0:
+                    db.rollback()
+                    raise WorkerFencingViolation(f"Lost claim token on indexing job {job_id}")
+                paper.status = "failed"
+                paper.updated_at = now
+                db.commit()
+            else:
+                stmt = (
+                    update(ProcessingJob)
+                    .where(
+                        ProcessingJob.id == job_id,
+                        ProcessingJob.status == "running",
+                        ProcessingJob.claim_token == token,
+                    )
+                    .values(
+                        status="succeeded",
+                        finished_at=now,
+                        versions_json=json.dumps(
+                            {
+                                "index_id": new_index_id,
+                                "index_version": new_index_version,
+                                "model_name": embedding_service.EMBEDDING_MODEL_NAME,
+                            }
+                        ),
+                    )
+                )
+                res = db.execute(stmt)
+                if res.rowcount == 0:
+                    db.rollback()
+                    raise WorkerFencingViolation(f"Lost claim token on indexing job {job_id}")
+
+                paper.status = "ready"
+                paper.published_run_id = run_id
+                paper.updated_at = now
+                db.commit()
+                logger.info(
+                    f"Indexing succeeded for paper {paper_id} run {run_id}. Document is now READY."
                 )
         finally:
             db.close()

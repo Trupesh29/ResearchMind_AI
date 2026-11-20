@@ -153,25 +153,144 @@ def get_paper_status_details(
     # Group by stage to evaluate latest attempt per stage
     validating_jobs = [j for j in run_jobs if j.stage == "validating"]
     extracting_jobs = [j for j in run_jobs if j.stage == "extracting"]
-
-    validating_jobs = [j for j in run_jobs if j.stage == "validating"]
-    extracting_jobs = [j for j in run_jobs if j.stage == "extracting"]
     sectioning_jobs = [j for j in run_jobs if j.stage == "sectioning"]
     chunking_jobs = [j for j in run_jobs if j.stage == "chunking"]
+    embedding_jobs = [j for j in run_jobs if j.stage == "embedding"]
+    indexing_jobs = [j for j in run_jobs if j.stage == "indexing"]
 
     latest_val = max(validating_jobs, key=lambda j: j.attempt) if validating_jobs else None
     latest_ext = max(extracting_jobs, key=lambda j: j.attempt) if extracting_jobs else None
     latest_sec = max(sectioning_jobs, key=lambda j: j.attempt) if sectioning_jobs else None
     latest_chk = max(chunking_jobs, key=lambda j: j.attempt) if chunking_jobs else None
+    latest_emb = max(embedding_jobs, key=lambda j: j.attempt) if embedding_jobs else None
+    latest_idx = max(indexing_jobs, key=lambda j: j.attempt) if indexing_jobs else None
 
-    # 1. Check chunking stage first if present
+    # 1. Check indexing stage first if present
+    if latest_idx:
+        if latest_idx.status == "running":
+            return PaperStatusResponse(
+                status="processing",
+                stage="indexing",
+                substate="indexing",
+                progress=0.95,
+                attempt=latest_idx.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                current_run_id=paper.current_run_id,
+                published_run_id=paper.published_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_idx.status == "queued":
+            return PaperStatusResponse(
+                status="processing",
+                stage="indexing",
+                substate="queued",
+                progress=0.90,
+                attempt=latest_idx.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                current_run_id=paper.current_run_id,
+                published_run_id=paper.published_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_idx.status == "succeeded":
+            return PaperStatusResponse(
+                status="ready" if paper.status == "ready" else "processing",
+                stage="indexing",
+                substate="ready",
+                progress=1.0,
+                attempt=latest_idx.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                current_run_id=paper.current_run_id,
+                published_run_id=paper.published_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_idx.status == "failed":
+            return PaperStatusResponse(
+                status="failed",
+                stage="indexing",
+                substate="failed",
+                progress=0.0,
+                attempt=latest_idx.attempt,
+                error=sanitize_error_message(latest_idx.error_message or "Indexing failed."),
+                stages=stage_details,
+                run_id=effective_run_id,
+                current_run_id=paper.current_run_id,
+                published_run_id=paper.published_run_id,
+                is_stale=is_stale,
+            )
+
+    # 2. Check embedding stage if present
+    if latest_emb:
+        if latest_emb.status == "running":
+            return PaperStatusResponse(
+                status="processing",
+                stage="embedding",
+                substate="embedding",
+                progress=0.80,
+                attempt=latest_emb.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                current_run_id=paper.current_run_id,
+                published_run_id=paper.published_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_emb.status == "queued":
+            return PaperStatusResponse(
+                status="processing",
+                stage="embedding",
+                substate="queued",
+                progress=0.75,
+                attempt=latest_emb.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                current_run_id=paper.current_run_id,
+                published_run_id=paper.published_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_emb.status == "succeeded":
+            return PaperStatusResponse(
+                status="processing",
+                stage="embedding",
+                substate="embedded",
+                progress=0.85,
+                attempt=latest_emb.attempt,
+                error=None,
+                stages=stage_details,
+                run_id=effective_run_id,
+                current_run_id=paper.current_run_id,
+                published_run_id=paper.published_run_id,
+                is_stale=is_stale,
+            )
+        elif latest_emb.status == "failed":
+            return PaperStatusResponse(
+                status="failed",
+                stage="embedding",
+                substate="failed",
+                progress=0.0,
+                attempt=latest_emb.attempt,
+                error=sanitize_error_message(latest_emb.error_message or "Embedding failed."),
+                stages=stage_details,
+                run_id=effective_run_id,
+                current_run_id=paper.current_run_id,
+                published_run_id=paper.published_run_id,
+                is_stale=is_stale,
+            )
+
+    # 3. Check chunking stage if present
     if latest_chk:
         if latest_chk.status == "running":
             return PaperStatusResponse(
                 status="processing",
                 stage="chunking",
                 substate="chunking",
-                progress=0.85,
+                progress=0.70,
                 attempt=latest_chk.attempt,
                 error=None,
                 stages=stage_details,
@@ -185,7 +304,7 @@ def get_paper_status_details(
                 status="processing",
                 stage="chunking",
                 substate="queued",
-                progress=0.75,
+                progress=0.65,
                 attempt=latest_chk.attempt,
                 error=None,
                 stages=stage_details,
@@ -199,7 +318,7 @@ def get_paper_status_details(
                 status="ready" if paper.status == "ready" else "processing",
                 stage="chunking",
                 substate="awaiting_indexing",
-                progress=1.0,
+                progress=0.72,
                 attempt=latest_chk.attempt,
                 error=None,
                 stages=stage_details,

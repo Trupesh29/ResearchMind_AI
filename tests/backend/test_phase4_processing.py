@@ -215,6 +215,12 @@ def test_full_pipeline_ingestion_and_awaiting_indexing(p4_env):
     claimed = worker.run_once()
     assert claimed is True
 
+    # In Phase 5, worker processes embedding and indexing to ready
+    claimed = worker.run_once()  # embedding
+    assert claimed is True
+    claimed = worker.run_once()  # indexing
+    assert claimed is True
+
     # No more jobs should be queued
     claimed = worker.run_once()
     assert claimed is False
@@ -223,9 +229,9 @@ def test_full_pipeline_ingestion_and_awaiting_indexing(p4_env):
     status_res = client.get(f"/api/papers/{paper_id}/status")
     assert status_res.status_code == 200
     st_json = status_res.json()
-    assert st_json["status"] == "processing"
-    assert st_json["stage"] == "chunking"
-    assert st_json["substate"] == "awaiting_indexing"
+    assert st_json["status"] == "ready"
+    assert st_json["stage"] == "indexing"
+    assert st_json["substate"] == "ready"
     assert st_json["progress"] == 1.0
 
     stages = [s["stage"] for s in st_json["stages"]]
@@ -299,7 +305,7 @@ def test_reprocess_conflict_and_generation_preservation(p4_env):
 
     # Run pipeline to completion (Generation 1)
     worker = WorkerEngine(worker_id="test-p4-worker", poll_interval=0.1)
-    for _ in range(4):
+    for _ in range(6):
         worker.run_once()
 
     # Initial chunks of Generation 1

@@ -1,0 +1,683 @@
+"""ResearchMind AI — Phase 5 Vector Embedding & Index Lifecycle Test Suite.
+
+Verifies:
+1. Alembic migration 0011 upgrade and downgrade integrity (embedding_indexes, index_chunks).
+2. Token-safe embedding bounds (<= 256 tokens) with strict ValueError rejection (no silent truncation).
+3. Embedding vector properties: finite float32, L2 normalization, dimension 384.
+4. BM25 sparse index serialization, deserialization, and deterministic scoring.
+5. Paired FAISS FlatIP and BM25 atomic publication with matching manifests and SHA-256 checksums.
+6. Exclusion of reference chunks (is_excluded == 1) from both dense and sparse indexes.
+7. Crash-safe and fail-closed publication: failures preserve prior active index and clean up staging.
+8. Query-boundary deletion safety: soft-deleted papers/chunks immediately tombstoned from retrieval.
+9. Reprocessing lifecycle: old generation excluded, new generation builds and activates.
+10. Full 6-stage worker pipeline execution: validating -> extracting -> sectioning -> chunking -> embedding -> indexing -> ready.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Generator
+
+import fitz  # PyMuPDF
+import numpy as np
+import pytest
+from alembic import command
+from alembic.config import Config
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
+
+from backend.app.core.config import Settings
+from backend.app.db.bootstrap import bootstrap_default_user
+from backend.app.db.models import (
+    Chunk,
+    IndexChunk,
+    Paper,
+    Workspace,
+    utcnow_iso,
+)
+from backend.app.db.session import get_session_factory, set_session_factory
+from backend.app.main import app
+from backend.app.services.bm25_service import BM25Index
+from backend.app.services.embedding_service import (
+    embed_texts,
+    get_or_compute_generation_embeddings,
+    validate_text_for_embedding,
+)
+from backend.app.services.index_service import (
+    build_and_publish_workspace_index,
+    get_active_workspace_index,
+    search_dense,
+    search_sparse,
+)
+from backend.app.services.processing_service import get_paper_status_details
+from worker.engine import WorkerEngine
+
+
+@pytest.fixture
+def p5_env(temp_test_dir: Path) -> Generator[dict, None, None]:
+    """Provides isolated storage and disposable database migrated to head (0011)."""
+    run_id = os.urandom(6).hex()
+    test_dir = temp_test_dir / f"p5_{run_id}"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    for sub in ["pdfs", "indexes", "models", "reports", "embeddings", ".trash"]:
+        (test_dir / sub).mkdir(parents=True, exist_ok=True)
+
+    db_path = test_dir / "test_p5.db"
+    db_url = f"sqlite:///{db_path.as_posix()}"
+
+    alembic_cfg = Config(str(Path(__file__).resolve().parent.parent.parent / "backend" / "alembic.ini"))
+    alembic_cfg.set_main_option(
+        "script_location",
+        str(Path(__file__).resolve().parent.parent.parent / "backend" / "migrations"),
+    )
+    alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+    command.upgrade(alembic_cfg, "head")
+
+    engine = create_engine(
+        db_url,
+        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+        future=True,
+    )
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        if hasattr(dbapi_connection, "cursor"):
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=5000")
+            finally:
+                cursor.close()
+
+    old_session_factory = get_session_factory()
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    set_session_factory(factory)
+
+    test_settings = Settings(
+        BASE_DIR=test_dir,
+        DATA_DIR=test_dir,
+        DATABASE_URL=db_url,
+        AUTH_ENABLED=False,
+    )
+    app.state.settings = test_settings
+
+    db = factory()
+    user = bootstrap_default_user(db, test_settings)
+    ws = Workspace(
+        id=f"ws-{run_id}",
+        user_id=user.id,
+        name="Phase 5 Index Lifecycle Test Workspace",
+        created_at=utcnow_iso(),
+    )
+    db.add(ws)
+    db.commit()
+    ws_id = ws.id
+    user_id = user.id
+    db.close()
+
+    try:
+        yield {
+            "engine": engine,
+            "factory": factory,
+            "settings": test_settings,
+            "test_dir": test_dir,
+            "workspace_id": ws_id,
+            "user_id": user_id,
+            "db_url": db_url,
+            "alembic_cfg": alembic_cfg,
+        }
+    finally:
+        engine.dispose()
+        set_session_factory(old_session_factory)
+
+
+def _create_sample_pdf(path: Path, title: str = "Attention and Transformers") -> Path:
+    doc = fitz.open()
+    page1 = doc.new_page()
+    page1.insert_text(
+        (50, 72),
+        f"{title}\n\nAbstract\nWe propose the Transformer architecture based on attention mechanisms.\n\n"
+        "1. Introduction\nRecurrent neural networks have long been the state of the art for sequence modeling.\n"
+        "However, recurrent models typically factor computation along the symbol positions of input and output sequences.",
+        fontsize=11,
+    )
+    page2 = doc.new_page()
+    page2.insert_text(
+        (50, 72),
+        "2. Architecture\nSelf-attention is an attention mechanism relating different positions of a single sequence.\n\n"
+        "References\n[1] Vaswani et al. Attention is All You Need. NeurIPS 2017.",
+        fontsize=11,
+    )
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Test 1: Migration 0011 Upgrade & Downgrade Integrity
+# ---------------------------------------------------------------------------
+def test_migration_0011_upgrade_downgrade(p5_env):
+    """Verifies Alembic migration 0011 creates and cleanly reverts versioned index tables."""
+    alembic_cfg = p5_env["alembic_cfg"]
+    engine = p5_env["engine"]
+
+    with engine.connect() as conn:
+        from sqlalchemy import inspect
+        insp = inspect(conn)
+        tables = set(insp.get_table_names())
+        assert "embedding_indexes" in tables
+        assert "index_chunks" in tables
+
+    # Test downgrade to 0010
+    command.downgrade(alembic_cfg, "0010_repair_chunk_provenance")
+    with engine.connect() as conn:
+        from sqlalchemy import inspect
+        insp = inspect(conn)
+        tables = set(insp.get_table_names())
+        assert "embedding_indexes" not in tables
+        assert "index_chunks" not in tables
+
+    # Test re-upgrade to head
+    command.upgrade(alembic_cfg, "head")
+    with engine.connect() as conn:
+        from sqlalchemy import inspect
+        insp = inspect(conn)
+        tables = set(insp.get_table_names())
+        assert "embedding_indexes" in tables
+        assert "index_chunks" in tables
+
+
+# ---------------------------------------------------------------------------
+# Test 2: Token Limit Validation (No Silent Truncation)
+# ---------------------------------------------------------------------------
+def test_embedding_token_limit_validation():
+    """Verifies texts within 256 tokens pass and texts exceeding 256 tokens raise ValueError."""
+    valid_text = "Attention mechanisms have become an integral part of sequence modeling."
+    token_count = validate_text_for_embedding(valid_text)
+    assert 0 < token_count <= 256
+
+    # 300 words of distinct text will exceed 256 subword tokens
+    long_text = " ".join([f"token_{i}" for i in range(300)])
+    with pytest.raises(ValueError, match="exceeds model sequence limit of 256 tokens"):
+        validate_text_for_embedding(long_text)
+
+
+# ---------------------------------------------------------------------------
+# Test 3: Embedding Vectors Finite & L2 Normalized
+# ---------------------------------------------------------------------------
+def test_embedding_vectors_finite_and_l2_normalized():
+    """Verifies computed embeddings are float32, finite, dimension 384, and L2 normalized."""
+    texts = [
+        "Self-attention connects all pairs of positions in a sequence.",
+        "Deep learning models require careful initialization and optimization.",
+    ]
+    vectors = embed_texts(texts)
+    assert vectors.shape == (2, 384)
+    assert vectors.dtype == np.float32
+    assert np.all(np.isfinite(vectors))
+
+    # Norms must equal 1.0 (within float32 precision)
+    norms = np.linalg.norm(vectors, axis=1)
+    np.testing.assert_allclose(norms, 1.0, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Test 4: Generation Embedding Cache
+# ---------------------------------------------------------------------------
+def test_generation_embedding_cache(p5_env):
+    """Verifies embedding cache stores and reloads generation vectors idempotently."""
+    data_dir = p5_env["test_dir"]
+    paper_id = "test-paper-1"
+    run_id = "run-gen-1"
+
+    chunks = [
+        {"id": "c1", "text": "First chunk text about neural networks."},
+        {"id": "c2", "text": "Second chunk text about attention mechanisms."},
+    ]
+
+    # First computation writes cache
+    vecs1, ids1 = get_or_compute_generation_embeddings(data_dir, paper_id, run_id, chunks)
+    assert len(ids1) == 2
+    assert vecs1.shape == (2, 384)
+
+    cache_file = data_dir / "embeddings" / paper_id / f"{run_id}_vectors.npy"
+    meta_file = data_dir / "embeddings" / paper_id / f"{run_id}_meta.json"
+    assert cache_file.exists()
+    assert meta_file.exists()
+
+    # Second computation reads from cache
+    vecs2, ids2 = get_or_compute_generation_embeddings(data_dir, paper_id, run_id, chunks)
+    assert ids1 == ids2
+    np.testing.assert_array_equal(vecs1, vecs2)
+
+
+# ---------------------------------------------------------------------------
+# Test 5: BM25 Serialization & Querying
+# ---------------------------------------------------------------------------
+def test_bm25_serialization_and_querying(p5_env):
+    """Verifies BM25 index builds, saves, loads, and scores queries deterministically."""
+    data_dir = p5_env["test_dir"]
+    chunks = [
+        {"id": "c1", "text": "The transformer model utilizes multi-head attention."},
+        {"id": "c2", "text": "Convolutional networks process grid-structured data like images."},
+        {"id": "c3", "text": "Attention mechanisms allow dynamic routing of representations."},
+    ]
+
+    index = BM25Index()
+    index.build(chunks)
+    assert index.doc_count == 3
+
+    # Query matching c1 and c3
+    results = index.search("multi-head attention", top_k=2)
+    assert len(results) == 2
+    assert results[0][0] == 0  # c1 is at index 0
+    assert index.doc_ids[results[0][0]] == "c1"
+
+    # Save and reload
+    save_path = data_dir / "bm25_test.json"
+    index.save(save_path)
+    assert save_path.exists()
+
+    loaded_index = BM25Index.load(save_path)
+    assert loaded_index.doc_count == 3
+    results_loaded = loaded_index.search("multi-head attention", top_k=2)
+    assert results == results_loaded
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Paired Atomic Publication & Reference Chunk Exclusion
+# ---------------------------------------------------------------------------
+def test_build_and_publish_paired_workspace_index(p5_env):
+    """Verifies publishing creates FAISS FlatIP and BM25 artifacts, excluding reference chunks."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    db = factory()
+    # Create a paper with 2 accepted chunks: 1 body chunk, 1 reference chunk
+    paper = Paper(
+        id="p-index-1",
+        workspace_id=ws_id,
+        original_filename="test.pdf",
+        storage_path="pdfs/test.pdf",
+        sha256="sha256:test1",
+        size_bytes=1000,
+        status="processing",
+        published_run_id="run-1",
+        current_run_id="run-1",
+        created_at=utcnow_iso(),
+    )
+    db.add(paper)
+
+    c1 = Chunk(
+        id="chk-body-1",
+        paper_id=paper.id,
+        run_id="run-1",
+        chunk_index=0,
+        page_start=1,
+        page_end=1,
+        section="Abstract",
+        text="Transformers replace recurrence with attention mechanisms completely.",
+        token_count=10,
+        is_excluded=0,
+        tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+        tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        created_at=utcnow_iso(),
+    )
+    c2 = Chunk(
+        id="chk-ref-1",
+        paper_id=paper.id,
+        run_id="run-1",
+        chunk_index=1,
+        page_start=2,
+        page_end=2,
+        section="References",
+        text="[1] Vaswani et al. Attention is All You Need. NeurIPS 2017.",
+        token_count=12,
+        is_excluded=1,  # Must be excluded from index
+        tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+        tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        created_at=utcnow_iso(),
+    )
+    db.add_all([c1, c2])
+    db.commit()
+
+    # Publish index
+    index_record = build_and_publish_workspace_index(db, ws_id)
+    assert index_record is not None
+    assert index_record.status == "active"
+    assert index_record.version == 1
+    assert index_record.chunk_count == 1  # Only c1, c2 excluded
+
+    # Verify disk artifacts
+    index_dir = data_dir / "indexes" / ws_id / "v1"
+    assert (index_dir / "index.faiss").exists()
+    assert (index_dir / "bm25.json").exists()
+    assert (index_dir / "manifest.json").exists()
+
+    with open(index_dir / "manifest.json") as f:
+        manifest = json.load(f)
+    assert manifest["chunk_count"] == 1
+    assert manifest["chunks"][0]["chunk_id"] == "chk-body-1"
+    assert "faiss_sha256" in manifest
+    assert "bm25_sha256" in manifest
+
+    # Verify paper transitioned to ready
+    db.refresh(paper)
+    assert paper.status == "ready"
+
+    # Verify membership mapping in DB
+    mappings = db.query(IndexChunk).filter(IndexChunk.index_id == index_record.id).all()
+    assert len(mappings) == 1
+    assert mappings[0].chunk_id == "chk-body-1"
+    assert mappings[0].faiss_id == 0
+
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Fail-Closed Boundaries & Crash Safety
+# ---------------------------------------------------------------------------
+def test_fail_closed_and_crash_safety(p5_env):
+    """Verifies failures during index building do not switch active pointer or leave corrupted state."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    db = factory()
+    paper = Paper(
+        id="p-crash-1",
+        workspace_id=ws_id,
+        original_filename="crash.pdf",
+        storage_path="pdfs/crash.pdf",
+        sha256="sha256:crash1",
+        size_bytes=1000,
+        status="processing",
+        published_run_id="run-1",
+        current_run_id="run-1",
+        created_at=utcnow_iso(),
+    )
+    db.add(paper)
+    c1 = Chunk(
+        id="chk-valid-1",
+        paper_id=paper.id,
+        run_id="run-1",
+        chunk_index=0,
+        page_start=1,
+        page_end=1,
+        section="Introduction",
+        text="Valid chunk for index version 1.",
+        token_count=8,
+        is_excluded=0,
+        tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+        tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        created_at=utcnow_iso(),
+    )
+    db.add(c1)
+    db.commit()
+
+    # Step 1: Successfully publish v1
+    v1 = build_and_publish_workspace_index(db, ws_id)
+    assert v1.version == 1
+    assert v1.status == "active"
+
+    # Step 2: Simulate failure during v2 build (add a chunk that will fail embedding token validation)
+    c_bad = Chunk(
+        id="chk-bad-token",
+        paper_id=paper.id,
+        run_id="run-1",
+        chunk_index=1,
+        page_start=2,
+        page_end=2,
+        section="Corrupt",
+        text=" ".join([f"overflow_{i}" for i in range(350)]),  # > 256 tokens!
+        token_count=350,
+        is_excluded=0,
+        tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+        tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        created_at=utcnow_iso(),
+    )
+    db.add(c_bad)
+    db.commit()
+
+    # Publication of v2 must fail
+    with pytest.raises(ValueError, match="exceeds model sequence limit"):
+        build_and_publish_workspace_index(db, ws_id)
+
+    # Assert active index is STILL v1
+    active_idx = get_active_workspace_index(db, ws_id)
+    assert active_idx is not None
+    assert active_idx.id == v1.id
+    assert active_idx.version == 1
+    assert active_idx.status == "active"
+
+    # Assert staging directory v2.tmp was cleaned up
+    tmp_dir = data_dir / "indexes" / ws_id / "v2.tmp"
+    assert not tmp_dir.exists()
+
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Query-Boundary Deletion Safety (Tombstone Exclusion)
+# ---------------------------------------------------------------------------
+def test_query_boundary_deletion_safety(p5_env):
+    """Verifies soft-deleted papers/chunks are immediately excluded from dense and sparse retrieval."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+
+    db = factory()
+    paper = Paper(
+        id="p-delete-1",
+        workspace_id=ws_id,
+        original_filename="delete_test.pdf",
+        storage_path="pdfs/delete_test.pdf",
+        sha256="sha256:delete1",
+        size_bytes=1000,
+        status="processing",
+        published_run_id="run-del",
+        current_run_id="run-del",
+        created_at=utcnow_iso(),
+    )
+    db.add(paper)
+    c1 = Chunk(
+        id="chk-del-1",
+        paper_id=paper.id,
+        run_id="run-del",
+        chunk_index=0,
+        page_start=1,
+        page_end=1,
+        section="Abstract",
+        text="Quantum key distribution offers provable cryptographic security bounds.",
+        token_count=9,
+        is_excluded=0,
+        tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+        tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        created_at=utcnow_iso(),
+    )
+    db.add(c1)
+    db.commit()
+
+    build_and_publish_workspace_index(db, ws_id)
+
+    # Dense and sparse queries find the chunk
+    dense_res = search_dense(db, ws_id, "cryptographic security", top_k=5)
+    sparse_res = search_sparse(db, ws_id, "cryptographic security", top_k=5)
+    assert len(dense_res) == 1
+    assert len(sparse_res) == 1
+    assert dense_res[0]["chunk_id"] == "chk-del-1"
+    assert sparse_res[0]["chunk_id"] == "chk-del-1"
+
+    # Soft-delete paper / tombstone chunk
+    c1.is_deleted = 1
+    db.commit()
+
+    # Query boundary must immediately filter out tombstoned chunk
+    dense_after = search_dense(db, ws_id, "cryptographic security", top_k=5)
+    sparse_after = search_sparse(db, ws_id, "cryptographic security", top_k=5)
+    assert len(dense_after) == 0
+    assert len(sparse_after) == 0
+
+    # Also test paper deletion boundary
+    c1.is_deleted = 0
+    db.delete(paper)
+    db.commit()
+
+    dense_after_del = search_dense(db, ws_id, "cryptographic security", top_k=5)
+    sparse_after_del = search_sparse(db, ws_id, "cryptographic security", top_k=5)
+    assert len(dense_after_del) == 0
+    assert len(sparse_after_del) == 0
+
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Reprocessing Lifecycle & Generation Isolation
+# ---------------------------------------------------------------------------
+def test_reprocessing_generation_isolation(p5_env):
+    """Verifies reprocessing excludes obsolete chunks and activates replacement generation."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+
+    db = factory()
+    paper = Paper(
+        id="p-reproc-1",
+        workspace_id=ws_id,
+        original_filename="reproc.pdf",
+        storage_path="pdfs/reproc.pdf",
+        sha256="sha256:reproc1",
+        size_bytes=1000,
+        status="processing",
+        published_run_id="run-old",
+        current_run_id="run-old",
+        created_at=utcnow_iso(),
+    )
+    db.add(paper)
+    c_old = Chunk(
+        id="chk-old-gen",
+        paper_id=paper.id,
+        run_id="run-old",
+        chunk_index=0,
+        page_start=1,
+        page_end=1,
+        section="Legacy",
+        text="Old generation text describing preliminary convolutional results.",
+        token_count=9,
+        is_excluded=0,
+        tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+        tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        created_at=utcnow_iso(),
+    )
+    db.add(c_old)
+    db.commit()
+
+    v1 = build_and_publish_workspace_index(db, ws_id)
+    assert v1.version == 1
+
+    # Simulate reprocessing: paper current_run_id changes to run-new
+    paper.current_run_id = "run-new"
+    paper.status = "processing"
+    c_new = Chunk(
+        id="chk-new-gen",
+        paper_id=paper.id,
+        run_id="run-new",
+        chunk_index=0,
+        page_start=1,
+        page_end=1,
+        section="Updated",
+        text="New generation text presenting state of the art transformer architecture.",
+        token_count=10,
+        is_excluded=0,
+        tokenizer_name="sentence-transformers/all-MiniLM-L6-v2",
+        tokenizer_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        created_at=utcnow_iso(),
+    )
+    db.add(c_new)
+    # New run published
+    paper.published_run_id = "run-new"
+    db.commit()
+
+    v2 = build_and_publish_workspace_index(db, ws_id)
+    assert v2.version == 2
+    assert v2.status == "active"
+
+    db.refresh(v1)
+    assert v1.status == "retired"
+
+    # Search must find new chunk and not old chunk
+    dense_res = search_dense(db, ws_id, "transformer architecture", top_k=5)
+    assert len(dense_res) == 1
+    assert dense_res[0]["chunk_id"] == "chk-new-gen"
+
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Full 6-Stage Persistent Worker Pipeline to Ready
+# ---------------------------------------------------------------------------
+def test_full_worker_pipeline_to_ready(p5_env):
+    """Ingests a real PDF through all 6 worker stages until paper becomes ready."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    user_id = p5_env["user_id"]
+    data_dir = p5_env["test_dir"]
+
+    pdf_path = data_dir / "pdfs" / "attention_test.pdf"
+    _create_sample_pdf(pdf_path, title="Attention and Transformer Networks")
+
+    client = TestClient(app)
+    with open(pdf_path, "rb") as f:
+        res = client.post(
+            f"/api/papers?workspace_id={ws_id}",
+            files={"files": ("attention_test.pdf", f, "application/pdf")},
+        )
+    assert res.status_code == 202
+    papers_res = res.json()["papers"]
+    assert len(papers_res) == 1
+    paper_id = papers_res[0]["id"]
+
+    # Run worker until all stages complete
+    worker = WorkerEngine(worker_id="test-p5-worker", poll_interval=0.1)
+
+    # Process all 6 stages
+    max_steps = 15
+    for _ in range(max_steps):
+        processed = worker.run_once()
+        if not processed:
+            break
+
+    db = factory()
+    paper = db.query(Paper).filter(Paper.id == paper_id).first()
+    assert paper is not None
+    assert paper.status == "ready"
+    assert paper.published_run_id is not None
+    run_id = paper.published_run_id
+
+    # Assert paper reached ready
+    assert paper.status == "ready"
+    assert paper.published_run_id == run_id
+
+    # Check status response details
+    status_details = get_paper_status_details(db, user_id, paper.id)
+    assert status_details.status == "ready"
+    assert status_details.stage == "indexing"
+    assert status_details.substate == "ready"
+    assert status_details.progress == 1.0
+
+    # Verify active index exists and contains chunks
+    active_idx = get_active_workspace_index(db, ws_id)
+    assert active_idx is not None
+    assert active_idx.status == "active"
+    assert active_idx.chunk_count > 0
+
+    # Query internal dense probe
+    dense_matches = search_dense(db, ws_id, "Transformer architecture", top_k=3)
+    assert len(dense_matches) > 0
+    assert "transformer" in dense_matches[0]["text"].lower()
+
+    db.close()

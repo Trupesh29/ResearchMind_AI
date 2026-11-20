@@ -349,12 +349,10 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
 
         retryCountRef.current += 1;
         const currentStatus = statusDataRef.current?.status || paper.status;
-        const currentSubstate = statusDataRef.current?.substate;
         const hasConflict = generationConflictCountRef.current > 0;
         const shouldPoll =
           currentStatus === "uploaded" ||
-          (currentStatus === "processing" &&
-            (currentSubstate !== "awaiting_indexing" || hasConflict)) ||
+          currentStatus === "processing" ||
           hasConflict ||
           isPolling ||
           retryCountRef.current <= 3;
@@ -403,14 +401,12 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
     }
 
     const currentStatus = statusData?.status || paper.status;
-    const currentSubstate = statusData?.substate;
     const hasConflict = generationConflictCountRef.current > 0;
 
     // Continue polling if uploaded (queued), actively processing, or if generation agreement is pending
     const shouldPoll =
       currentStatus === "uploaded" ||
-      (currentStatus === "processing" &&
-        (currentSubstate !== "awaiting_indexing" || hasConflict)) ||
+      currentStatus === "processing" ||
       hasConflict;
 
     if (shouldPoll) {
@@ -791,7 +787,26 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
               <Badge variant="info">{statusData?.stage || "validating"}</Badge>
             </div>
 
-            {statusData?.substate === "awaiting_indexing" && (
+            {statusData?.status === "ready" && (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "4px 10px",
+                  background: "var(--green-surface)",
+                  borderRadius: "var(--r-pill)",
+                  color: "var(--green-text)",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                }}
+              >
+                <CheckCircle2 size={14} />
+                <span>Semantic Index Active (Ready)</span>
+              </div>
+            )}
+
+            {statusData?.status === "processing" && statusData?.substate === "awaiting_indexing" && (
               <div
                 style={{
                   display: "inline-flex",
@@ -805,8 +820,46 @@ export const QualityCenterModal: React.FC<QualityCenterModalProps> = ({
                   fontWeight: 600,
                 }}
               >
-                <CheckCircle2 size={14} />
-                <span>Awaiting Semantic Indexing (Week 3)</span>
+                <Clock size={14} />
+                <span>Awaiting Semantic Indexing</span>
+              </div>
+            )}
+
+            {statusData?.status === "processing" && statusData?.substate === "embedding" && (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "4px 10px",
+                  background: "var(--blue-surface)",
+                  borderRadius: "var(--r-pill)",
+                  color: "var(--blue-text)",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                }}
+              >
+                <RefreshCw size={14} className="animate-spin" />
+                <span>Computing Embeddings</span>
+              </div>
+            )}
+
+            {statusData?.status === "processing" && statusData?.substate === "indexing" && (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "4px 10px",
+                  background: "var(--blue-surface)",
+                  borderRadius: "var(--r-pill)",
+                  color: "var(--blue-text)",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                }}
+              >
+                <RefreshCw size={14} className="animate-spin" />
+                <span>Building Semantic Index</span>
               </div>
             )}
 

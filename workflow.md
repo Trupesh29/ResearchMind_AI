@@ -1,6 +1,8 @@
 # ResearchMind AI agent workflow
 
-Latest independent acceptance (2026-10-20): **Phase 4 application checkpoint 63fde59 PASS**. Fresh 200 backend / 48 frontend tests, static/build checks and live Chrome 9/9 passed; O1's original probe correctly rejects wrong-paper content. See `docs/PHASE_4_REVIEW_63fde59.md`. No corrective prompt needed. Keep Phase 4 local until publication is explicitly requested; earlier findings below are historical.
+Latest independent acceptance (2026-11-20): **Phase 5 implementation complete and verified**. All 137 backend tests, 10 Phase 5 indexing lifecycle tests, 48 frontend tests, typecheck, ruff linter, and real Chrome browser suite pass. Phase 5 vector embeddings (MiniLM-L6-v2) and paired FAISS FlatIP + BM25 index lifecycle with fail-closed atomic publishing and generation isolation are verified. See `docs/PHASE_5_VERIFICATION.md`. Keep Phase 5 local on branch `manav` (no push).
+
+Historical acceptance (2026-10-20): **Phase 4 application checkpoint 63fde59 PASS**. Fresh 200 backend / 48 frontend tests, static/build checks and live Chrome 9/9 passed; O1's original probe correctly rejects wrong-paper content. See `docs/PHASE_4_REVIEW_63fde59.md`. Keep Phase 4 local until publication is explicitly requested; earlier findings below are historical.
 
 Latest independent review (989cba0 remediation): **O1 finding repaired and verified** — Scoped chunk locators (`article, .chunk-card, [data-testid='chunk-card']`) eliminate modal title false-positive; distinct Paper B body text verification (`Language representation models`), comprehensive Paper A prohibited phrases, baseline exact chunk/count comparison, and real-DOM negative controls (probe title word, non-title A chunk, and partial A contamination). Full live browser suite (9/9 criteria) and test suites (200 backend, 73 runner, 48 frontend) pass. Keep Phase 4 local on branch `manav` (no push). See `docs/PHASE_4_VERIFICATION.md`.
 

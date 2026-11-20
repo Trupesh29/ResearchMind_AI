@@ -103,6 +103,17 @@ See [Week 2 implementation phases](docs/WEEK_2_PHASES.md) for scope, integration
 
 **Outcome:** the system retrieves relevant evidence only from selected ready papers.
 
+### Implementation phases
+
+| Phase | Focus | Status |
+|---|---|---|
+| 5 | Embeddings, versioned FAISS/BM25 indexes, atomic publication, ready transition and lifecycle recovery | Planned |
+| 6 | Selected-document hybrid retrieval, evidence inspection, evaluation and configuration freeze | Planned |
+| Independent work | SciCite baselines and first DistilBERT validation trial | Preparation evidence to verify; Week 3 runs planned |
+| Acceptance | Real-worker demo, isolation/recovery checks, saved metrics and Week 4 handoff | Pending |
+
+See [Week 3 implementation phases](docs/WEEK_3_PHASES.md) and the [execution checklist](tasks/todo.md). Implementation Phases 5–6 implement roadmap feature Phase 3; they do not change sidebar feature numbering. The latest Phase 4 acceptance is recorded in [the review of 63fde59](docs/PHASE_4_REVIEW_63fde59.md).
+
 ### Build
 
 - Create versioned workspace indexes using `all-MiniLM-L6-v2`, normalized embeddings, FAISS, and BM25.

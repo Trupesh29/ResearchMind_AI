@@ -137,7 +137,8 @@ def verify_disposable_database_ownership(base_url: str) -> str:
     cfg_url = f"{base_url.rstrip('/')}/api/config/public"
     try:
         req = urllib.request.Request(cfg_url, headers={"User-Agent": "ResearchMind-OwnershipVerifier/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=5) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"Remote backend responded with HTTP {resp.status} at {cfg_url}")
             data = json.loads(resp.read().decode("utf-8"))

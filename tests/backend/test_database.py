@@ -912,7 +912,7 @@ def test_historical_generation_attribution_matrix(temp_test_dir):
     command.upgrade(cfg, "head")
     with SessionCls() as session:
         head_rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert head_rev == "0010_repair_chunk_provenance"
+        assert head_rev == "0011_add_versioned_indexes_and_membership"
         final_p1 = session.execute(
             text("SELECT current_run_id, published_run_id FROM papers WHERE id = :id"), {"id": p1_id}
         ).fetchone()
@@ -1158,7 +1158,7 @@ def test_multirun_page_generation_preservation_matrix(temp_test_dir):
     with SessionCls() as session:
         # Check revision advanced to head
         rev = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "0010_repair_chunk_provenance"
+        assert rev == "0011_add_versioned_indexes_and_membership"
 
         # Verification 1: Overlapping multi-generation pages survive!
         ov_pages = session.execute(
@@ -1248,7 +1248,7 @@ def test_multirun_page_generation_preservation_matrix(temp_test_dir):
         )
     command.upgrade(cfg, "head")
     with engine.connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == ("0010_repair_chunk_provenance")
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == ("0011_add_versioned_indexes_and_membership")
 
     engine.dispose()
 
@@ -1274,7 +1274,7 @@ def test_clean_install_and_already_0005_upgrade(temp_test_dir):
     engine = create_engine(db_url)
     with engine.connect() as c:
         rev = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "0010_repair_chunk_provenance"
+        assert rev == "0011_add_versioned_indexes_and_membership"
 
     # 2. Downgrade to 0005 and upgrade back to head
     command.downgrade(cfg, "0005_repair_historical_generation_attribution")
@@ -1284,7 +1284,7 @@ def test_clean_install_and_already_0005_upgrade(temp_test_dir):
         )
     command.upgrade(cfg, "head")
     with engine.connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == ("0010_repair_chunk_provenance")
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == ("0011_add_versioned_indexes_and_membership")
 
     engine.dispose()
 
@@ -1406,7 +1406,7 @@ def test_migration_0008_span_reconciliation_matrix(temp_test_dir):
 
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "0010_repair_chunk_provenance"
+        assert rev == "0011_add_versioned_indexes_and_membership"
 
         # Check Section 1: exact dehyphenation span
         s1_spans = json.loads(conn.execute(text("SELECT block_spans_json FROM sections WHERE id='s1'")).scalar())
@@ -1524,7 +1524,7 @@ def test_existing_0008_database_upgrades_to_0009_with_provenance_preservation(te
 
     with engine.connect() as conn:
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
-            "0010_repair_chunk_provenance"
+            "0011_add_versioned_indexes_and_membership"
         )
 
         # Verify section spans repaired (no out-of-bounds)
@@ -1641,7 +1641,7 @@ def test_populated_0009_upgrades_to_0010_and_repairs_unrelated_blocks(temp_test_
 
     with engine.connect() as conn:
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == (
-            "0010_repair_chunk_provenance"
+            "0011_add_versioned_indexes_and_membership"
         )
 
         # Chunk 1: Unrelated block 'c' was repaired to unique demonstrable match 'b'
