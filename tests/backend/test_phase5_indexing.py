@@ -58,10 +58,12 @@ from backend.app.services.index_service import (
     CrashBoundaryException,
     PublicationConflictError,
     WorkerFencingViolation,
+    acquire_workspace_publication_slot,
     build_and_publish_workspace_index,
     cleanup_stale_staging_directories,
     compute_file_sha256,
     get_active_workspace_index,
+    release_workspace_publication_slot,
     search_dense,
     search_sparse,
     verify_index_artifacts_integrity,
@@ -1804,3 +1806,332 @@ def test_index_artifacts_negative_controls_extended(p5_env):
         )
         db.commit()
         assert verify_index_artifacts_integrity(idx, db=db) is False
+
+
+# ---------------------------------------------------------------------------
+# Test 21: Post-Commit Crash Preserves Active Artifacts (P5-F1)
+# ---------------------------------------------------------------------------
+def test_post_commit_crash_preserves_active_artifacts(p5_env):
+    """Verifies that an exception after database commit never destroys committed active index artifacts."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+    now = utcnow_iso()
+
+    with factory() as db:
+        # 1. Baseline v1 index
+        base_paper = Paper(
+            id="base-paper-f1",
+            workspace_id=ws_id,
+            original_filename="base.pdf",
+            storage_path="base.pdf",
+            sha256="hash_base_f1",
+            size_bytes=100,
+            status="processing",
+            current_run_id="run-base-1",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(base_paper)
+        db.add(
+            Chunk(
+                id="c-base-f1",
+                paper_id=base_paper.id,
+                run_id="run-base-1",
+                chunk_index=0,
+                text="Baseline stable chunk text for commit crash test.",
+                token_count=12,
+                section="Intro",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        v1_idx = build_and_publish_workspace_index(
+            db,
+            workspace_id=ws_id,
+            target_paper_id=base_paper.id,
+            target_run_id="run-base-1",
+            data_dir=data_dir,
+        )
+        assert v1_idx is not None and v1_idx.version == 1
+
+        # 2. Add second paper that will experience crash after commit
+        p2 = Paper(
+            id="crash-paper-f1",
+            workspace_id=ws_id,
+            original_filename="crash_f1.pdf",
+            storage_path="crash_f1.pdf",
+            sha256="hash_crash_f1",
+            size_bytes=100,
+            status="processing",
+            current_run_id="run-p2-1",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(p2)
+        db.add(
+            Chunk(
+                id="c-p2-f1",
+                paper_id=p2.id,
+                run_id="run-p2-1",
+                chunk_index=0,
+                text="Committed chunk that must survive post-commit crash.",
+                token_count=10,
+                section="Methods",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        with pytest.raises(CrashBoundaryException):
+            build_and_publish_workspace_index(
+                db,
+                workspace_id=ws_id,
+                target_paper_id=p2.id,
+                target_run_id="run-p2-1",
+                data_dir=data_dir,
+                max_retries=1,
+                _crash_boundary="after_commit",
+            )
+
+    # 3. Open a fresh DB session and verify post-commit invariants
+    with factory() as fresh_db:
+        act = get_active_workspace_index(fresh_db, ws_id)
+        assert act is not None, "Active index must exist in DB after commit"
+        assert act.version == 2, f"Active index must be v2, got v{act.version}"
+
+        # Invariant: v2 final directory and files MUST exist on disk
+        v2_dir = data_dir / "indexes" / ws_id / "v2"
+        assert v2_dir.exists(), "v2 directory must NOT be deleted after successful commit"
+        assert (v2_dir / "index.faiss").exists()
+        assert (v2_dir / "bm25.json").exists()
+        assert (v2_dir / "manifest.json").exists()
+
+        # Invariant: Artifact integrity check passes
+        assert verify_index_artifacts_integrity(act, db=fresh_db) is True
+
+        # Invariant: Target paper is ready
+        p2_fresh = fresh_db.query(Paper).filter(Paper.id == "crash-paper-f1").first()
+        assert p2_fresh.status == "ready"
+        assert p2_fresh.published_run_id == "run-p2-1"
+
+        # Invariant: Dense search succeeds using v2
+        results = search_dense(fresh_db, ws_id, "Committed chunk", top_k=5)
+        assert len(results) > 0
+        assert any(r["chunk_id"] == "c-p2-f1" for r in results)
+
+        # 4. Negative control: if v2 directory were deleted (as in bug 4fef34c),
+        # integrity check fails and search fails safely
+        import shutil
+
+        temp_backup = data_dir / "indexes" / ws_id / "v2_backup"
+        shutil.copytree(v2_dir, temp_backup)
+        shutil.rmtree(v2_dir)
+
+        assert verify_index_artifacts_integrity(act, db=fresh_db) is False
+        assert search_dense(fresh_db, ws_id, "Committed chunk", top_k=5) == []
+
+        # Restore
+        shutil.copytree(temp_backup, v2_dir)
+        shutil.rmtree(temp_backup)
+        assert verify_index_artifacts_integrity(act, db=fresh_db) is True
+
+
+# ---------------------------------------------------------------------------
+# Test 22: Publication Lock Heartbeat, Takeover & Ownership Tests (P5-F2)
+# ---------------------------------------------------------------------------
+def test_publication_slot_active_heartbeat_prevents_stealing(p5_env):
+    """Verifies that an active slot owner with running heartbeat cannot have slot stolen."""
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    ws_dir.mkdir(parents=True, exist_ok=True)
+
+    with acquire_workspace_publication_slot(ws_id, ws_dir, owner_id="owner_a", timeout=5.0) as slot_a:
+        meta_file = ws_dir / ".publication_slot" / "slot_meta.json"
+        assert meta_file.exists()
+        with open(meta_file, "r", encoding="utf-8") as f:
+            meta1 = json.load(f)
+        assert meta1["owner_token"] == slot_a["owner_token"]
+        first_hb = meta1["heartbeat_at"]
+
+        # Wait for heartbeat thread to refresh
+        import time
+
+        time.sleep(1.5)
+        with open(meta_file, "r", encoding="utf-8") as f:
+            meta2 = json.load(f)
+        assert meta2["heartbeat_at"] > first_hb, "Heartbeat must be continuously updated"
+
+        # Attempt concurrent acquisition with another owner -> must time out
+        import threading
+
+        timeout_occurred = threading.Event()
+
+        def try_steal():
+            try:
+                with acquire_workspace_publication_slot(ws_id, ws_dir, owner_id="owner_b", timeout=0.3):
+                    pass
+            except TimeoutError:
+                timeout_occurred.set()
+
+        t = threading.Thread(target=try_steal)
+        t.start()
+        t.join(timeout=2.0)
+        assert timeout_occurred.is_set(), "Competing worker must not be able to acquire active heartbeat slot"
+
+
+def test_publication_slot_abandoned_stale_recovery(p5_env):
+    """Verifies that an abandoned slot with expired heartbeat or dead PID is safely recovered."""
+    import time
+
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    lock_dir = ws_dir / ".publication_slot"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write a stale lock with dead PID and expired heartbeat
+    stale_meta = {
+        "owner_id": "dead_worker",
+        "owner_token": "dead_token_12345",
+        "pid": 9999999,
+        "acquired_at": time.time() - 60.0,
+        "heartbeat_at": time.time() - 30.0,
+        "heartbeat_ttl": 5.0,
+        "timeout": 5.0,
+    }
+    with open(lock_dir / "slot_meta.json", "w", encoding="utf-8") as f:
+        json.dump(stale_meta, f)
+
+    # Worker B should detect stale lock and take over
+    with acquire_workspace_publication_slot(ws_id, ws_dir, owner_id="worker_b", timeout=3.0) as slot_b:
+        assert slot_b["owner_id"] == "worker_b"
+        with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
+            new_meta = json.load(f)
+        assert new_meta["owner_token"] == slot_b["owner_token"]
+        assert new_meta["owner_id"] == "worker_b"
+
+
+def test_publication_slot_late_cleanup_does_not_delete_new_owner(p5_env):
+    """Verifies that a late cleanup by a timed-out owner cannot delete a new owner's active lock."""
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    lock_dir = ws_dir / ".publication_slot"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+
+    token_a = "token_owner_a_timed_out"
+    token_b = "token_owner_b_new_active"
+
+    # Slot currently belongs to Owner B
+    active_meta_b = {
+        "owner_id": "owner_b",
+        "owner_token": token_b,
+        "pid": os.getpid(),
+        "acquired_at": 1000.0,
+        "heartbeat_at": 1000.0,
+    }
+    with open(lock_dir / "slot_meta.json", "w", encoding="utf-8") as f:
+        json.dump(active_meta_b, f)
+
+    # Owner A attempts late release with its old token
+    released = release_workspace_publication_slot(ws_id, ws_dir, owner_token=token_a)
+    assert released is False, "Late release by mismatched owner must return False"
+
+    # Owner B's lock must remain untouched
+    assert lock_dir.exists(), "Owner B's lock directory must NOT be deleted by Owner A"
+    with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
+        current_meta = json.load(f)
+    assert current_meta["owner_token"] == token_b, "Owner B's metadata must be intact"
+
+
+def test_publication_slot_multiprocess_exclusion(p5_env, tmp_path):
+    """Spawns 2 real operating system processes competing for the publication slot to prove exclusion."""
+    import subprocess
+    import sys
+
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    log_file = tmp_path / "slot_multiprocess.log"
+    project_root = Path(__file__).resolve().parent.parent.parent
+
+    worker_code = f"""
+import sys, time, os
+from pathlib import Path
+sys.path.insert(0, {str(project_root)!r})
+from backend.app.services.index_service import acquire_workspace_publication_slot
+
+ws_id = {ws_id!r}
+ws_dir = Path({str(ws_dir)!r})
+log_path = Path({str(log_file)!r})
+owner = sys.argv[1]
+
+try:
+    with acquire_workspace_publication_slot(ws_id, ws_dir, owner_id=owner, timeout=10.0):
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"ENTER:{{owner}}:{{time.time()}}\\n")
+        time.sleep(0.4)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"EXIT:{{owner}}:{{time.time()}}\\n")
+    sys.exit(0)
+except Exception as e:
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"ERROR:{{owner}}:{{e}}\\n")
+    sys.exit(1)
+"""
+    script_file = tmp_path / "proc_worker.py"
+    script_file.write_text(worker_code, encoding="utf-8")
+
+    # Launch two independent OS processes simultaneously
+    p1 = subprocess.Popen([sys.executable, str(script_file), "proc_1"])
+    p2 = subprocess.Popen([sys.executable, str(script_file), "proc_2"])
+
+    p1.wait(timeout=35)
+    p2.wait(timeout=35)
+
+    assert p1.returncode == 0, "Process 1 should succeed"
+    assert p2.returncode == 0, "Process 2 should succeed"
+
+    lines = [line.strip().split(":") for line in log_file.read_text(encoding="utf-8").strip().splitlines() if line]
+    assert len(lines) == 4, f"Expected 4 events, got {lines}"
+
+    # Verify strictly non-overlapping execution: ENTER -> EXIT -> ENTER -> EXIT
+    first_enter_owner = lines[0][1]
+    assert lines[0][0] == "ENTER"
+    assert lines[1][0] == "EXIT"
+    assert lines[1][1] == first_enter_owner, "First process must EXIT before second enters"
+
+    second_enter_owner = lines[2][1]
+    assert second_enter_owner != first_enter_owner, "Second process must be different"
+    assert lines[2][0] == "ENTER"
+    assert lines[3][0] == "EXIT"
+    assert lines[3][1] == second_enter_owner
+
+
+def test_publication_slot_negative_control_unsafe_release_reproduced(p5_env):
+    """Negative control: Proves that unconditional release destroys another owner's lock."""
+    import shutil
+
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    lock_dir = ws_dir / ".publication_slot"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+
+    # Owner B acquired
+    active_meta_b = {"owner_token": "owner_b_token"}
+    with open(lock_dir / "slot_meta.json", "w", encoding="utf-8") as f:
+        json.dump(active_meta_b, f)
+
+    # The buggy 4fef34c logic unconditionally ran:
+    def buggy_release():
+        shutil.rmtree(lock_dir, ignore_errors=True)
+
+    buggy_release()
+    assert not lock_dir.exists(), "Buggy release wiped Owner B's active lock"

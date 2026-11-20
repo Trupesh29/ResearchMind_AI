@@ -75,6 +75,75 @@ def _get_process_thread_lock(workspace_id: str) -> threading.Lock:
         return _WORKSPACE_PUBLICATION_LOCKS[workspace_id]
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """Check if process with given PID is currently alive."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == STILL_ACTIVE
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def release_workspace_publication_slot(
+    workspace_id: str,
+    ws_dir: Path,
+    owner_token: str,
+) -> bool:
+    """Safely release the publication slot ONLY if owner_token matches the current lock."""
+    lock_dir = ws_dir / ".publication_slot"
+    meta_path = lock_dir / "slot_meta.json"
+    if not lock_dir.exists():
+        return False
+
+    if not meta_path.exists():
+        try:
+            lock_dir.rmdir()
+            return True
+        except Exception:
+            return False
+
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        current_token = data.get("owner_token")
+        if current_token != owner_token:
+            logger.warning(
+                f"Publication slot owner token mismatch for {workspace_id}. "
+                f"Lock owned by {current_token}, release attempted by {owner_token}. Skipping release."
+            )
+            return False
+
+        meta_path.unlink(missing_ok=True)
+        try:
+            lock_dir.rmdir()
+        except Exception:
+            shutil.rmtree(lock_dir, ignore_errors=True)
+        return True
+    except Exception as exc:
+        logger.warning(f"Error during publication slot release for {workspace_id}: {exc}")
+        return False
+
+
 @contextlib.contextmanager
 def acquire_workspace_publication_slot(
     workspace_id: str,
@@ -82,11 +151,13 @@ def acquire_workspace_publication_slot(
     owner_id: str,
     timeout: float = 30.0,
     poll_interval: float = 0.05,
+    heartbeat_interval: float = 1.0,
+    heartbeat_ttl: float = 10.0,
 ) -> Generator[dict[str, Any], None, None]:
     """Acquire serialized publication slot for a workspace across threads and processes.
 
     Uses thread-level lock + atomic filesystem directory reservation (.publication_slot)
-    with owner metadata and heartbeat/lease expiration.
+    with owner metadata, continuous background heartbeat thread, and lease takeover fencing.
     """
     t_lock = _get_process_thread_lock(workspace_id)
     acquired_thread = t_lock.acquire(timeout=timeout)
@@ -97,49 +168,99 @@ def acquire_workspace_publication_slot(
     meta_path = lock_dir / "slot_meta.json"
     start_time = time.time()
     acquired_fs = False
-    slot_info = {"owner_id": owner_id, "workspace_id": workspace_id, "acquired_at": time.time()}
+    owner_token = f"{os.getpid()}_{uuid.uuid4().hex}"
+    slot_info = {
+        "owner_id": owner_id,
+        "owner_token": owner_token,
+        "workspace_id": workspace_id,
+        "acquired_at": time.time(),
+    }
+
+    stop_heartbeat = threading.Event()
+    hb_thread: threading.Thread | None = None
+
+    def _heartbeat_loop():
+        while not stop_heartbeat.wait(timeout=heartbeat_interval):
+            try:
+                if not meta_path.exists():
+                    break
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    cur = json.load(f)
+                if cur.get("owner_token") != owner_token:
+                    break
+                cur["heartbeat_at"] = time.time()
+                tmp_meta = meta_path.with_suffix(f".tmp_{uuid.uuid4().hex[:6]}")
+                with open(tmp_meta, "w", encoding="utf-8") as f:
+                    json.dump(cur, f)
+                tmp_meta.replace(meta_path)
+            except Exception:
+                pass
 
     try:
         while time.time() - start_time < timeout:
             try:
                 lock_dir.mkdir(parents=True, exist_ok=False)
                 acquired_fs = True
+                meta_content = {
+                    "owner_id": owner_id,
+                    "owner_token": owner_token,
+                    "pid": os.getpid(),
+                    "acquired_at": time.time(),
+                    "heartbeat_at": time.time(),
+                    "heartbeat_ttl": heartbeat_ttl,
+                    "timeout": timeout,
+                }
                 with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        {
-                            "owner_id": owner_id,
-                            "pid": os.getpid(),
-                            "acquired_at": time.time(),
-                            "timeout": timeout,
-                        },
-                        f,
-                    )
+                    json.dump(meta_content, f)
+
+                hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+                hb_thread.start()
                 break
             except FileExistsError:
-                # Check if existing lock is expired
                 is_stale = False
+                existing_token = None
                 if meta_path.exists():
                     try:
                         with open(meta_path, "r", encoding="utf-8") as f:
                             data = json.load(f)
-                        age = time.time() - data.get("acquired_at", 0)
-                        if age > data.get("timeout", timeout):
+                        existing_token = data.get("owner_token")
+                        pid = data.get("pid")
+                        hb = data.get("heartbeat_at", data.get("acquired_at", 0))
+                        ttl = data.get("heartbeat_ttl", heartbeat_ttl)
+
+                        if (time.time() - hb) > ttl:
                             is_stale = True
+                        elif pid and not _is_pid_alive(pid):
+                            is_stale = True
+                    except (json.JSONDecodeError, PermissionError):
+                        # Transient write or sharing conflict on Windows; do not treat as stale
+                        pass
                     except Exception:
-                        is_stale = True
+                        try:
+                            if (time.time() - meta_path.stat().st_mtime) > heartbeat_ttl:
+                                is_stale = True
+                        except Exception:
+                            pass
                 else:
                     try:
-                        if time.time() - lock_dir.stat().st_mtime > timeout:
+                        if time.time() - lock_dir.stat().st_mtime > heartbeat_ttl:
                             is_stale = True
                     except Exception:
                         pass
 
                 if is_stale:
+                    stale_takeover_dir = ws_dir / f".publication_slot_stale_{uuid.uuid4().hex[:8]}"
                     try:
-                        shutil.rmtree(lock_dir, ignore_errors=True)
+                        lock_dir.rename(stale_takeover_dir)
+                        shutil.rmtree(stale_takeover_dir, ignore_errors=True)
+                        logger.info(
+                            f"Recovered stale publication slot for workspace {workspace_id} "
+                            f"(previous owner token: {existing_token})."
+                        )
                         continue
                     except Exception:
                         pass
+
                 time.sleep(poll_interval)
 
         if not acquired_fs:
@@ -148,13 +269,11 @@ def acquire_workspace_publication_slot(
         yield slot_info
 
     finally:
+        stop_heartbeat.set()
+        if hb_thread and hb_thread.is_alive():
+            hb_thread.join(timeout=1.0)
         if acquired_fs:
-            try:
-                if meta_path.exists():
-                    meta_path.unlink(missing_ok=True)
-                lock_dir.rmdir()
-            except Exception:
-                shutil.rmtree(lock_dir, ignore_errors=True)
+            release_workspace_publication_slot(workspace_id, ws_dir, owner_token)
         t_lock.release()
 
 
@@ -800,10 +919,12 @@ def build_and_publish_workspace_index(
                                     p.published_run_id = p.current_run_id
                                 p.updated_at = now
 
+                    committed = False
                     if _crash_boundary == "during_commit":
                         raise CrashBoundaryException("Simulated crash during database commit")
 
                     db.commit()
+                    committed = True
                     db.refresh(new_index)
 
                     if _crash_boundary == "after_commit":
@@ -815,11 +936,57 @@ def build_and_publish_workspace_index(
                     )
                     return new_index
 
-                except Exception:
-                    db.rollback()
-                    if final_dir.exists():
-                        shutil.rmtree(final_dir, ignore_errors=True)
-                    raise
+                except Exception as inner_exc:
+                    # P5-F1: Verify if the database transaction committed
+                    actual_committed = committed
+                    if not actual_committed:
+                        try:
+                            from backend.app.db.session import get_session_factory
+
+                            s_factory = get_session_factory()
+                            if s_factory:
+                                with s_factory() as check_db:
+                                    rec = (
+                                        check_db.query(EmbeddingIndex)
+                                        .filter(
+                                            EmbeddingIndex.workspace_id == workspace_id,
+                                            EmbeddingIndex.version == next_version,
+                                            EmbeddingIndex.status == "active",
+                                        )
+                                        .first()
+                                    )
+                                    if rec:
+                                        actual_committed = True
+                        except Exception:
+                            pass
+
+                    if actual_committed:
+                        logger.warning(
+                            f"Post-commit exception for workspace {workspace_id} v{next_version}: {inner_exc}. "
+                            f"Committed index verified in DB; preserving active artifacts in {final_dir}."
+                        )
+                        # Reconcile target paper to ready if needed
+                        try:
+                            from backend.app.db.session import get_session_factory
+
+                            s_factory = get_session_factory()
+                            if s_factory and target_paper_id:
+                                with s_factory() as rec_db:
+                                    tp = rec_db.query(Paper).filter(Paper.id == target_paper_id).first()
+                                    if tp and tp.status != "ready":
+                                        tp.status = "ready"
+                                        if target_run_id:
+                                            tp.published_run_id = target_run_id
+                                        rec_db.commit()
+                        except Exception as rec_err:
+                            logger.error(f"Post-commit target paper reconciliation error: {rec_err}")
+
+                        raise
+                    else:
+                        db.rollback()
+                        if final_dir.exists():
+                            shutil.rmtree(final_dir, ignore_errors=True)
+                        raise
 
         except Exception:
             if staging_dir.exists():
