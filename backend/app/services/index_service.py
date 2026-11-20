@@ -13,14 +13,17 @@ Features:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import shutil
+import threading
+import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 import faiss
 import numpy as np
@@ -47,6 +50,112 @@ class WorkerFencingViolation(Exception):
     """Raised when an index publication or worker operation is attempted with an expired or superseded claim token."""
 
     pass
+
+
+class PublicationConflictError(Exception):
+    """Raised when concurrent publication conflict occurs or final directory already exists."""
+
+    pass
+
+
+class CrashBoundaryException(Exception):
+    """Raised when an injected test crash boundary is triggered."""
+
+    pass
+
+
+_WORKSPACE_PUBLICATION_LOCKS: dict[str, threading.Lock] = {}
+_GLOBAL_LOCK_DICT_LOCK = threading.Lock()
+
+
+def _get_process_thread_lock(workspace_id: str) -> threading.Lock:
+    with _GLOBAL_LOCK_DICT_LOCK:
+        if workspace_id not in _WORKSPACE_PUBLICATION_LOCKS:
+            _WORKSPACE_PUBLICATION_LOCKS[workspace_id] = threading.Lock()
+        return _WORKSPACE_PUBLICATION_LOCKS[workspace_id]
+
+
+@contextlib.contextmanager
+def acquire_workspace_publication_slot(
+    workspace_id: str,
+    ws_dir: Path,
+    owner_id: str,
+    timeout: float = 30.0,
+    poll_interval: float = 0.05,
+) -> Generator[dict[str, Any], None, None]:
+    """Acquire serialized publication slot for a workspace across threads and processes.
+
+    Uses thread-level lock + atomic filesystem directory reservation (.publication_slot)
+    with owner metadata and heartbeat/lease expiration.
+    """
+    t_lock = _get_process_thread_lock(workspace_id)
+    acquired_thread = t_lock.acquire(timeout=timeout)
+    if not acquired_thread:
+        raise TimeoutError(f"Timed out waiting for publication thread lock for workspace {workspace_id}")
+
+    lock_dir = ws_dir / ".publication_slot"
+    meta_path = lock_dir / "slot_meta.json"
+    start_time = time.time()
+    acquired_fs = False
+    slot_info = {"owner_id": owner_id, "workspace_id": workspace_id, "acquired_at": time.time()}
+
+    try:
+        while time.time() - start_time < timeout:
+            try:
+                lock_dir.mkdir(parents=True, exist_ok=False)
+                acquired_fs = True
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "owner_id": owner_id,
+                            "pid": os.getpid(),
+                            "acquired_at": time.time(),
+                            "timeout": timeout,
+                        },
+                        f,
+                    )
+                break
+            except FileExistsError:
+                # Check if existing lock is expired
+                is_stale = False
+                if meta_path.exists():
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        age = time.time() - data.get("acquired_at", 0)
+                        if age > data.get("timeout", timeout):
+                            is_stale = True
+                    except Exception:
+                        is_stale = True
+                else:
+                    try:
+                        if time.time() - lock_dir.stat().st_mtime > timeout:
+                            is_stale = True
+                    except Exception:
+                        pass
+
+                if is_stale:
+                    try:
+                        shutil.rmtree(lock_dir, ignore_errors=True)
+                        continue
+                    except Exception:
+                        pass
+                time.sleep(poll_interval)
+
+        if not acquired_fs:
+            raise TimeoutError(f"Timed out acquiring publication filesystem slot for workspace {workspace_id}")
+
+        yield slot_info
+
+    finally:
+        if acquired_fs:
+            try:
+                if meta_path.exists():
+                    meta_path.unlink(missing_ok=True)
+                lock_dir.rmdir()
+            except Exception:
+                shutil.rmtree(lock_dir, ignore_errors=True)
+        t_lock.release()
 
 
 def compute_file_sha256(file_path: Path | str) -> str:
@@ -80,19 +189,68 @@ def get_workspace_index_base_dir(workspace_id: str, data_dir: Path | None = None
     return path
 
 
-def cleanup_stale_staging_directories(workspace_id: str, data_dir: Path | None = None) -> int:
-    """Prune any orphaned staging directories (.tmp) left by crashes or aborted attempts."""
-    ws_dir = get_workspace_index_base_dir(workspace_id, data_dir=data_dir)
+def cleanup_stale_staging_directories(
+    workspace_id: str,
+    data_dir: Path | None = None,
+    max_age_seconds: float = 60.0,
+) -> int:
+    """Prune any orphaned staging directories (.tmp) left by crashes or aborted attempts.
+
+    Ownership-aware: Reads staging_meta.json inside each directory. Never deletes an active
+    unexpired staging directory owned by a competing worker.
+    Strictly validates that all target paths resolve within ws_dir (prevents directory traversal).
+    """
+    ws_dir = get_workspace_index_base_dir(workspace_id, data_dir=data_dir).resolve()
     if not ws_dir.exists():
         return 0
     removed = 0
+    now = time.time()
     for item in ws_dir.iterdir():
+        # Validate path traversal: must be strictly inside ws_dir
+        try:
+            resolved_item = item.resolve()
+            if not resolved_item.is_relative_to(ws_dir):
+                raise ValueError(f"Attempted directory traversal in staging cleanup: {item}")
+        except AttributeError:
+            if not str(item.resolve()).startswith(str(ws_dir)):
+                raise ValueError(f"Attempted directory traversal in staging cleanup: {item}")
+
         if item.is_dir() and item.name.endswith(".tmp"):
-            try:
-                shutil.rmtree(item, ignore_errors=True)
-                removed += 1
-            except Exception as exc:
-                logger.warning(f"Could not remove stale staging directory {item}: {exc}")
+            # Never clean up active publication lock directory
+            if item.name == ".publication_slot":
+                continue
+
+            meta_file = item / "staging_meta.json"
+            should_remove = False
+            if meta_file.exists():
+                try:
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    hb = meta.get("heartbeat_at", meta.get("created_at", 0))
+                    ttl = meta.get("ttl_seconds", max_age_seconds)
+                    if (now - hb) > ttl:
+                        should_remove = True
+                    else:
+                        logger.debug(f"Preserving active staging attempt {item.name} for owner {meta.get('build_id')}")
+                except Exception:
+                    try:
+                        if (now - item.stat().st_mtime) > max_age_seconds:
+                            should_remove = True
+                    except Exception:
+                        pass
+            else:
+                try:
+                    if (now - item.stat().st_mtime) > max_age_seconds:
+                        should_remove = True
+                except Exception:
+                    pass
+
+            if should_remove:
+                try:
+                    shutil.rmtree(item, ignore_errors=True)
+                    removed += 1
+                except Exception as exc:
+                    logger.warning(f"Could not remove stale staging directory {item}: {exc}")
     return removed
 
 
@@ -258,16 +416,20 @@ def build_and_publish_workspace_index(
     job_id: str | None = None,
     claim_token: str | None = None,
     max_retries: int = 3,
+    _crash_boundary: str | None = None,
+    _pause_hook: Any | None = None,
 ) -> EmbeddingIndex | None:
     """Build paired FAISS and BM25 index artifacts, validate them, and atomically publish a new index version.
 
     Follows a crash-safe filesystem and database protocol:
     1. Collects exact eligible chunk manifest across the workspace.
-    2. Builds FAISS FlatIP and BM25 in an isolated, unique staging folder (v{version}_prep_{uuid}.tmp).
+    2. Builds FAISS FlatIP and BM25 in an isolated, unique staging folder (v{version}_prep_{build_id}.tmp).
     3. Validates reloadability, count matching, and calculates SHA-256 checksums.
-    4. Enforces fencing token validation atomically before database pointer activation.
-    5. Atomically commits database pointers and updates ONLY the target paper ready status.
-    6. Automatically cleans up staging and rollback filesystem changes on failure.
+    4. Serializes publication slot per-workspace before touching final filesystem paths.
+    5. Enforces fencing token and lease validation atomically before final path promotion.
+    6. Promotes staging directory to immutable final path without overwriting pre-existing targets.
+    7. Atomically commits database pointers and updates ONLY the target paper ready status.
+    8. Discards only own staging artifacts on CAS conflict; cleans up filesystem changes on rollback.
     """
     workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not workspace:
@@ -299,14 +461,30 @@ def build_and_publish_workspace_index(
             return None
 
         # 3. Setup staging filesystem directory with unique attempt suffix
-        staging_dir = ws_dir / f"v{next_version}_prep_{uuid.uuid4().hex[:8]}.tmp"
+        build_id = uuid.uuid4().hex[:8]
+        staging_dir = ws_dir / f"v{next_version}_prep_{build_id}.tmp"
         final_dir = ws_dir / f"v{next_version}"
 
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
         staging_dir.mkdir(parents=True, exist_ok=True)
 
+        # Write staging_meta.json for ownership-aware staging preservation & cleanup
+        staging_meta = {
+            "build_id": build_id,
+            "workspace_id": workspace_id,
+            "target_version": next_version,
+            "created_at": time.time(),
+            "heartbeat_at": time.time(),
+            "ttl_seconds": 120.0,
+        }
+        with open(staging_dir / "staging_meta.json", "w", encoding="utf-8") as f:
+            json.dump(staging_meta, f)
+
         try:
+            if _crash_boundary == "before_artifacts":
+                raise CrashBoundaryException("Simulated crash before artifacts finish")
+
             # 4. Generate / collect embeddings for each chunk in manifest
             manifest_chunks_with_vecs: list[tuple[dict[str, Any], np.ndarray]] = []
             grouped_runs: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -416,82 +594,21 @@ def build_and_publish_workspace_index(
                 "manifest_sha256": manifest_sha256,
             }
 
-            # Pre-publication CAS check: Did another build publish a new version while we prepared?
-            latest_v_check = (
-                db.query(EmbeddingIndex.version)
-                .filter(EmbeddingIndex.workspace_id == workspace_id)
-                .order_by(EmbeddingIndex.version.desc())
-                .first()
-            )
-            current_max_v = latest_v_check[0] if latest_v_check else 0
-            if current_max_v >= next_version:
-                logger.info(
-                    f"Workspace {workspace_id} version advanced from {next_version - 1} to {current_max_v} "
-                    f"during preparation; retrying build (attempt {attempt + 1}/{max_retries})."
-                )
+            # Optional synchronization hook for deterministic concurrency testing
+            if _pause_hook is not None:
+                _pause_hook(staging_dir, next_version)
+
+            if _crash_boundary == "lease_loss_during_prep":
                 if staging_dir.exists():
                     shutil.rmtree(staging_dir, ignore_errors=True)
-                continue
+                raise WorkerFencingViolation("Simulated worker lease loss during preparation")
 
-            # 11. Atomic promotion and transactional publication
-            if final_dir.exists():
-                shutil.rmtree(final_dir)
-            staging_dir.rename(final_dir)
+            if _crash_boundary == "before_slot_acquire":
+                raise CrashBoundaryException("Simulated crash before publication slot acquisition")
 
-            try:
-                now = utcnow_iso()
-                final_faiss_path = str(final_dir / "index.faiss")
-                final_bm25_path = str(final_dir / "bm25.json")
-                final_manifest_path = str(final_dir / "manifest.json")
-
-                # Retire existing active index for this workspace
-                db.query(EmbeddingIndex).filter(
-                    EmbeddingIndex.workspace_id == workspace_id,
-                    EmbeddingIndex.status == "active",
-                ).update({"status": "retired", "updated_at": now})
-
-                # Create new active index record
-                chunk_params = {
-                    "model_name": EMBEDDING_MODEL_NAME,
-                    "model_revision": EMBEDDING_MODEL_REVISION,
-                    "dimension": EMBEDDING_DIMENSION,
-                    "normalization": EMBEDDING_NORMALIZATION,
-                    "chunk_count": len(eligible_manifest),
-                }
-
-                new_index = EmbeddingIndex(
-                    id=str(uuid.uuid4()),
-                    workspace_id=workspace_id,
-                    version=next_version,
-                    model_name=EMBEDDING_MODEL_NAME,
-                    model_revision=EMBEDDING_MODEL_REVISION,
-                    dimension=EMBEDDING_DIMENSION,
-                    normalization=EMBEDDING_NORMALIZATION,
-                    chunk_params_json=json.dumps(chunk_params),
-                    faiss_path=final_faiss_path,
-                    bm25_path=final_bm25_path,
-                    manifest_path=final_manifest_path,
-                    index_checksums_json=json.dumps(checksums),
-                    status="active",
-                    created_at=now,
-                    updated_at=now,
-                )
-                db.add(new_index)
-
-                # Insert explicit IndexChunk membership rows
-                for i, item in enumerate(eligible_manifest):
-                    ic_row = IndexChunk(
-                        id=str(uuid.uuid4()),
-                        index_id=new_index.id,
-                        paper_id=item["paper_id"],
-                        run_id=item["run_id"],
-                        chunk_id=item["chunk_id"],
-                        faiss_id=i,
-                        created_at=now,
-                    )
-                    db.add(ic_row)
-
-                # P5-R1: If job_id and claim_token provided, atomically validate fencing and complete job
+            # 10. Serialized publication slot reservation before mutating final paths
+            with acquire_workspace_publication_slot(workspace_id, ws_dir, owner_id=build_id, timeout=30.0):
+                # A2: Revalidate processing-job claim token and lease before final-path mutation
                 if job_id and claim_token:
                     from backend.app.db.models import ProcessingJob
 
@@ -505,50 +622,167 @@ def build_and_publish_workspace_index(
                         .first()
                     )
                     if not job:
+                        if staging_dir.exists():
+                            shutil.rmtree(staging_dir, ignore_errors=True)
                         raise WorkerFencingViolation(
-                            f"Lost claim token or job {job_id} is no longer running at index publication boundary"
+                            f"Lost claim token or job {job_id} is no longer running before final path mutation"
                         )
-                    job.status = "succeeded"
-                    job.finished_at = now
-                    job.versions_json = json.dumps(
-                        {
-                            "index_id": new_index.id,
-                            "index_version": new_index.version,
-                            "model_name": EMBEDDING_MODEL_NAME,
-                        }
+
+                # Pre-publication CAS check within publication slot
+                latest_v_check = (
+                    db.query(EmbeddingIndex.version)
+                    .filter(EmbeddingIndex.workspace_id == workspace_id)
+                    .order_by(EmbeddingIndex.version.desc())
+                    .first()
+                )
+                current_max_v = latest_v_check[0] if latest_v_check else 0
+                if current_max_v >= next_version:
+                    logger.info(
+                        f"Workspace {workspace_id} version advanced from {next_version - 1} to {current_max_v} "
+                        f"during preparation; discarding own staging and retrying build (attempt {attempt + 1}/{max_retries})."
+                    )
+                    if staging_dir.exists():
+                        shutil.rmtree(staging_dir, ignore_errors=True)
+                    continue
+
+                # A2: Check that final directory does NOT exist (never overwrite or delete existing final directory)
+                if final_dir.exists():
+                    if staging_dir.exists():
+                        shutil.rmtree(staging_dir, ignore_errors=True)
+                    raise PublicationConflictError(
+                        f"Final directory {final_dir} already exists on disk; refusing to overwrite as conflict resolution"
                     )
 
-                # P5-R3: ONLY mark the target paper ready if its current run matches target_run_id
-                if target_paper_id:
-                    target_paper = db.query(Paper).filter(Paper.id == target_paper_id).first()
-                    if target_paper and (target_paper.current_run_id == target_run_id or not target_run_id):
-                        target_paper.status = "ready"
-                        if target_run_id:
-                            target_paper.published_run_id = target_run_id
-                        target_paper.updated_at = now
-                else:
-                    # Workspace-level build without explicit target paper
-                    distinct_paper_ids = list({item["paper_id"] for item in eligible_manifest})
-                    for p_id in distinct_paper_ids:
-                        p = db.query(Paper).filter(Paper.id == p_id).first()
-                        if p and (p.current_run_id == p.published_run_id or not p.current_run_id or p.status == "processing"):
-                            p.status = "ready"
-                            if p.current_run_id and not p.published_run_id:
-                                p.published_run_id = p.current_run_id
-                            p.updated_at = now
+                if _crash_boundary == "before_promotion":
+                    raise CrashBoundaryException("Simulated crash before promotion")
 
-                db.commit()
-                logger.info(
-                    f"Successfully published active EmbeddingIndex v{next_version} for workspace {workspace_id} "
-                    f"with {len(eligible_manifest)} chunks."
-                )
-                return new_index
+                # 11. Atomic directory promotion to final path
+                staging_dir.rename(final_dir)
 
-            except Exception:
-                db.rollback()
-                if final_dir.exists():
-                    shutil.rmtree(final_dir, ignore_errors=True)
-                raise
+                if _crash_boundary == "after_promotion":
+                    if final_dir.exists():
+                        shutil.rmtree(final_dir, ignore_errors=True)
+                    raise CrashBoundaryException("Simulated crash after promotion before database activation")
+
+                try:
+                    now = utcnow_iso()
+                    final_faiss_path = str(final_dir / "index.faiss")
+                    final_bm25_path = str(final_dir / "bm25.json")
+                    final_manifest_path = str(final_dir / "manifest.json")
+
+                    # Retire existing active index for this workspace
+                    db.query(EmbeddingIndex).filter(
+                        EmbeddingIndex.workspace_id == workspace_id,
+                        EmbeddingIndex.status == "active",
+                    ).update({"status": "retired", "updated_at": now})
+
+                    # Create new active index record
+                    chunk_params = {
+                        "model_name": EMBEDDING_MODEL_NAME,
+                        "model_revision": EMBEDDING_MODEL_REVISION,
+                        "dimension": EMBEDDING_DIMENSION,
+                        "normalization": EMBEDDING_NORMALIZATION,
+                        "chunk_count": len(eligible_manifest),
+                    }
+
+                    new_index = EmbeddingIndex(
+                        id=str(uuid.uuid4()),
+                        workspace_id=workspace_id,
+                        version=next_version,
+                        model_name=EMBEDDING_MODEL_NAME,
+                        model_revision=EMBEDDING_MODEL_REVISION,
+                        dimension=EMBEDDING_DIMENSION,
+                        normalization=EMBEDDING_NORMALIZATION,
+                        chunk_params_json=json.dumps(chunk_params),
+                        faiss_path=final_faiss_path,
+                        bm25_path=final_bm25_path,
+                        manifest_path=final_manifest_path,
+                        index_checksums_json=json.dumps(checksums),
+                        status="active",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    db.add(new_index)
+
+                    # Insert explicit IndexChunk membership rows
+                    for i, item in enumerate(eligible_manifest):
+                        ic_row = IndexChunk(
+                            id=str(uuid.uuid4()),
+                            index_id=new_index.id,
+                            paper_id=item["paper_id"],
+                            run_id=item["run_id"],
+                            chunk_id=item["chunk_id"],
+                            faiss_id=i,
+                            created_at=now,
+                        )
+                        db.add(ic_row)
+
+                    # P5-R1: If job_id and claim_token provided, atomically validate fencing and complete job
+                    if job_id and claim_token:
+                        from backend.app.db.models import ProcessingJob
+
+                        job = (
+                            db.query(ProcessingJob)
+                            .filter(
+                                ProcessingJob.id == job_id,
+                                ProcessingJob.claim_token == claim_token,
+                                ProcessingJob.status == "running",
+                            )
+                            .first()
+                        )
+                        if not job:
+                            raise WorkerFencingViolation(
+                                f"Lost claim token or job {job_id} is no longer running at index publication boundary"
+                            )
+                        job.status = "succeeded"
+                        job.finished_at = now
+                        job.versions_json = json.dumps(
+                            {
+                                "index_id": new_index.id,
+                                "index_version": new_index.version,
+                                "model_name": EMBEDDING_MODEL_NAME,
+                            }
+                        )
+
+                    # P5-R3: ONLY mark the target paper ready if its current run matches target_run_id
+                    if target_paper_id:
+                        target_paper = db.query(Paper).filter(Paper.id == target_paper_id).first()
+                        if target_paper and (target_paper.current_run_id == target_run_id or not target_run_id):
+                            target_paper.status = "ready"
+                            if target_run_id:
+                                target_paper.published_run_id = target_run_id
+                            target_paper.updated_at = now
+                    else:
+                        # Workspace-level build without explicit target paper
+                        distinct_paper_ids = list({item["paper_id"] for item in eligible_manifest})
+                        for p_id in distinct_paper_ids:
+                            p = db.query(Paper).filter(Paper.id == p_id).first()
+                            if p and (p.current_run_id == p.published_run_id or not p.current_run_id or p.status == "processing"):
+                                p.status = "ready"
+                                if p.current_run_id and not p.published_run_id:
+                                    p.published_run_id = p.current_run_id
+                                p.updated_at = now
+
+                    if _crash_boundary == "during_commit":
+                        raise CrashBoundaryException("Simulated crash during database commit")
+
+                    db.commit()
+                    db.refresh(new_index)
+
+                    if _crash_boundary == "after_commit":
+                        raise CrashBoundaryException("Simulated crash after database commit")
+
+                    logger.info(
+                        f"Successfully published active EmbeddingIndex v{next_version} for workspace {workspace_id} "
+                        f"with {len(eligible_manifest)} chunks."
+                    )
+                    return new_index
+
+                except Exception:
+                    db.rollback()
+                    if final_dir.exists():
+                        shutil.rmtree(final_dir, ignore_errors=True)
+                    raise
 
         except Exception:
             if staging_dir.exists():

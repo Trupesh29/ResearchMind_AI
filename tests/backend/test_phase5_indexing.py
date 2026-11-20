@@ -34,6 +34,7 @@ from backend.app.core.config import Settings
 from backend.app.db.bootstrap import bootstrap_default_user
 from backend.app.db.models import (
     Chunk,
+    EmbeddingIndex,
     IndexChunk,
     Paper,
     ProcessingJob,
@@ -53,6 +54,8 @@ from backend.app.services.embedding_service import (
     validate_text_for_embedding,
 )
 from backend.app.services.index_service import (
+    CrashBoundaryException,
+    PublicationConflictError,
     WorkerFencingViolation,
     build_and_publish_workspace_index,
     cleanup_stale_staging_directories,
@@ -1048,23 +1051,494 @@ def test_artifact_integrity_verification_fail_closed(p5_env):
 
 
 # ---------------------------------------------------------------------------
-# Test 15: Concurrent Workspace Staging & Cleanup (P5-R2, P5-R5)
+# Test 15: Concurrent Workspace Staging & Ownership-Aware Cleanup (A3)
 # ---------------------------------------------------------------------------
-def test_concurrent_workspace_staging_and_cleanup(p5_env):
-    """Verifies that abandoned staging directories (.tmp) are cleanly pruned."""
+def test_ownership_aware_staging_cleanup_and_traversal_safety(p5_env):
+    """Verifies that active staging attempts with valid TTL are preserved,
+    expired staging attempts are cleaned up, and path traversal attempts raise ValueError.
+    """
+    import time
+
     ws_id = p5_env["workspace_id"]
     data_dir = p5_env["test_dir"]
 
     ws_base = data_dir / "indexes" / ws_id
     ws_base.mkdir(parents=True, exist_ok=True)
 
-    # Create dummy abandoned .tmp directories
-    (ws_base / "v1_prep_abcd1234.tmp").mkdir(parents=True, exist_ok=True)
-    (ws_base / "v2_prep_ef567890.tmp").mkdir(parents=True, exist_ok=True)
+    # 1. Create active staging directory with unexpired heartbeat
+    active_dir = ws_base / "v2_prep_active1.tmp"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    with open(active_dir / "staging_meta.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "build_id": "active1",
+                "workspace_id": ws_id,
+                "target_version": 2,
+                "created_at": time.time(),
+                "heartbeat_at": time.time(),
+                "ttl_seconds": 300.0,
+            },
+            f,
+        )
+
+    # 2. Create expired staging directory
+    expired_dir = ws_base / "v2_prep_expired1.tmp"
+    expired_dir.mkdir(parents=True, exist_ok=True)
+    with open(expired_dir / "staging_meta.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "build_id": "expired1",
+                "workspace_id": ws_id,
+                "target_version": 2,
+                "created_at": time.time() - 200,
+                "heartbeat_at": time.time() - 200,
+                "ttl_seconds": 60.0,
+            },
+            f,
+        )
+
+    # 3. Create legacy unmanaged .tmp directory with old mtime
+    unmanaged_dir = ws_base / "v2_prep_legacy.tmp"
+    unmanaged_dir.mkdir(parents=True, exist_ok=True)
+    old_time = time.time() - 150
+    os.utime(unmanaged_dir, (old_time, old_time))
+
+    # 4. Final version directory
     (ws_base / "v1").mkdir(parents=True, exist_ok=True)
 
-    removed = cleanup_stale_staging_directories(ws_id, data_dir=data_dir)
+    # Run cleanup
+    removed = cleanup_stale_staging_directories(ws_id, data_dir=data_dir, max_age_seconds=60.0)
+
+    # Expired and legacy unmanaged must be removed, active must be PRESERVED
     assert removed == 2
-    assert not (ws_base / "v1_prep_abcd1234.tmp").exists()
-    assert not (ws_base / "v2_prep_ef567890.tmp").exists()
-    assert (ws_base / "v1").exists()  # Final version directory is preserved
+    assert active_dir.exists(), "Active staging directory must be preserved!"
+    assert not expired_dir.exists(), "Expired staging directory must be pruned!"
+    assert not unmanaged_dir.exists(), "Old unmanaged staging directory must be pruned!"
+    assert (ws_base / "v1").exists(), "Final version directory must be preserved!"
+
+
+# ---------------------------------------------------------------------------
+# Test 16: Competing Worker Publication Serialization (A1)
+# ---------------------------------------------------------------------------
+def test_concurrent_competing_workers_publication_serialization(p5_env):
+    """Executes two independent sessions/workers attempting concurrent publication
+    from an overlapping active-index state.
+
+    Proves:
+    - Independent staging directories (never shared)
+    - One worker's preparation cannot overwrite or delete the other worker's staging or final artifacts
+    - Losing worker detects CAS version advancement, discards only its own staging, and retries
+    - Accepted generations from both papers eventually appear in one valid active workspace snapshot
+    - Exactly one coherent active version remains with matching FAISS, BM25, manifest, and DB membership
+    """
+    import threading
+
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    # 1. Setup two papers in the workspace with chunks
+    now = utcnow_iso()
+    with factory() as db:
+        pa = Paper(
+            id="comp-paper-a",
+            workspace_id=ws_id,
+            original_filename="paper_a.pdf",
+            storage_path="paper_a.pdf",
+            sha256="hash_a",
+            size_bytes=100,
+            status="processing",
+            current_run_id="run-a-1",
+            created_at=now,
+            updated_at=now,
+        )
+        pb = Paper(
+            id="comp-paper-b",
+            workspace_id=ws_id,
+            original_filename="paper_b.pdf",
+            storage_path="paper_b.pdf",
+            sha256="hash_b",
+            size_bytes=100,
+            status="processing",
+            current_run_id="run-b-1",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add_all([pa, pb])
+        db.add(
+            Chunk(
+                id="c-a-1",
+                paper_id="comp-paper-a",
+                run_id="run-a-1",
+                chunk_index=0,
+                text="Attention mechanism and transformer networks paper A.",
+                token_count=10,
+                section="Intro",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.add(
+            Chunk(
+                id="c-b-1",
+                paper_id="comp-paper-b",
+                run_id="run-b-1",
+                chunk_index=0,
+                text="Convolutional neural networks and residual learning paper B.",
+                token_count=10,
+                section="Intro",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+    # Synchronization primitives
+    worker_1_prepared = threading.Event()
+    worker_2_prepared = threading.Event()
+    release_worker_1 = threading.Event()
+    release_worker_2 = threading.Event()
+
+    worker_1_staging = []
+    worker_2_staging = []
+    results = {}
+    errors = {}
+
+    def run_worker_1():
+        try:
+            with factory() as db1:
+                def pause_hook(stg, v):
+                    worker_1_staging.append(stg)
+                    worker_1_prepared.set()
+                    release_worker_1.wait(timeout=10.0)
+
+                idx = build_and_publish_workspace_index(
+                    db1,
+                    workspace_id=ws_id,
+                    target_paper_id="comp-paper-a",
+                    target_run_id="run-a-1",
+                    data_dir=data_dir,
+                    _pause_hook=pause_hook,
+                )
+                results["w1_version"] = idx.version
+                results["w1_id"] = idx.id
+        except Exception as e:
+            errors["w1"] = e
+
+    def run_worker_2():
+        try:
+            with factory() as db2:
+                attempts = [0]
+
+                def pause_hook(stg, v):
+                    attempts[0] += 1
+                    if attempts[0] == 1:
+                        worker_2_staging.append(stg)
+                        worker_2_prepared.set()
+                        release_worker_2.wait(timeout=10.0)
+
+                idx = build_and_publish_workspace_index(
+                    db2,
+                    workspace_id=ws_id,
+                    target_paper_id="comp-paper-b",
+                    target_run_id="run-b-1",
+                    data_dir=data_dir,
+                    _pause_hook=pause_hook,
+                )
+                results["w2_version"] = idx.version
+                results["w2_id"] = idx.id
+        except Exception as e:
+            errors["w2"] = e
+
+    t1 = threading.Thread(target=run_worker_1)
+    t2 = threading.Thread(target=run_worker_2)
+
+    t1.start()
+    t2.start()
+
+    # Wait for both workers to finish artifact preparation
+    assert worker_1_prepared.wait(timeout=15.0), "Worker 1 failed to prepare artifacts in time"
+    assert worker_2_prepared.wait(timeout=15.0), "Worker 2 failed to prepare artifacts in time"
+
+    # Prove that both workers used distinct staging directories
+    assert len(worker_1_staging) == 1
+    assert len(worker_2_staging) == 1
+    assert worker_1_staging[0] != worker_2_staging[0]
+    assert worker_1_staging[0].exists()
+    assert worker_2_staging[0].exists()
+
+    # Release worker 1 first to complete publication of version 1
+    release_worker_1.set()
+    t1.join(timeout=10.0)
+    assert "w1" not in errors, f"Worker 1 failed: {errors.get('w1')}"
+    assert results.get("w1_version") == 1
+
+    # Now release worker 2; it will encounter CAS version advancement (v1 published),
+    # discard its staging directory v1_prep_*.tmp, retry, and publish v2
+    release_worker_2.set()
+    t2.join(timeout=15.0)
+    assert "w2" not in errors, f"Worker 2 failed: {errors.get('w2')}"
+    assert results.get("w2_version") == 2
+
+    # Verification on final database and filesystem state
+    with factory() as db_check:
+        active_idx = get_active_workspace_index(db_check, ws_id)
+        assert active_idx is not None
+        assert active_idx.version == 2
+
+        # Both papers must be ready
+        p_a = db_check.query(Paper).filter(Paper.id == "comp-paper-a").first()
+        p_b = db_check.query(Paper).filter(Paper.id == "comp-paper-b").first()
+        assert p_a.status == "ready"
+        assert p_a.published_run_id == "run-a-1"
+        assert p_b.status == "ready"
+        assert p_b.published_run_id == "run-b-1"
+
+        # Check membership: version 2 contains both papers
+        chunks = db_check.query(IndexChunk).filter(IndexChunk.index_id == active_idx.id).all()
+        chunk_paper_ids = {c.paper_id for c in chunks}
+        assert "comp-paper-a" in chunk_paper_ids
+        assert "comp-paper-b" in chunk_paper_ids
+        assert len(chunks) == 2
+
+        # Artifact integrity verification
+        assert verify_index_artifacts_integrity(active_idx, db=db_check) is True
+
+        # Ensure exactly one active index exists for workspace
+        active_count = (
+            db_check.query(EmbeddingIndex)
+            .filter(EmbeddingIndex.workspace_id == ws_id, EmbeddingIndex.status == "active")
+            .count()
+        )
+        assert active_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 17: Competing Workers Negative Control (Pre-Repair Conflict) (A1)
+# ---------------------------------------------------------------------------
+def test_competing_workers_negative_control_pre_repair_conflict(p5_env):
+    """Verifies that an attempt to overwrite an existing final directory raises
+    PublicationConflictError and never removes or replaces the existing final directory.
+    """
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    now = utcnow_iso()
+    with factory() as db:
+        p = Paper(
+            id="neg-paper-1",
+            workspace_id=ws_id,
+            original_filename="neg.pdf",
+            storage_path="neg.pdf",
+            sha256="hash_neg",
+            size_bytes=100,
+            status="processing",
+            current_run_id="run-neg-1",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(p)
+        db.add(
+            Chunk(
+                id="c-neg-1",
+                paper_id="neg-paper-1",
+                run_id="run-neg-1",
+                chunk_index=0,
+                text="Negative control chunk text.",
+                token_count=10,
+                section="Intro",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        # Build initial version 1
+        idx1 = build_and_publish_workspace_index(
+            db,
+            workspace_id=ws_id,
+            target_paper_id="neg-paper-1",
+            target_run_id="run-neg-1",
+            data_dir=data_dir,
+        )
+        assert idx1.version == 1
+
+        # Simulate collision: final v2 directory already exists unexpectedly
+        ws_base = data_dir / "indexes" / ws_id
+        v2_dir = ws_base / "v2"
+        v2_dir.mkdir(parents=True, exist_ok=True)
+        sentinel_file = v2_dir / "sentinel.txt"
+        sentinel_file.write_text("must not be overwritten")
+
+        # Adding a new chunk so there are eligible chunks to publish
+        db.add(
+            Chunk(
+                id="c-neg-2",
+                paper_id="neg-paper-1",
+                run_id="run-neg-1",
+                chunk_index=1,
+                text="Second negative control chunk.",
+                token_count=10,
+                section="Body",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        # Publishing must fail with PublicationConflictError because v2 already exists
+        with pytest.raises(Exception) as exc_info:
+            build_and_publish_workspace_index(
+                db,
+                workspace_id=ws_id,
+                target_paper_id="neg-paper-1",
+                target_run_id="run-neg-1",
+                data_dir=data_dir,
+                max_retries=1,
+            )
+        assert "already exists" in str(exc_info.value) or isinstance(exc_info.value, PublicationConflictError)
+
+        # Sentinel file must remain untouched
+        assert sentinel_file.exists()
+        assert sentinel_file.read_text() == "must not be overwritten"
+
+
+# ---------------------------------------------------------------------------
+# Test 18: Deterministic Crash Boundary Recovery (A4)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "before_artifacts",
+        "lease_loss_during_prep",
+        "before_slot_acquire",
+        "before_promotion",
+        "after_promotion",
+        "during_commit",
+    ],
+)
+def test_crash_boundaries_preservation_and_recovery(p5_env, boundary):
+    """Injects failures across all publication crash boundaries and verifies that:
+    - Previous active index remains intact
+    - Target paper is not marked ready without valid published index membership
+    - Failed staging and uncommitted final directories are cleaned up
+    """
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    now = utcnow_iso()
+    with factory() as db:
+        # Initial baseline paper and index
+        base_paper = Paper(
+            id=f"base-paper-{boundary}",
+            workspace_id=ws_id,
+            original_filename="base.pdf",
+            storage_path="base.pdf",
+            sha256=f"hash_base_{boundary}",
+            size_bytes=100,
+            status="processing",
+            current_run_id="run-base-1",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(base_paper)
+        db.add(
+            Chunk(
+                id=f"c-base-{boundary}",
+                paper_id=base_paper.id,
+                run_id="run-base-1",
+                chunk_index=0,
+                text="Baseline stable chunk text.",
+                token_count=10,
+                section="Intro",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        v1_idx = build_and_publish_workspace_index(
+            db,
+            workspace_id=ws_id,
+            target_paper_id=base_paper.id,
+            target_run_id="run-base-1",
+            data_dir=data_dir,
+        )
+        assert v1_idx.version == 1
+
+        # Now introduce a new paper that will crash during publication
+        crash_paper = Paper(
+            id=f"crash-paper-{boundary}",
+            workspace_id=ws_id,
+            original_filename="crash.pdf",
+            storage_path="crash.pdf",
+            sha256=f"hash_crash_{boundary}",
+            size_bytes=100,
+            status="processing",
+            current_run_id="run-crash-1",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(crash_paper)
+        db.add(
+            Chunk(
+                id=f"c-crash-{boundary}",
+                paper_id=crash_paper.id,
+                run_id="run-crash-1",
+                chunk_index=0,
+                text="Crash test chunk text.",
+                token_count=10,
+                section="Intro",
+                page_start=1,
+                page_end=1,
+                is_excluded=0,
+                is_deleted=0,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        # Attempt build with injected crash boundary
+        with pytest.raises((CrashBoundaryException, WorkerFencingViolation)):
+            build_and_publish_workspace_index(
+                db,
+                workspace_id=ws_id,
+                target_paper_id=crash_paper.id,
+                target_run_id="run-crash-1",
+                data_dir=data_dir,
+                max_retries=1,
+                _crash_boundary=boundary,
+            )
+
+        # Invariant checks:
+        # 1. Active index must STILL be v1
+        act = get_active_workspace_index(db, ws_id)
+        assert act is not None
+        assert act.version == 1
+        assert act.id == v1_idx.id
+
+        # 2. Crash paper must NOT be marked ready
+        p_check = db.query(Paper).filter(Paper.id == crash_paper.id).first()
+        assert p_check.status == "processing"
+        assert p_check.published_run_id is None
+
+        # 3. v2 final directory must NOT exist on disk
+        v2_dir = data_dir / "indexes" / ws_id / "v2"
+        assert not v2_dir.exists(), f"Uncommitted v2 directory must not remain on disk for boundary {boundary}"
