@@ -356,3 +356,114 @@ export interface ConversationDetail {
   created_at: string;
   updated_at: string;
 }
+
+export interface ExplorerSectionItem {
+  section_index: number;
+  section_title: string;
+  heading?: string | null;
+  page_start: number;
+  page_end: number;
+  chunk_count: number;
+  quality_status: "complete" | "sparse" | "empty";
+  preview_text: string;
+}
+
+export interface PaperSectionsResponse {
+  paper_id: string;
+  paper_title: string;
+  total_sections: number;
+  sections: ExplorerSectionItem[];
+}
+
+export interface SummaryCitation {
+  citation_id: number;
+  paper_id: string;
+  paper_title: string;
+  page_number: number;
+  section_title: string;
+  quote: string;
+}
+
+export interface SummaryPoint {
+  point_id: number;
+  heading: string;
+  content: string;
+  citations: SummaryCitation[];
+}
+
+export type SummaryStyle = "simple" | "technical" | "methodology" | "results";
+
+export interface PaperSummaryResponse {
+  paper_id: string;
+  paper_title: string;
+  style: SummaryStyle;
+  overview: string;
+  points: SummaryPoint[];
+  cached: boolean;
+  generated_at: string;
+}
+
+export interface ComparisonDimensionCell {
+  dimension_id: string;
+  dimension_name: string;
+  paper_a_claim: string;
+  paper_b_claim: string;
+  paper_a_citations: SummaryCitation[];
+  paper_b_citations: SummaryCitation[];
+  comparable_status: "comparable" | "partially_comparable" | "non_comparable";
+  synthesis_notes: string;
+}
+
+export interface ComparisonMatrixResponse {
+  workspace_id: string;
+  paper_a_id: string;
+  paper_a_title: string;
+  paper_b_id: string;
+  paper_b_title: string;
+  dimensions: ComparisonDimensionCell[];
+  overall_synthesis: string;
+  comparability_summary: string;
+}
+
+export interface ExperimentMetric {
+  metric_name: string;
+  value: string;
+  unit?: string | null;
+  raw_excerpt: string;
+}
+
+export interface ExperimentRecord {
+  experiment_id: string;
+  paper_id: string;
+  task: string;
+  method: string;
+  conditions: Record<string, string>;
+  metrics: ExperimentMetric[];
+  limitations: string;
+  provenance?: SummaryCitation | null;
+}
+
+export interface ExperimentExtractResponse {
+  paper_id: string;
+  paper_title: string;
+  status: "experiments_extracted" | "no_experiments_detected";
+  experiments: ExperimentRecord[];
+}
+
+export interface ReportStatusResponse {
+  report_id: string;
+  workspace_id: string;
+  title: string;
+  summary_style: string;
+  status: "queued" | "generating" | "completed" | "failed";
+  file_size_bytes?: number | null;
+  created_at: string;
+  download_url: string;
+}
+
+export interface ModelLabReportsResponse {
+  readiness?: Record<string, any> | null;
+  baselines?: Record<string, any> | null;
+  distilbert_trial?: Record<string, any> | null;
+  test_evaluation?: Record<string, any> | null;
+}

@@ -21,6 +21,13 @@ import {
   ResearchAssistantResponse,
   ConversationSummary,
   ConversationDetail,
+  PaperSectionsResponse,
+  PaperSummaryResponse,
+  SummaryStyle,
+  ComparisonMatrixResponse,
+  ExperimentExtractResponse,
+  ReportStatusResponse,
+  ModelLabReportsResponse,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -263,4 +270,57 @@ export const assistantApi = {
       `/research/conversations/${encodeURIComponent(conversationId)}`,
       { method: "DELETE" },
     ),
+};
+
+export const intelligenceApi = {
+  getSections: (paperId: string, signal?: AbortSignal) =>
+    request<PaperSectionsResponse>(`/explorer/papers/${paperId}/sections`, { signal }),
+  getSummary: (paperId: string, style: SummaryStyle = "simple", signal?: AbortSignal) =>
+    request<PaperSummaryResponse>("/explorer/summaries", {
+      method: "POST",
+      body: JSON.stringify({ paper_id: paperId, style }),
+      signal,
+    }),
+  getComparison: (
+    workspaceId: string,
+    paperAId: string,
+    paperBId: string,
+    signal?: AbortSignal,
+  ) =>
+    request<ComparisonMatrixResponse>("/comparison/matrix", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: workspaceId,
+        paper_a_id: paperAId,
+        paper_b_id: paperBId,
+      }),
+      signal,
+    }),
+  extractExperiments: (paperId: string, signal?: AbortSignal) =>
+    request<ExperimentExtractResponse>("/experiments/extract", {
+      method: "POST",
+      body: JSON.stringify({ paper_id: paperId }),
+      signal,
+    }),
+  generateReport: (
+    payload: {
+      workspace_id: string;
+      title?: string;
+      paper_ids: string[];
+      summary_style?: string;
+      include_comparison?: boolean;
+      include_experiments?: boolean;
+    },
+    signal?: AbortSignal,
+  ) =>
+    request<ReportStatusResponse>("/reports/generate", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal,
+    }),
+  getReportStatus: (reportId: string, signal?: AbortSignal) =>
+    request<ReportStatusResponse>(`/reports/${reportId}`, { signal }),
+  getReportDownloadUrl: (reportId: string) => `${API_BASE}/reports/${reportId}/download`,
+  getModelLabReports: (signal?: AbortSignal) =>
+    request<ModelLabReportsResponse>("/model-lab/reports", { signal }),
 };

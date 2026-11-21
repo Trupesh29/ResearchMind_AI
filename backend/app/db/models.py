@@ -453,3 +453,60 @@ class Message(Base):
 
     def __repr__(self) -> str:
         return f"<Message id={self.id} conversation_id={self.conversation_id} role={self.role}>"
+
+
+class Report(Base):
+    __tablename__ = "reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary_style: Mapped[str] = mapped_column(String(64), default="technical", nullable=False)
+    paper_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
+    storage_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+    completed_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_reports_workspace", "workspace_id"),
+        Index("idx_reports_created_at", "created_at"),
+        CheckConstraint("status IN ('queued', 'generating', 'completed', 'failed')", name="ck_reports_status"),
+    )
+
+    workspace: Mapped["Workspace"] = relationship("Workspace")
+
+    def __repr__(self) -> str:
+        return f"<Report id={self.id} workspace_id={self.workspace_id} title={self.title} status={self.status}>"
+
+
+class PaperSummary(Base):
+    __tablename__ = "paper_summaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    paper_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    style: Mapped[str] = mapped_column(String(32), nullable=False)
+    overview: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("paper_id", "style", name="uq_paper_summaries_paper_style"),
+        Index("idx_paper_summaries_paper", "paper_id"),
+    )
+
+    paper: Mapped["Paper"] = relationship("Paper")
+
+    def __repr__(self) -> str:
+        return f"<PaperSummary id={self.id} paper_id={self.paper_id} style={self.style}>"

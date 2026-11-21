@@ -47,12 +47,12 @@ Status: In progress (Milestone M1 completed, Milestone M2 active).
 
 | Done | Task | Depends on | Verification / acceptance |
 |---|---|---|---|
-| [ ] | 10.1 Research Explorer & multi-style summaries | Week 4 | Simple, technical, methodology, results summaries with citations |
-| [ ] | 11.1 Two-paper comparison matrix | 10.1 | Comparative table with per-cell citations and non-comparable states |
-| [ ] | 12.1 Experiment intelligence extraction | 10.1 | Extracted conditions, measures, units, and source provenance |
-| [ ] | 13.1 Report Studio (DOCX generation) | 10.1, 11.1, 12.1 | Server-side docx export, status polling, authenticated download |
-| [ ] | 14.1 Model Lab UI | S4 | Real confusion matrix, learning curves, and baseline comparison |
-| [ ] | Checkpoint: Week 5 acceptance | 13.1, 14.1 | Exported DOCX verified, comparison verified, experiment records verified |
+| [x] | 10.1 Research Explorer & multi-style summaries | Week 4 | Simple, technical, methodology, results summaries with citations |
+| [x] | 11.1 Two-paper comparison matrix | 10.1 | Comparative table with per-cell citations and non-comparable states |
+| [x] | 12.1 Experiment intelligence extraction | 10.1 | Extracted conditions, measures, units, and source provenance |
+| [x] | 13.1 Report Studio (DOCX generation) | 10.1, 11.1, 12.1 | Server-side docx export, status polling, authenticated download |
+| [x] | 14.1 Model Lab UI | S4 | Real confusion matrix, learning curves, and baseline comparison |
+| [x] | Checkpoint: Week 5 acceptance | 13.1, 14.1 | Exported DOCX verified, comparison verified, experiment records verified |
 
 ---
 
