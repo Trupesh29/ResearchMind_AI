@@ -52,6 +52,12 @@ class WorkerFencingViolation(Exception):
     pass
 
 
+class PublicationOwnershipLostError(WorkerFencingViolation):
+    """Raised when publication slot ownership is lost before promotion or commit."""
+
+    pass
+
+
 class PublicationConflictError(Exception):
     """Raised when concurrent publication conflict occurs or final directory already exists."""
 
@@ -104,12 +110,35 @@ def _is_pid_alive(pid: int) -> bool:
             return False
 
 
+def verify_publication_slot_ownership(
+    workspace_id: str,
+    ws_dir: Path,
+    owner_token: str,
+) -> bool:
+    """Verify that the current publication slot is still actively held by owner_token."""
+    lock_dir = ws_dir / ".publication_slot"
+    meta_path = lock_dir / "slot_meta.json"
+    if not lock_dir.exists() or not meta_path.exists():
+        return False
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("owner_token") == owner_token
+    except Exception:
+        return False
+
+
 def release_workspace_publication_slot(
     workspace_id: str,
     ws_dir: Path,
     owner_token: str,
 ) -> bool:
-    """Safely release the publication slot ONLY if owner_token matches the current lock."""
+    """Safely release the publication slot ONLY if owner_token matches the current lock.
+
+    Guards against TOCTOU interleaving: verifies token matches before unlinking metadata.
+    Never uses recursive directory deletion (shutil.rmtree on lock_dir); only removes lock_dir via
+    non-recursive rmdir() so a replacement owner's files or metadata can never be destroyed.
+    """
     lock_dir = ws_dir / ".publication_slot"
     meta_path = lock_dir / "slot_meta.json"
     if not lock_dir.exists():
@@ -134,10 +163,14 @@ def release_workspace_publication_slot(
             return False
 
         meta_path.unlink(missing_ok=True)
-        try:
-            lock_dir.rmdir()
-        except Exception:
-            shutil.rmtree(lock_dir, ignore_errors=True)
+
+        # Remove lock_dir using non-recursive rmdir with a short retry for Windows handle settlement.
+        for _ in range(5):
+            try:
+                lock_dir.rmdir()
+                break
+            except OSError:
+                time.sleep(0.02)
         return True
     except Exception as exc:
         logger.warning(f"Error during publication slot release for {workspace_id}: {exc}")
@@ -228,25 +261,36 @@ def acquire_workspace_publication_slot(
                         hb = data.get("heartbeat_at", data.get("acquired_at", 0))
                         ttl = data.get("heartbeat_ttl", heartbeat_ttl)
 
-                        if (time.time() - hb) > ttl:
+                        # P5-F8 Takeover Failsafe:
+                        # 1. If PID is present and definitely alive, NEVER take over,
+                        #    even if heartbeat paused beyond TTL.
+                        # 2. Defensible owner-death evidence: PID confirmed dead AND heartbeat exceeded TTL.
+                        if pid and _is_pid_alive(pid):
+                            is_stale = False
+                        elif pid and not _is_pid_alive(pid) and (time.time() - hb) > ttl:
                             is_stale = True
-                        elif pid and not _is_pid_alive(pid):
-                            is_stale = True
+                        else:
+                            is_stale = False
                     except (json.JSONDecodeError, PermissionError):
-                        # Transient write or sharing conflict on Windows; do not treat as stale
-                        pass
+                        # Transient write or sharing conflict; handle conservatively
+                        is_stale = False
                     except Exception:
-                        try:
-                            if (time.time() - meta_path.stat().st_mtime) > heartbeat_ttl:
-                                is_stale = True
-                        except Exception:
-                            pass
+                        is_stale = False
                 else:
+                    # Missing metadata file inside lock_dir.
+                    # Attempt a fast clean rmdir() first; if rmdir succeeds, lock_dir is gone and next loop will mkdir.
                     try:
-                        if time.time() - lock_dir.stat().st_mtime > heartbeat_ttl:
+                        lock_dir.rmdir()
+                        continue
+                    except OSError:
+                        pass
+                    # If rmdir failed (e.g. transient file in dir or permission), check directory age:
+                    try:
+                        dir_age = time.time() - lock_dir.stat().st_mtime
+                        if dir_age > 0.3:
                             is_stale = True
                     except Exception:
-                        pass
+                        is_stale = False
 
                 if is_stale:
                     stale_takeover_dir = ws_dir / f".publication_slot_stale_{uuid.uuid4().hex[:8]}"
@@ -763,7 +807,7 @@ def build_and_publish_workspace_index(
                 raise CrashBoundaryException("Simulated crash before publication slot acquisition")
 
             # 10. Serialized publication slot reservation before mutating final paths
-            with acquire_workspace_publication_slot(workspace_id, ws_dir, owner_id=build_id, timeout=30.0):
+            with acquire_workspace_publication_slot(workspace_id, ws_dir, owner_id=build_id, timeout=30.0) as slot_info:
                 # A2: Revalidate processing-job claim token and lease before final-path mutation
                 if job_id and claim_token:
                     from backend.app.db.models import ProcessingJob
@@ -809,6 +853,19 @@ def build_and_publish_workspace_index(
                         f"Final directory {final_dir} already exists on disk; refusing to overwrite as conflict resolution"
                     )
 
+                if _crash_boundary == "lost_ownership_before_promotion":
+                    meta_file = ws_dir / ".publication_slot" / "slot_meta.json"
+                    with open(meta_file, "w", encoding="utf-8") as f:
+                        json.dump({"owner_token": "stolen_before_promotion", "pid": os.getpid()}, f)
+
+                # P5-F8: Verify publication slot ownership before final path promotion
+                if not verify_publication_slot_ownership(workspace_id, ws_dir, slot_info["owner_token"]):
+                    if staging_dir.exists():
+                        shutil.rmtree(staging_dir, ignore_errors=True)
+                    raise PublicationOwnershipLostError(
+                        f"Worker {build_id} lost publication slot ownership before final directory promotion"
+                    )
+
                 if _crash_boundary == "before_promotion":
                     raise CrashBoundaryException("Simulated crash before promotion")
 
@@ -820,6 +877,7 @@ def build_and_publish_workspace_index(
                         shutil.rmtree(final_dir, ignore_errors=True)
                     raise CrashBoundaryException("Simulated crash after promotion before database activation")
 
+                committed = False
                 try:
                     now = utcnow_iso()
                     final_faiss_path = str(final_dir / "index.faiss")
@@ -918,6 +976,20 @@ def build_and_publish_workspace_index(
                                 if p.current_run_id and not p.published_run_id:
                                     p.published_run_id = p.current_run_id
                                 p.updated_at = now
+
+                    if _crash_boundary == "lost_ownership_before_commit":
+                        meta_file = ws_dir / ".publication_slot" / "slot_meta.json"
+                        with open(meta_file, "w", encoding="utf-8") as f:
+                            json.dump({"owner_token": "stolen_before_commit", "pid": os.getpid()}, f)
+
+                    # P5-F8: Verify publication slot ownership before database commit
+                    if not verify_publication_slot_ownership(workspace_id, ws_dir, slot_info["owner_token"]):
+                        db.rollback()
+                        if final_dir.exists():
+                            shutil.rmtree(final_dir, ignore_errors=True)
+                        raise PublicationOwnershipLostError(
+                            f"Worker {build_id} lost publication slot ownership before database commit"
+                        )
 
                     committed = False
                     if _crash_boundary == "during_commit":

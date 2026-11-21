@@ -2080,11 +2080,11 @@ try:
         time.sleep(0.4)
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"EXIT:{{owner}}:{{time.time()}}\\n")
-    sys.exit(0)
+    os._exit(0)
 except Exception as e:
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"ERROR:{{owner}}:{{e}}\\n")
-    sys.exit(1)
+    os._exit(1)
 """
     script_file = tmp_path / "proc_worker.py"
     script_file.write_text(worker_code, encoding="utf-8")
@@ -2135,3 +2135,214 @@ def test_publication_slot_negative_control_unsafe_release_reproduced(p5_env):
 
     buggy_release()
     assert not lock_dir.exists(), "Buggy release wiped Owner B's active lock"
+
+
+# ---------------------------------------------------------------------------
+# Test 23: P5-F8 Publication Ownership & Takeover Hardening Tests
+# ---------------------------------------------------------------------------
+def test_publication_slot_live_process_paused_heartbeat_not_stolen(p5_env):
+    """RED test for P5-F8: Live process whose heartbeat paused beyond TTL MUST NOT be stolen."""
+    import time
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    lock_dir = ws_dir / ".publication_slot"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+
+    # Live process PID (current process is definitively alive)
+    live_pid = os.getpid()
+    meta_live = {
+        "owner_id": "live_worker",
+        "owner_token": "live_token_123",
+        "pid": live_pid,
+        "acquired_at": time.time() - 100.0,
+        "heartbeat_at": time.time() - 50.0,  # Expired far beyond TTL!
+        "heartbeat_ttl": 2.0,
+        "timeout": 5.0,
+    }
+    with open(lock_dir / "slot_meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta_live, f)
+
+    # Competing worker B must NOT take over because owner is still definitively alive!
+    with pytest.raises(TimeoutError):
+        with acquire_workspace_publication_slot(ws_id, ws_dir, owner_id="worker_b", timeout=0.3):
+            pass
+
+    # Confirm original metadata was NOT overwritten or deleted
+    with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
+        cur = json.load(f)
+    assert cur["owner_token"] == "live_token_123", "Live owner slot must not have been stolen"
+
+
+def test_publication_slot_dead_owner_expired_heartbeat_reclaimed(p5_env):
+    """Verifies that a dead PID with expired heartbeat IS safely reclaimed."""
+    import time
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    lock_dir = ws_dir / ".publication_slot"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+
+    dead_meta = {
+        "owner_id": "dead_worker",
+        "owner_token": "dead_token_456",
+        "pid": 9999999,  # Non-existent PID
+        "acquired_at": time.time() - 100.0,
+        "heartbeat_at": time.time() - 50.0,
+        "heartbeat_ttl": 2.0,
+        "timeout": 5.0,
+    }
+    with open(lock_dir / "slot_meta.json", "w", encoding="utf-8") as f:
+        json.dump(dead_meta, f)
+
+    # Competing worker B should successfully reclaim the dead owner's slot
+    with acquire_workspace_publication_slot(ws_id, ws_dir, owner_id="worker_b", timeout=2.0) as slot:
+        assert slot["owner_id"] == "worker_b"
+        with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
+            new_meta = json.load(f)
+        assert new_meta["owner_token"] == slot["owner_token"]
+
+
+def test_publication_slot_toctou_release_interleaving_preserves_new_owner(p5_env):
+    """Verifies that releasing an old slot under TOCTOU interleaving does not delete new owner files."""
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    lock_dir = ws_dir / ".publication_slot"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+
+    token_a = "token_a_stale"
+    token_b = "token_b_replacement"
+
+    # Slot contains Owner B's metadata
+    meta_b = {
+        "owner_id": "worker_b",
+        "owner_token": token_b,
+        "pid": os.getpid(),
+    }
+    with open(lock_dir / "slot_meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta_b, f)
+
+    # Extra file in lock_dir belonging to Owner B
+    extra_file = lock_dir / "worker_b_state.bin"
+    extra_file.write_bytes(b"critical_owner_b_state")
+
+    # Owner A attempts release with token_a
+    res = release_workspace_publication_slot(ws_id, ws_dir, owner_token=token_a)
+    assert res is False
+    assert lock_dir.exists(), "Lock dir must not be deleted"
+    assert extra_file.exists(), "Owner B's extra file must NOT be deleted by recursive rmtree"
+    assert (lock_dir / "slot_meta.json").exists()
+    with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
+        meta_after = json.load(f)
+    assert meta_after["owner_token"] == token_b
+
+
+def test_publication_lost_ownership_before_promotion_aborts(p5_env):
+    """RED test: A publisher that loses slot ownership before promotion cannot publish."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    db = factory()
+    now = utcnow_iso()
+    paper = Paper(
+        id="paper-lost-owner-test",
+        workspace_id=ws_id,
+        original_filename="lost.pdf",
+        storage_path="lost.pdf",
+        sha256="hash_lost",
+        size_bytes=100,
+        status="processing",
+        current_run_id="run-lost-1",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(paper)
+    db.add(
+        Chunk(
+            id="c-lost-1",
+            paper_id=paper.id,
+            run_id="run-lost-1",
+            chunk_index=0,
+            text="Lost ownership test chunk.",
+            token_count=10,
+            section="Intro",
+            page_start=1,
+            page_end=1,
+            is_excluded=0,
+            is_deleted=0,
+            created_at=now,
+        )
+    )
+    db.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        build_and_publish_workspace_index(
+            db,
+            workspace_id=ws_id,
+            target_paper_id=paper.id,
+            target_run_id="run-lost-1",
+            data_dir=data_dir,
+            _crash_boundary="lost_ownership_before_promotion",
+        )
+
+    # Must raise WorkerFencingViolation or PublicationOwnershipLostError
+    assert "lost publication slot ownership" in str(exc_info.value)
+    # Target paper must NOT be marked ready
+    db.refresh(paper)
+    assert paper.status != "ready"
+    db.close()
+
+def test_publication_lost_ownership_before_commit_aborts(p5_env):
+    """RED test: A publisher that loses slot ownership before commit cannot publish."""
+    factory = p5_env["factory"]
+    ws_id = p5_env["workspace_id"]
+    data_dir = p5_env["test_dir"]
+
+    db = factory()
+    now = utcnow_iso()
+    paper = Paper(
+        id="paper-lost-commit-test",
+        workspace_id=ws_id,
+        original_filename="lost_c.pdf",
+        storage_path="lost_c.pdf",
+        sha256="hash_lost_c",
+        size_bytes=100,
+        status="processing",
+        current_run_id="run-lost-c1",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(paper)
+    db.add(
+        Chunk(
+            id="c-lost-c1",
+            paper_id=paper.id,
+            run_id="run-lost-c1",
+            chunk_index=0,
+            text="Lost ownership commit test chunk.",
+            token_count=10,
+            section="Intro",
+            page_start=1,
+            page_end=1,
+            is_excluded=0,
+            is_deleted=0,
+            created_at=now,
+        )
+    )
+    db.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        build_and_publish_workspace_index(
+            db,
+            workspace_id=ws_id,
+            target_paper_id=paper.id,
+            target_run_id="run-lost-c1",
+            data_dir=data_dir,
+            _crash_boundary="lost_ownership_before_commit",
+        )
+
+    # Must raise WorkerFencingViolation or PublicationOwnershipLostError
+    assert "lost publication slot ownership" in str(exc_info.value)
+    # Target paper must NOT be marked ready
+    db.refresh(paper)
+    assert paper.status != "ready"
+    db.close()
