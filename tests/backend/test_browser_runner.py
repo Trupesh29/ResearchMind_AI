@@ -2177,9 +2177,17 @@ with sync_playwright() as p:
 # ---------------------------------------------------------------------------
 # Phase 5 Index Lifecycle & Viewports Acceptance Evaluation Tests (P5-F4..F6)
 # ---------------------------------------------------------------------------
-def test_evaluate_acceptance_phase5_valid_and_negative_controls(valid_browser_results):
-    """Verifies that evaluate_acceptance enforces real observed index details and transient recovery."""
+def test_evaluate_acceptance_phase5_valid_and_negative_controls(valid_browser_results, tmp_path):
+    """Verifies that evaluate_acceptance enforces real observed index details, populated viewports, and transient recovery."""
     results = copy.deepcopy(valid_browser_results)
+
+    # Valid screenshot fixtures
+    d_shot = tmp_path / "desktop.png"
+    d_shot.write_bytes(b"dummy")
+    t_shot = tmp_path / "tablet.png"
+    t_shot.write_bytes(b"dummy")
+    m_shot = tmp_path / "mobile.png"
+    m_shot.write_bytes(b"dummy")
 
     # Valid Phase 5 results
     results["phase5_index_lifecycle"] = {
@@ -2196,9 +2204,46 @@ def test_evaluate_acceptance_phase5_valid_and_negative_controls(valid_browser_re
             "chunk_count": 4,
             "ui_model_verified": True,
             "ui_dim_verified": True,
+            "ui_norm_verified": True,
             "ui_faiss_verified": True,
             "ui_bm25_verified": True,
             "artifact_integrity_verified": True,
+        },
+    }
+
+    results["viewports"] = {
+        "desktop_1440": {
+            "width": 1440,
+            "height": 900,
+            "screenshot_path": str(d_shot),
+            "has_horizontal_overflow": False,
+            "h1_visible": True,
+            "workspace_select_usable": True,
+            "paper_selected": True,
+            "pipeline_visible": True,
+            "index_membership_visible": True,
+        },
+        "tablet_768": {
+            "width": 768,
+            "height": 1024,
+            "screenshot_path": str(t_shot),
+            "has_horizontal_overflow": False,
+            "h1_visible": True,
+            "workspace_select_usable": True,
+            "paper_selected": True,
+            "pipeline_visible": True,
+            "index_membership_visible": True,
+        },
+        "mobile_375": {
+            "width": 375,
+            "height": 667,
+            "screenshot_path": str(m_shot),
+            "has_horizontal_overflow": False,
+            "h1_visible": True,
+            "workspace_select_usable": True,
+            "paper_selected": True,
+            "pipeline_visible": True,
+            "index_membership_visible": True,
         },
     }
 
@@ -2235,6 +2280,64 @@ def test_evaluate_acceptance_phase5_valid_and_negative_controls(valid_browser_re
     p_fail, f_reasons, c_status = evaluate_acceptance(res_no_rec, require_phase5=True)
     assert p_fail is False
     assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5: UI index details unverified must fail
+    res_bad_ui = copy.deepcopy(results)
+    res_bad_ui["phase5_index_lifecycle"]["observed_index_details"]["ui_faiss_verified"] = False
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_ui, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 6: Missing mobile viewport must fail
+    res_missing_mob = copy.deepcopy(results)
+    del res_missing_mob["viewports"]["mobile_375"]
+    p_fail, f_reasons, _ = evaluate_acceptance(res_missing_mob, require_phase5=True)
+    assert p_fail is False
+    assert any("mobile_375" in f for f in f_reasons)
+
+    # Negative Control 7: Empty-state / unusable workspace selector must fail
+    res_unusable_ws = copy.deepcopy(results)
+    res_unusable_ws["viewports"]["desktop_1440"]["workspace_select_usable"] = False
+    p_fail, f_reasons, _ = evaluate_acceptance(res_unusable_ws, require_phase5=True)
+    assert p_fail is False
+    assert any("workspace selector not usable" in f for f in f_reasons)
+
+    # Negative Control 8: Paper not selected must fail
+    res_no_paper = copy.deepcopy(results)
+    res_no_paper["viewports"]["tablet_768"]["paper_selected"] = False
+    p_fail, f_reasons, _ = evaluate_acceptance(res_no_paper, require_phase5=True)
+    assert p_fail is False
+    assert any("paper not selected" in f for f in f_reasons)
+
+    # Negative Control 9: Pipeline not visible must fail
+    res_no_pipe = copy.deepcopy(results)
+    res_no_pipe["viewports"]["mobile_375"]["pipeline_visible"] = False
+    p_fail, f_reasons, _ = evaluate_acceptance(res_no_pipe, require_phase5=True)
+    assert p_fail is False
+    assert any("pipeline tab not visible" in f for f in f_reasons)
+
+    # Negative Control 10: Index & membership not visible must fail
+    res_no_idx_tab = copy.deepcopy(results)
+    res_no_idx_tab["viewports"]["desktop_1440"]["index_membership_visible"] = False
+    p_fail, f_reasons, _ = evaluate_acceptance(res_no_idx_tab, require_phase5=True)
+    assert p_fail is False
+    assert any("index & membership tab not visible" in f for f in f_reasons)
+
+    # Negative Control 11: Missing or empty screenshot file must fail
+    res_no_shot = copy.deepcopy(results)
+    empty_shot = tmp_path / "empty.png"
+    empty_shot.write_bytes(b"")
+    res_no_shot["viewports"]["mobile_375"]["screenshot_path"] = str(empty_shot)
+    p_fail, f_reasons, _ = evaluate_acceptance(res_no_shot, require_phase5=True)
+    assert p_fail is False
+    assert any("screenshot missing or empty" in f for f in f_reasons)
+
+    # Negative Control 12: Horizontal overflow must fail
+    res_ov = copy.deepcopy(results)
+    res_ov["viewports"]["mobile_375"]["has_horizontal_overflow"] = True
+    p_fail, f_reasons, _ = evaluate_acceptance(res_ov, require_phase5=True)
+    assert p_fail is False
+    assert any("horizontal overflow in mobile_375" in f for f in f_reasons)
 
 
 def test_evaluate_acceptance_viewports_horizontal_overflow_detection(valid_browser_results):

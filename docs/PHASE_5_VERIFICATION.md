@@ -2,11 +2,11 @@
 
 **Phase:** Week 3, Phase 5: Embeddings & Index Lifecycle
 **Branch:** `manav` (tracking `origin/manav`)
-**Base Pushed Checkpoint:** `4fef34c`
-**Corrective Commits:**
-1. `fb03592` — `fix(phase5): harden publication ownership and post-commit recovery` (Resolves P5-F1, P5-F2)
-2. `6fdb56b` — `fix(ui): fence quality center workspace requests` (Resolves P5-F3)
-3. `test(phase5): replace synthetic acceptance with observed evidence` (Resolves P5-F4, P5-F5, P5-F6, P5-F7)
+**Base Checkpoint:** `47f028d` (retained from prior review cycle)
+**Corrective Commits on top of 47f028d:**
+1. `18c53d4` — `fix(phase5): fence publication lease ownership` (Resolves P5-F8)
+2. `301cf92` — `fix(ui): cancel quality requests on unmount` (Resolves P5-F9)
+3. `test(phase5): require populated responsive evidence` (Resolves P5-F10)
 **Date:** 2026-11-21
 **Status:** ALL CHECKS PASSED (Verified via Observed System Evidence)
 
@@ -85,11 +85,16 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
   - `test_late_cleanup_does_not_purge_active_or_other_version`: PASSED (P5-F2: cleanup respects active and concurrent versions)
   - `test_publication_slot_multiprocess_exclusion`: PASSED (P5-F2: true OS-level multiprocess mutual exclusion verified via subprocess workers)
   - `test_publication_slot_negative_controls`: PASSED (P5-F2: corrupt metadata, PID spoofing, token mismatches rejected)
-  - **Result: 31/31 PASSED**
+  - `test_publication_slot_live_process_paused_heartbeat_not_stolen`: PASSED (P5-F8: live PID with paused heartbeat is not stolen)
+  - `test_publication_slot_dead_owner_expired_heartbeat_reclaimed`: PASSED (P5-F8: dead PID with expired heartbeat is reclaimed)
+  - `test_publication_slot_toctou_release_interleaving_preserves_new_owner`: PASSED (P5-F8: non-recursive rmdir release does not delete successor owner)
+  - `test_publication_lost_ownership_before_promotion_aborts`: PASSED (P5-F8: lost slot ownership before directory promotion rolls back)
+  - `test_publication_lost_ownership_before_commit_aborts`: PASSED (P5-F8: lost slot ownership before database commit aborts transaction)
+  - **Result: 36/36 PASSED**
 - **Browser Runner Acceptance Suite (`tests/backend/test_browser_runner.py`)**:
   - 75 tests covering runner orchestration, responsive viewports, and acceptance criteria.
-  - `test_evaluate_acceptance_phase5_valid_and_negative_controls`: PASSED (P5-F4, P5-F5: validates real observed index details and transient recovery fields)
-  - `test_evaluate_acceptance_viewports_horizontal_overflow_detection`: PASSED (P5-F6: verifies viewport-level horizontal overflow detection)
+  - `test_evaluate_acceptance_phase5_valid_and_negative_controls`: PASSED (P5-F4, P5-F5, P5-F10: validates real observed index details, populated viewports, negative controls, and transient recovery)
+  - `test_evaluate_acceptance_viewports_horizontal_overflow_detection`: PASSED (P5-F6, P5-F10: verifies viewport-level horizontal overflow detection)
   - **Result: 75/75 PASSED**
 
 ### B. Frontend Verification
@@ -100,13 +105,13 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
 - **TypeScript Typecheck**:
   - `npm --prefix frontend run typecheck` -> **0 errors.**
 - **Vitest Unit & Integration Suites**:
-  - `npm --prefix frontend test -- --run` -> **6 test files passed, 62/62 tests passed** (includes `routes.test.tsx` verifying route separation, Quality Center request generation fencing, AbortController cancellation on unmount/workspace switch, and late response discarding).
+  - `npm --prefix frontend test -- --run` -> **6 test files passed, 65/65 tests passed** (includes `routes.test.tsx` verifying route separation, Quality Center request generation fencing, unmount abort controller cleanup [P5-F9], and rapid A -> B -> A workspace switching [P5-F9]).
 - **Production Build**:
   - `npm --prefix frontend run build` -> **Built successfully.**
 
 ### C. Static Analysis
 - **Ruff Linter**:
-  - `.venv\Scripts\ruff.exe check .` -> **All checks passed!**
+  - `.venv\Scripts\ruff.exe check backend worker tests scripts` -> **All checks passed!**
 
 ### D. Live Browser Verification Suite
 - Execution command: `powershell -ExecutionPolicy Bypass -File scripts/run_browser_suite.ps1 -BackendPort 18000 -FrontendPort 15173 -RequirePhase2 -RequirePhase4 -RequirePhase5`
@@ -129,11 +134,11 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
     - `quality_center_index_details`: true
     - `observed_index_details`: version 2, `all-MiniLM-L6-v2`, 384 dimensions, 8 chunks, Unit L2 normalized, FAISS FlatIP & BM25 verified.
     - `transient_failure_recovery`: true
-    - `observed_indexing_recovery`: transient indexing failure injected via disposable hook on paper `7546da74...`, UI reprocess button triggered, recovered to `ready`.
-- Responsive Viewports Evidence (`viewports` object in summary):
-  - `desktop_1440`: 1440x900, zero horizontal overflow (`has_horizontal_overflow: false`).
-  - `tablet_768`: 768x1024, zero horizontal overflow (`has_horizontal_overflow: false`).
-  - `mobile_375`: 375x667, zero horizontal overflow (`has_horizontal_overflow: false`).
+    - `observed_indexing_recovery`: transient indexing failure injected via disposable hook on paper `4958a9ad...`, UI reprocess button triggered, recovered to `ready`.
+- Responsive Viewports Evidence (P5-F10: verified on populated Quality Center with Paper A in `ready` state before deletion):
+  - `desktop_1440`: 1440x900, zero horizontal overflow (`has_horizontal_overflow: false`), `h1_visible: true`, `workspace_select_usable: true`, `paper_selected: true`, `pipeline_visible: true`, `index_membership_visible: true`.
+  - `tablet_768`: 768x1024, zero horizontal overflow (`has_horizontal_overflow: false`), `h1_visible: true`, `workspace_select_usable: true`, `paper_selected: true`, `pipeline_visible: true`, `index_membership_visible: true`.
+  - `mobile_375`: 375x667, zero horizontal overflow (`has_horizontal_overflow: false`), `h1_visible: true`, `workspace_select_usable: true`, `paper_selected: true`, `pipeline_visible: true`, `index_membership_visible: true`.
 - Dedicated Screenshots captured and verified:
   - `desktop_quality_center_1440.png`
   - `tablet_quality_center_768.png`

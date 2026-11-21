@@ -747,7 +747,14 @@ def evaluate_acceptance(
         p5 = results["phase5_index_lifecycle"]
         obs = p5.get("observed_index_details") or {}
         obs_passed = (
-            (obs.get("artifact_integrity_verified") is True and obs.get("chunk_count", 0) > 0)
+            (
+                obs.get("artifact_integrity_verified") is True
+                and obs.get("chunk_count", 0) > 0
+                and obs.get("ui_model_verified") is True
+                and obs.get("ui_dim_verified") is True
+                and obs.get("ui_faiss_verified") is True
+                and obs.get("ui_bm25_verified") is True
+            )
             if require_phase5
             else (obs.get("artifact_integrity_verified") is True and obs.get("chunk_count", 0) > 0 if obs else True)
         )
@@ -770,10 +777,32 @@ def evaluate_acceptance(
     # 11. Viewports & Responsive Layout Integrity
     if "viewports" in results:
         vps = results["viewports"]
-        for vp_name in ["desktop_1440", "tablet_768", "mobile_375"]:
+        required_vps = ["desktop_1440", "tablet_768", "mobile_375"]
+        all_vps_present = all(vp in vps for vp in required_vps)
+        if require_phase5 and not all_vps_present:
+            failures.append(f"Missing required viewports in results: {[vp for vp in required_vps if vp not in vps]}")
+
+        for vp_name in required_vps:
             if vp_name in vps:
-                if vps[vp_name].get("has_horizontal_overflow") is True:
+                vp_data = vps[vp_name]
+                if vp_data.get("has_horizontal_overflow") is True:
                     failures.append(f"Quality Center horizontal overflow in {vp_name}")
+                if require_phase5:
+                    shot_path_str = vp_data.get("screenshot_path")
+                    if not shot_path_str or not Path(shot_path_str).exists() or Path(shot_path_str).stat().st_size == 0:
+                        failures.append(f"Quality Center screenshot missing or empty for {vp_name}: {shot_path_str}")
+                    if vp_data.get("h1_visible") is not True:
+                        failures.append(f"Quality Center h1 not visible in {vp_name}")
+                    if vp_data.get("workspace_select_usable") is not True:
+                        failures.append(f"Quality Center workspace selector not usable in {vp_name}")
+                    if vp_data.get("paper_selected") is not True:
+                        failures.append(f"Quality Center paper not selected in {vp_name}")
+                    if vp_data.get("pipeline_visible") is not True:
+                        failures.append(f"Quality Center pipeline tab not visible in {vp_name}")
+                    if vp_data.get("index_membership_visible") is not True:
+                        failures.append(f"Quality Center index & membership tab not visible in {vp_name}")
+    elif require_phase5:
+        failures.append("Phase 5 requires responsive viewport verification results, but none were recorded.")
 
     overall_passed = len(failures) == 0
     return overall_passed, failures, criteria
@@ -2106,6 +2135,77 @@ def run_checks(
 
                 p4_results["quality_modal_escape_closed"] = qc_closed
 
+                # P5-F10: Dedicated 3-Viewport Responsive Screenshots & Metrics for Populated Quality Center
+                print("[10d-5] Capturing dedicated 3-viewport responsive screenshots for populated Quality Center...")
+                qc_target_url = f"{base_url}/quality?paper={paper_a_id}" if paper_a_id else f"{base_url}/quality"
+                vp_configs = [
+                    ("desktop_1440", 1440, 900, "desktop_quality_center_1440.png"),
+                    ("tablet_768", 768, 1024, "tablet_quality_center_768.png"),
+                    ("mobile_375", 375, 667, "mobile_quality_center_375.png"),
+                ]
+                vp_summary = {}
+                for vp_key, w, h, fname in vp_configs:
+                    page.set_viewport_size({"width": w, "height": h})
+                    page.goto(qc_target_url, wait_until="networkidle")
+                    time.sleep(0.5)
+
+                    overflow = page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth")
+                    h1_vis = page.locator("h1:has-text('Quality Center')").count() > 0
+                    ws_select = page.locator("select[aria-label='Select Workspace']")
+                    ws_usable = (
+                        ws_select.count() > 0
+                        and (ws_select.input_value() == created_workspace_id if created_workspace_id else True)
+                    )
+                    paper_select = page.locator("select[aria-label='Select Research Paper']")
+                    paper_sel = (
+                        paper_select.count() > 0
+                        and (paper_select.input_value() == paper_a_id if paper_a_id else True)
+                    )
+                    pipe_vis = (
+                        page.locator("text='6-Stage Processing Pipeline'").count() > 0
+                        or page.locator("text='Pipeline & History'").count() > 0
+                        or page.locator("text='Validating'").count() > 0
+                    )
+
+                    idx_tab = page.locator("button:has-text('Index & Membership')")
+                    idx_mem_vis = False
+                    if idx_tab.count() > 0:
+                        idx_tab.first.click()
+                        time.sleep(0.3)
+                        main_text = page.locator("main").inner_text() if page.locator("main").count() > 0 else ""
+                        idx_mem_vis = (
+                            "all-MiniLM-L6-v2" in main_text
+                            and "384" in main_text
+                            and "FAISS FlatIP" in main_text
+                            and "BM25" in main_text
+                        )
+                        pipe_tab = page.locator("button:has-text('Pipeline & History')")
+                        if pipe_tab.count() > 0:
+                            pipe_tab.first.click()
+                            time.sleep(0.2)
+
+                    shot_path = screenshots_dir / fname
+                    page.screenshot(path=str(shot_path))
+
+                    vp_summary[vp_key] = {
+                        "width": w,
+                        "height": h,
+                        "screenshot_path": str(shot_path),
+                        "has_horizontal_overflow": overflow,
+                        "h1_visible": h1_vis,
+                        "workspace_select_usable": ws_usable,
+                        "paper_selected": paper_sel,
+                        "pipeline_visible": pipe_vis,
+                        "index_membership_visible": idx_mem_vis,
+                    }
+
+                results["viewports"] = vp_summary
+
+                # Reset viewport and return to /library for subsequent Phase 2 steps
+                page.set_viewport_size({"width": 1280, "height": 720})
+                page.goto(f"{base_url}/library", wait_until="networkidle")
+                time.sleep(0.5)
+
                 # 10g. Cancel Paper Deletion
                 del_paper_btn = page.locator(f"button[aria-label^='Delete {valid_pdf_a_name}']").first
                 del_paper_btn.click()
@@ -2188,43 +2288,6 @@ def run_checks(
                     (quality_guidance.count() > 0 and "Quality Center · Inspection Mode" in guidance_text)
                     or (quality_h1.count() > 0 and no_dropzone)
                 )
-
-                # P5-F6: Dedicated 3-Viewport Responsive Screenshots & Metrics for Quality Center
-                print("[10d-5] Capturing dedicated 3-viewport responsive screenshots for Quality Center...")
-                qc_target_url = f"{base_url}/quality?paper={paper_a_id}" if paper_a_id else f"{base_url}/quality"
-                vp_configs = [
-                    ("desktop_1440", 1440, 900, "desktop_quality_center_1440.png"),
-                    ("tablet_768", 768, 1024, "tablet_quality_center_768.png"),
-                    ("mobile_375", 375, 667, "mobile_quality_center_375.png"),
-                ]
-                vp_summary = {}
-                for vp_key, w, h, fname in vp_configs:
-                    page.set_viewport_size({"width": w, "height": h})
-                    page.goto(qc_target_url, wait_until="networkidle")
-                    time.sleep(0.3)
-                    shot_path = screenshots_dir / fname
-                    page.screenshot(path=str(shot_path))
-
-                    overflow = page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth")
-                    h1_vis = page.locator("h1:has-text('Quality Center')").count() > 0
-                    ws_usable = page.locator("select[aria-label='Select Workspace']").count() > 0
-                    pipe_vis = (
-                        page.locator("text='6-Stage Processing Pipeline'").count() > 0
-                        or page.locator("text='Pipeline & History'").count() > 0
-                        or page.locator("text='Validating'").count() > 0
-                    )
-                    vp_summary[vp_key] = {
-                        "width": w,
-                        "height": h,
-                        "screenshot_path": str(shot_path),
-                        "has_horizontal_overflow": overflow,
-                        "h1_visible": h1_vis,
-                        "workspace_select_usable": ws_usable,
-                        "pipeline_visible": pipe_vis,
-                    }
-
-                results["viewports"] = vp_summary
-                page.set_viewport_size({"width": 1280, "height": 720})
 
                 results["phase2_lifecycle"] = p2_results
             finally:

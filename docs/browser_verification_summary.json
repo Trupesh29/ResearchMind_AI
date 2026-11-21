@@ -4,7 +4,7 @@
     "base_url": "http://127.0.0.1:15173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-11-21T06:07:46Z",
+    "timestamp": "2026-11-21T08:18:45Z",
     "headless": true,
     "search_delay_ms": 0
   },
@@ -15,8 +15,10 @@
       "screenshot_path": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification\\screenshots\\desktop_quality_center_1440.png",
       "has_horizontal_overflow": false,
       "h1_visible": true,
-      "workspace_select_usable": false,
-      "pipeline_visible": false
+      "workspace_select_usable": true,
+      "paper_selected": true,
+      "pipeline_visible": true,
+      "index_membership_visible": true
     },
     "tablet_768": {
       "width": 768,
@@ -24,8 +26,10 @@
       "screenshot_path": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification\\screenshots\\tablet_quality_center_768.png",
       "has_horizontal_overflow": false,
       "h1_visible": true,
-      "workspace_select_usable": false,
-      "pipeline_visible": false
+      "workspace_select_usable": true,
+      "paper_selected": true,
+      "pipeline_visible": true,
+      "index_membership_visible": true
     },
     "mobile_375": {
       "width": 375,
@@ -33,8 +37,10 @@
       "screenshot_path": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification\\screenshots\\mobile_quality_center_375.png",
       "has_horizontal_overflow": false,
       "h1_visible": true,
-      "workspace_select_usable": false,
-      "pipeline_visible": false
+      "workspace_select_usable": true,
+      "paper_selected": true,
+      "pipeline_visible": true,
+      "index_membership_visible": true
     }
   },
   "routes": {
@@ -158,7 +164,7 @@
       "failure": "net::ERR_FAILED"
     },
     {
-      "url": "http://127.0.0.1:15173/api/papers/d30afb03-027f-4e39-b74c-2e169a337117/chunks?section=abstract&limit=100",
+      "url": "http://127.0.0.1:15173/api/papers/ca1bbbb2-7c85-48de-9c50-ff1d3079b867/chunks?section=abstract&limit=100",
       "failure": "net::ERR_FAILED"
     }
   ],
@@ -210,7 +216,7 @@
     },
     "transient_failure_recovery": true,
     "observed_indexing_recovery": {
-      "paper_id": "7546da74-8dc8-4f75-bb80-8d1b6db56e59",
+      "paper_id": "4958a9ad-5b63-4794-8c78-8213c53715e2",
       "initial_failure_observed": true,
       "reprocess_triggered": true,
       "final_status": "ready",
