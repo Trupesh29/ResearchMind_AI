@@ -1,29 +1,68 @@
-# Week 3 execution checklist
+# ResearchMind AI — Execution Checklist (Weeks 3–6)
 
-All items are pending. Acceptance criteria and integration points are defined in [Week 3 phases](../docs/WEEK_3_PHASES.md). Split any item exceeding one focused session into smaller tasks before implementation.
+Status: In progress (Milestone M1 completed, Milestone M2 active).
+
+---
+
+## Week 3: Phase 5 & Phase 6 (Indexes, Retrieval, and Evaluation)
 
 | Done | Task | Depends on | Verification / acceptance |
 |---|---|---|---|
-| [x] | 5.1 Confirm ingestion handoff and runtime prerequisites | Accepted Phase 4 | Record generation, tokenizer/config revisions and actual embedding/FAISS smoke result |
-| [x] | 5.2 Define index manifest and membership migration | 5.1 | Fresh/populated migration checks; explicit compatible-version contract |
-| [x] | 5.3 Embed one accepted generation | 5.2 | Exact token-limit checks; finite normalized vectors; idempotent retry |
-| [x] | Checkpoint: embedding contract | 5.3 | Inspect vector membership against original chunk/source IDs |
-| [x] | 5.4 Build paired FAISS/BM25 snapshot | 5.3 | Both reload with identical eligible manifest; failures leave prior version intact |
-| [x] | 5.5 Publish and recover index versions | 5.4 | Crash-boundary and concurrent-build tests; ready only after valid publication |
-| [x] | 5.6 Integrate delete/reprocess invalidation | 5.5 | Stale worker cannot publish; deleted/superseded source unavailable immediately |
-| [x] | 5.7 Expose stage/status/retry behavior | 5.5 | Real-worker browser states; coherent progress; existing UI race regressions pass |
-| [x] | Checkpoint: Phase 5 acceptance | 5.6, 5.7 | Save migration, lifecycle, backend and browser evidence separately |
-| [ ] | 6.1 Define retrieval-only API contract | 5.2 | Route, ownership, readiness, bounds and error cases documented |
-| [ ] | 6.2 Retrieve selected-scope dense/sparse candidates | Phase 5, 6.1 | Isolation, reference exclusion, starvation and deletion negative controls |
-| [ ] | 6.3 Fuse and return traceable evidence | 6.2 | Hand-checked RRF, stable deduplication, source spans and version diagnostics |
-| [ ] | Checkpoint: retrieval service | 6.3 | Selected ready documents only; no ranking-as-confidence claim |
-| [ ] | 6.4 Build minimal evidence inspection UI | 6.3 | Live source navigation, slow-response selection race, keyboard/narrow screen checks |
-| [ ] | 6.5 Label and split evaluation fixtures | 5.1 | 30–50 questions, at least five documents, 5–10 unanswerable cases; immutable split manifest |
-| [ ] | 6.6 Implement and validate metric CLI | 6.3, 6.5 | Hand-calculated metric cases, stale-label rejection, explicit denominators/cutoffs |
-| [ ] | 6.7 Compare baselines and freeze configuration | 6.6 | Calibration targets fixed before held-out run; quality/latency reports saved |
-| [ ] | S1 Verify SciCite readiness | Independent | Dataset rights/revisions, splits, labels and leakage checks recorded |
-| [ ] | S2 Run majority and TF-IDF baselines | S1 | Training-only fit; actual validation metrics and configurations saved |
-| [ ] | S3 Run initial DistilBERT trial and resume check | S1 | Checkpoint, validation curves, device/memory/timing and resume evidence; test untouched |
-| [ ] | Checkpoint: Week 3 acceptance and Week 4 handoff | 6.4, 6.7, S2, S3 | Save reviewed revision, real-worker/browser/recovery evidence and separate classifier status; list incomplete gates honestly |
+| [x] | 5.1 Ingestion handoff & runtime prerequisites | Phase 4 | Embedding model and FAISS environment verified |
+| [x] | 5.2 Index manifest & membership schema | 5.1 | `EmbeddingIndex` and `IndexChunk` models and migrations |
+| [x] | 5.3 Batch MiniLM embeddings | 5.2 | Pinned model, finite normalized vectors, sequence bounds |
+| [x] | 5.4 Paired FAISS + BM25 snapshot | 5.3 | Coherent snapshot build from identical eligible chunk manifest |
+| [x] | 5.5 Atomic publication & crash recovery | 5.4 | Atomic slot rename, fencing token validation, recoverability |
+| [x] | 5.6 Delete/reprocess invalidation | 5.5 | Immediate query tombstone filtering, rebuild threshold |
+| [x] | 5.7 Stage/status/retry integration | 5.5 | Real worker, Quality Center UI progress, race guards |
+| [x] | Checkpoint: Phase 5 acceptance | 5.6, 5.7 | Recorded in `PHASE_5_VERIFICATION.md` (Commit `10dba89`) |
+| [x] | 6.1 Define retrieval-only API contract | 5.2 | `POST /api/retrieval/query` route, schemas, workspace ownership |
+| [x] | 6.2 Filtered candidate retrieval (Dense + Sparse) | 6.1 | Anti-starvation candidate filtering on selected papers, reference exclusion |
+| [x] | 6.3 Reciprocal-Rank Fusion (RRF k=60) & diagnostics | 6.2 | Stable deduplication, raw & fused scores, timings, provenance |
+| [x] | 6.4 Minimal evidence inspection UI | 6.3 | Source navigation, selection race protection, keyboard/narrow screen |
+| [x] | 6.5 Evaluation fixtures (30–50 labeled queries) | 5.1 | Varied docs, unanswerable questions, split calibration / held-out |
+| [x] | 6.6 Metric evaluation CLI (Recall@5, MRR, nDCG@10) | 6.3, 6.5 | Hand-verified metric calculations, latency measurement |
+| [x] | 6.7 Baseline comparison & configuration freeze | 6.6 | Dense vs BM25 vs Hybrid evaluation reports |
+| [ ] | S1 Verify SciCite readiness | Independent | Data splits, labels (`method`, `background`, `result`), leakage checks |
+| [ ] | S2 Train majority & TF-IDF baselines | S1 | Training-only fit, validation metrics & confusion matrix |
+| [ ] | S3 Initial DistilBERT trial & resume check | S1 | Checkpoint, validation curves, interrupt/resume verified |
+| [ ] | Checkpoint: Week 3 acceptance | 6.4, 6.7, S3 | Real-worker demo evidence, metrics saved, Week 4 handoff |
 
-Optional reranker follows 6.7 only if schedule permits; it must earn inclusion through measured quality/cost evidence. Classifier blockers do not prevent independent retrieval acceptance.
+---
+
+## Week 4: Grounded Research Assistant & Classifier Acceptance
+
+| Done | Task | Depends on | Verification / acceptance |
+|---|---|---|---|
+| [ ] | 7.1 Assistant API & query rewriting | Week 3 | `POST /api/research/query`, conversation persistence, untrusted context framing |
+| [ ] | 8.1 Citation verification engine | 7.1 | Grounding check against source chunks, extraction of numerical/factual claims |
+| [ ] | 8.2 Calibrated abstention | 8.1 | Honest abstention on unanswerable queries with closest evidence |
+| [ ] | 9.1 Assistant UI & split workspace | 7.1, 8.2 | Side-by-side PDF/chat view, citation click jumps to PDF page |
+| [ ] | S4 Final SciCite evaluation on held-out test split | S3 | Final accuracy, macro-F1, confusion matrix persisted |
+| [ ] | Checkpoint: Week 4 acceptance | 9.1, S4 | Verified citations, working abstention, recorded model run |
+
+---
+
+## Week 5: Research Intelligence & Model Lab
+
+| Done | Task | Depends on | Verification / acceptance |
+|---|---|---|---|
+| [ ] | 10.1 Research Explorer & multi-style summaries | Week 4 | Simple, technical, methodology, results summaries with citations |
+| [ ] | 11.1 Two-paper comparison matrix | 10.1 | Comparative table with per-cell citations and non-comparable states |
+| [ ] | 12.1 Experiment intelligence extraction | 10.1 | Extracted conditions, measures, units, and source provenance |
+| [ ] | 13.1 Report Studio (DOCX generation) | 10.1, 11.1, 12.1 | Server-side docx export, status polling, authenticated download |
+| [ ] | 14.1 Model Lab UI | S4 | Real confusion matrix, learning curves, and baseline comparison |
+| [ ] | Checkpoint: Week 5 acceptance | 13.1, 14.1 | Exported DOCX verified, comparison verified, experiment records verified |
+
+---
+
+## Week 6: Hardening, Packaging & Release
+
+| Done | Task | Depends on | Verification / acceptance |
+|---|---|---|---|
+| [ ] | 15.1 Security audit & path isolation | Week 5 | Path traversal guards, prompt injection defense, CORS verification |
+| [ ] | 16.1 Comprehensive E2E regression suite | 15.1 | 250+ backend and frontend tests passing with 0 regressions |
+| [ ] | 17.1 Accessibility & visual polish | 16.1 | WCAG 2.2 AA compliance, 1440/768/375px responsive checks |
+| [ ] | 18.1 Performance profiling | 16.1 | RAM <= 4GB, retrieval < 100ms, batch throughput verified |
+| [ ] | 19.1 Local deployment packaging & final demo | 18.1 | Single-command launch, user guide, final release report in `docs/RELEASE_WEEK_6.md` |
+| [ ] | Checkpoint: Final Six-Week Release | 19.1 | Six-week MVP fully accepted |

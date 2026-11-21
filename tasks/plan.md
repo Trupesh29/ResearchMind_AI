@@ -1,9 +1,16 @@
-# Week 3 implementation plan
+# ResearchMind AI — Multi-Week Master Implementation Plan (Weeks 3–6)
 
-Status: planned, not implemented.
+Status: Active execution from accepted Phase 5 checkpoint through Week 6 local release.
 
-The authoritative phase scope, decisions, dependencies, integration points, risks and acceptance gates are in [Week 3 phases](../docs/WEEK_3_PHASES.md). Execution tasks are in [todo.md](todo.md). This preserves the existing project phase-document convention.
+The authoritative phase scopes, contracts, integration points, and acceptance gates are defined in:
+- [Week 3 phases](../docs/WEEK_3_PHASES.md) — Embeddings, versioned index lifecycle, hybrid retrieval, and baseline evaluation.
+- [Week 4 phases](../docs/WEEK_4_PHASES.md) — Grounded Research Assistant, citation verification, abstention, and fine-tuned SciCite classifier.
+- [Week 5 phases](../docs/WEEK_5_PHASES.md) — Research Explorer, multi-paper comparison matrix, experiment intelligence, DOCX reports, Model Lab UI.
+- [Week 6 phases](../docs/WEEK_6_PHASES.md) — Security audits, test regression matrix, accessibility, performance profiling, local release package.
 
-Dependency order: accepted ingestion → index contract → embeddings → publication/lifecycle → filtered retrieval → fusion/inspection → evaluation/freeze → Week 4 handoff. Evaluation labeling and SciCite preparation can proceed independently; heavy compute runs should be scheduled separately.
+Detailed task breakdown and live checklist are maintained in [todo.md](todo.md).
+Continuous state tracking is maintained in `.agent-harness/state.json`.
 
-Remaining implementation decisions: exact retrieval-only route, rebuild threshold, crash-recovery protocol, and calibration-derived numeric targets. Resolve and document these at their corresponding task before dependent implementation; none prevents this phase plan.
+Execution rhythm follows the Ralph loop discipline:
+inspect → define proof → minimal coherent implementation → verify → review diff → commit.
+Uncommitted user modifications to `workflow.md` are strictly preserved.

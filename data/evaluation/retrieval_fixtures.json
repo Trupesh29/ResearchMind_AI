@@ -1,0 +1,354 @@
+{
+  "version": "1.0.0",
+  "created_at": "2026-10-21T00:00:00Z",
+  "description": "ResearchMind AI Phase 6 Hybrid Retrieval Benchmark Fixtures (35 queries, 5 documents, 8 unanswerable questions, split into calibration and held-out).",
+  "documents": [
+    {
+      "id": "doc_transformers_2017",
+      "title": "Attention Is All You Need",
+      "domain": "Natural Language Processing",
+      "hash_sha256": "4a8b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
+    },
+    {
+      "id": "doc_crispr_cas9_2012",
+      "title": "A Programmable Dual-RNA-Guided DNA Endonuclease in Adaptive Bacterial Immunity",
+      "domain": "Molecular Biology",
+      "hash_sha256": "5b9c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c"
+    },
+    {
+      "id": "doc_quantum_surface_2014",
+      "title": "Surface Codes: Towards Practical Large-Scale Quantum Computation",
+      "domain": "Quantum Computing",
+      "hash_sha256": "6c0d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d"
+    },
+    {
+      "id": "doc_climate_aerosol_2020",
+      "title": "Stratospheric Aerosol Injection and Atmospheric Radiation Budgets",
+      "domain": "Atmospheric Science",
+      "hash_sha256": "7d1e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e"
+    },
+    {
+      "id": "doc_gnn_drug_2019",
+      "title": "A Deep Learning Approach to Antibiotic Discovery with Directed Message Passing Neural Networks",
+      "domain": "Cheminformatics",
+      "hash_sha256": "8e2f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f"
+    }
+  ],
+  "queries": [
+    {
+      "id": "Q01",
+      "split": "calibration",
+      "document_id": "doc_transformers_2017",
+      "query": "What is the computational complexity per layer of self-attention compared to recurrent layers?",
+      "is_answerable": true,
+      "gold_keywords": ["self-attention", "complexity", "recurrent", "O(n^2)", "sequence length"],
+      "gold_section": "complexity_analysis"
+    },
+    {
+      "id": "Q02",
+      "split": "calibration",
+      "document_id": "doc_transformers_2017",
+      "query": "How many attention heads and encoder layers are used in the base Transformer model?",
+      "is_answerable": true,
+      "gold_keywords": ["8 heads", "6 layers", "base model", "d_model 512"],
+      "gold_section": "model_architecture"
+    },
+    {
+      "id": "Q03",
+      "split": "calibration",
+      "document_id": "doc_transformers_2017",
+      "query": "Why is positional encoding added to the input embeddings in the Transformer?",
+      "is_answerable": true,
+      "gold_keywords": ["positional encoding", "order of sequence", "sinusoid", "no recurrence"],
+      "gold_section": "positional_encoding"
+    },
+    {
+      "id": "Q04",
+      "split": "calibration",
+      "document_id": "doc_crispr_cas9_2012",
+      "query": "Which RNA molecules guide the Cas9 endonuclease to introduce double-stranded DNA breaks?",
+      "is_answerable": true,
+      "gold_keywords": ["crRNA", "tracrRNA", "dual-RNA", "guide RNA", "Cas9"],
+      "gold_section": "mechanism"
+    },
+    {
+      "id": "Q05",
+      "split": "calibration",
+      "document_id": "doc_crispr_cas9_2012",
+      "query": "What proto-spacer adjacent motif (PAM) sequence does Streptococcus pyogenes Cas9 recognize?",
+      "is_answerable": true,
+      "gold_keywords": ["PAM", "NGG", "protospacer", "Streptococcus pyogenes"],
+      "gold_section": "pam_recognition"
+    },
+    {
+      "id": "Q06",
+      "split": "calibration",
+      "document_id": "doc_quantum_surface_2014",
+      "query": "What is the fault-tolerance threshold error rate for surface code quantum error correction?",
+      "is_answerable": true,
+      "gold_keywords": ["threshold", "error rate", "surface code", "fault-tolerance", "1%"],
+      "gold_section": "threshold_analysis"
+    },
+    {
+      "id": "Q07",
+      "split": "calibration",
+      "document_id": "doc_quantum_surface_2014",
+      "query": "How do syndrome measurement cycles distinguish between bit flip (X) and phase flip (Z) errors?",
+      "is_answerable": true,
+      "gold_keywords": ["syndrome", "bit flip", "phase flip", "stabilizer", "measure"],
+      "gold_section": "syndrome_extraction"
+    },
+    {
+      "id": "Q08",
+      "split": "calibration",
+      "document_id": "doc_climate_aerosol_2020",
+      "query": "What is the simulated global radiative forcing impact of sulfur dioxide injection at 20 km altitude?",
+      "is_answerable": true,
+      "gold_keywords": ["radiative forcing", "sulfur dioxide", "stratospheric aerosol", "cooling"],
+      "gold_section": "results"
+    },
+    {
+      "id": "Q09",
+      "split": "calibration",
+      "document_id": "doc_climate_aerosol_2020",
+      "query": "How does aerosol particle size affect stratospheric heating and ozone depletion rates?",
+      "is_answerable": true,
+      "gold_keywords": ["particle size", "stratospheric heating", "ozone depletion", "coagulation"],
+      "gold_section": "discussion"
+    },
+    {
+      "id": "Q10",
+      "split": "calibration",
+      "document_id": "doc_gnn_drug_2019",
+      "query": "What molecular representation and graph convolution method were used to screen the chemical library for halicin?",
+      "is_answerable": true,
+      "gold_keywords": ["directed message passing", "D-MPNN", "molecular graph", "halicin", "screening"],
+      "gold_section": "methods"
+    },
+    {
+      "id": "Q11",
+      "split": "calibration",
+      "document_id": "doc_gnn_drug_2019",
+      "query": "How was the growth inhibition assay configured against Escherichia coli in the primary validation experiment?",
+      "is_answerable": true,
+      "gold_keywords": ["inhibition assay", "Escherichia coli", "optical density", "antibacterial"],
+      "gold_section": "experimental_setup"
+    },
+    {
+      "id": "Q12",
+      "split": "calibration",
+      "document_id": "doc_transformers_2017",
+      "query": "What BLEU score did the big Transformer model achieve on the WMT 2014 English-to-German benchmark?",
+      "is_answerable": true,
+      "gold_keywords": ["BLEU", "28.4", "English-to-German", "WMT 2014"],
+      "gold_section": "results"
+    },
+    {
+      "id": "Q13",
+      "split": "calibration",
+      "document_id": "doc_crispr_cas9_2012",
+      "query": "Which catalytic domains in Cas9 are responsible for cleaving the complementary and non-complementary DNA strands?",
+      "is_answerable": true,
+      "gold_keywords": ["HNH", "RuvC", "cleave", "catalytic domain"],
+      "gold_section": "mechanism"
+    },
+    {
+      "id": "Q14",
+      "split": "calibration",
+      "document_id": "doc_quantum_surface_2014",
+      "query": "What topological defect manipulation is used to perform Clifford logic gates on planar surface codes?",
+      "is_answerable": true,
+      "gold_keywords": ["braiding", "defects", "Clifford gates", "lattice surgery"],
+      "gold_section": "logic_gates"
+    },
+    {
+      "id": "Q15",
+      "split": "calibration",
+      "document_id": "doc_gnn_drug_2019",
+      "query": "What was the ROC-AUC score of the deep neural network model on the test set of 2,335 molecules?",
+      "is_answerable": true,
+      "gold_keywords": ["ROC-AUC", "0.896", "test set", "validation"],
+      "gold_section": "model_performance"
+    },
+    {
+      "id": "Q16_UNANS",
+      "split": "calibration",
+      "document_id": "doc_transformers_2017",
+      "query": "What was the closing stock price of Apple Inc on the day the Transformer paper was published in 2017?",
+      "is_answerable": false,
+      "gold_keywords": [],
+      "gold_section": null
+    },
+    {
+      "id": "Q17_UNANS",
+      "split": "calibration",
+      "document_id": "doc_crispr_cas9_2012",
+      "query": "What is the recommended dosage of ibuprofen for treating migraine headaches in pediatric patients?",
+      "is_answerable": false,
+      "gold_keywords": [],
+      "gold_section": null
+    },
+    {
+      "id": "Q18_UNANS",
+      "split": "calibration",
+      "document_id": "doc_quantum_surface_2014",
+      "query": "Who won the FIFA World Cup final in 2014 and what was the final match score?",
+      "is_answerable": false,
+      "gold_keywords": [],
+      "gold_section": null
+    },
+    {
+      "id": "Q19_UNANS",
+      "split": "calibration",
+      "document_id": "doc_climate_aerosol_2020",
+      "query": "How many passengers boarded commercial flights at Heathrow Airport during December 2020?",
+      "is_answerable": false,
+      "gold_keywords": [],
+      "gold_section": null
+    },
+    {
+      "id": "Q20_UNANS",
+      "split": "calibration",
+      "document_id": "doc_gnn_drug_2019",
+      "query": "What is the average retail price of a Tesla Model 3 in Germany during 2021?",
+      "is_answerable": false,
+      "gold_keywords": [],
+      "gold_section": null
+    },
+    {
+      "id": "Q21",
+      "split": "held_out",
+      "document_id": "doc_transformers_2017",
+      "query": "What learning rate schedule and warmup steps were utilized in training the Adam optimizer?",
+      "is_answerable": true,
+      "gold_keywords": ["warmup", "4000", "Adam", "learning rate", "beta1"],
+      "gold_section": "optimizer_config"
+    },
+    {
+      "id": "Q22",
+      "split": "held_out",
+      "document_id": "doc_transformers_2017",
+      "query": "How is scaled dot-product attention computed mathematically in the Transformer?",
+      "is_answerable": true,
+      "gold_keywords": ["softmax", "sqrt(d_k)", "Q K^T", "dot-product", "attention"],
+      "gold_section": "attention_equation"
+    },
+    {
+      "id": "Q23",
+      "split": "held_out",
+      "document_id": "doc_crispr_cas9_2012",
+      "query": "Can a engineered chimeric single-guide RNA (sgRNA) replace the dual-RNA system for site-specific cleavage?",
+      "is_answerable": true,
+      "gold_keywords": ["single-guide RNA", "sgRNA", "chimeric", "cleavage", "replaces"],
+      "gold_section": "sgrna_engineering"
+    },
+    {
+      "id": "Q24",
+      "split": "held_out",
+      "document_id": "doc_crispr_cas9_2012",
+      "query": "What ion cofactor (such as Mg2+) is required for Cas9 endonuclease catalytic activity?",
+      "is_answerable": true,
+      "gold_keywords": ["Mg2+", "divalent ion", "magnesium", "cofactor", "catalytic"],
+      "gold_section": "biochemical_requirements"
+    },
+    {
+      "id": "Q25",
+      "split": "held_out",
+      "document_id": "doc_quantum_surface_2014",
+      "query": "What is the physical qubit overhead required to achieve a logical error rate of 10^-15 in a surface code?",
+      "is_answerable": true,
+      "gold_keywords": ["overhead", "physical qubits", "logical error rate", "code distance", "10^-15"],
+      "gold_section": "qubit_overhead"
+    },
+    {
+      "id": "Q26",
+      "split": "held_out",
+      "document_id": "doc_quantum_surface_2014",
+      "query": "How does minimum-weight perfect matching (MWPM) decode error chains in the surface code?",
+      "is_answerable": true,
+      "gold_keywords": ["minimum-weight perfect matching", "MWPM", "decoder", "error chain", "syndrome graph"],
+      "gold_section": "decoding_algorithm"
+    },
+    {
+      "id": "Q27",
+      "split": "held_out",
+      "document_id": "doc_climate_aerosol_2020",
+      "query": "What climate feedback loops were observed in tropospheric precipitation patterns under solar geoengineering?",
+      "is_answerable": true,
+      "gold_keywords": ["precipitation", "monsoon", "troposphere", "solar geoengineering", "feedback"],
+      "gold_section": "hydrological_cycle"
+    },
+    {
+      "id": "Q28",
+      "split": "held_out",
+      "document_id": "doc_climate_aerosol_2020",
+      "query": "How does solid alumina or diamond aerosol compare to sulfate in terms of solar backscattering efficiency?",
+      "is_answerable": true,
+      "gold_keywords": ["alumina", "diamond", "refractive index", "backscattering", "sulfate"],
+      "gold_section": "alternative_aerosols"
+    },
+    {
+      "id": "Q29",
+      "split": "held_out",
+      "document_id": "doc_gnn_drug_2019",
+      "query": "What was the mechanism of action discovered for halicin against resistant bacterial strains?",
+      "is_answerable": true,
+      "gold_keywords": ["transmembrane electrochemical potential", "proton motive force", "dissipation", "halicin"],
+      "gold_section": "mechanism_of_action"
+    },
+    {
+      "id": "Q30",
+      "split": "held_out",
+      "document_id": "doc_gnn_drug_2019",
+      "query": "Which antibiotic resistance phenotypes did halicin successfully overcome in Clostridioides difficile experiments?",
+      "is_answerable": true,
+      "gold_keywords": ["Clostridioides difficile", "pan-resistant", "murine model", "efficacy"],
+      "gold_section": "in_vivo_efficacy"
+    },
+    {
+      "id": "Q31",
+      "split": "held_out",
+      "document_id": "doc_transformers_2017",
+      "query": "What residual dropout probability and label smoothing values were applied during model regularization?",
+      "is_answerable": true,
+      "gold_keywords": ["dropout 0.1", "label smoothing 0.1", "regularization", "perplexity"],
+      "gold_section": "regularization"
+    },
+    {
+      "id": "Q32",
+      "split": "held_out",
+      "document_id": "doc_crispr_cas9_2012",
+      "query": "How do base-pairing mismatches between the guide RNA and target DNA affect in vitro cleavage efficiency?",
+      "is_answerable": true,
+      "gold_keywords": ["mismatch", "seed region", "cleavage efficiency", "off-target"],
+      "gold_section": "specificity_analysis"
+    },
+    {
+      "id": "Q33_UNANS",
+      "split": "held_out",
+      "document_id": "doc_transformers_2017",
+      "query": "What recipe is recommended for baking traditional French sourdough bread in home ovens?",
+      "is_answerable": false,
+      "gold_keywords": [],
+      "gold_section": null
+    },
+    {
+      "id": "Q34_UNANS",
+      "split": "held_out",
+      "document_id": "doc_quantum_surface_2014",
+      "query": "What are the rules and points scoring system in Australian Rules Football (AFL)?",
+      "is_answerable": false,
+      "gold_keywords": [],
+      "gold_section": null
+    },
+    {
+      "id": "Q35_UNANS",
+      "split": "held_out",
+      "document_id": "doc_gnn_drug_2019",
+      "query": "What is the boiling point of ethanol at standard atmospheric pressure in degrees Celsius?",
+      "is_answerable": false,
+      "gold_keywords": [],
+      "gold_section": null
+    }
+  ]
+}

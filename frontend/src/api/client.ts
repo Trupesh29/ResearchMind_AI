@@ -10,6 +10,7 @@ import {
   PaperUploadBatchResponse,
   PublicConfigResponse,
   ReadyResponse,
+  RetrievalQueryResponse,
   SectionsListResponse,
   WorkspaceCreatePayload,
   WorkspaceDetail,
@@ -216,5 +217,22 @@ export const api = {
   deletePaper: (id: string) =>
     request<void>(`/papers/${id}`, {
       method: "DELETE",
+    }),
+};
+export const retrievalApi = {
+  query: (
+    payload: {
+      workspace_id: string;
+      query: string;
+      selected_paper_ids: string[];
+      top_k?: number;
+      mode?: "hybrid" | "dense" | "sparse";
+    },
+    signal?: AbortSignal,
+  ) =>
+    request<RetrievalQueryResponse>("/retrieval/query", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal,
     }),
 };

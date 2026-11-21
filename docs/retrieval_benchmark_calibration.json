@@ -1,0 +1,73 @@
+{
+  "benchmark_version": "1.0.0",
+  "split": "calibration",
+  "date": "2026-11-21T15:15:37Z",
+  "hardware": "Local CPU (Intel/AMD x86_64, Windows)",
+  "models": {
+    "dense": "sentence-transformers/all-MiniLM-L6-v2 (pinned 1110a24)",
+    "sparse": "Okapi BM25 (k1=1.5, b=0.75)",
+    "fusion": "RRF (k=60)"
+  },
+  "results": {
+    "dense": {
+      "recall_at_5": 0.9333,
+      "mrr_at_10": 0.9,
+      "ndcg_at_10": 0.888,
+      "latency_ms": {
+        "mean": 31.06,
+        "p50": 29.78,
+        "p95": 50.9
+      },
+      "unanswerable": {
+        "count": 5,
+        "max_score_mean": 0.1103,
+        "max_score_max": 0.184
+      },
+      "counts": {
+        "answerable": 15,
+        "unanswerable": 5,
+        "total": 20
+      }
+    },
+    "sparse": {
+      "recall_at_5": 0.9333,
+      "mrr_at_10": 0.9333,
+      "ndcg_at_10": 0.917,
+      "latency_ms": {
+        "mean": 12.01,
+        "p50": 11.92,
+        "p95": 14.1
+      },
+      "unanswerable": {
+        "count": 5,
+        "max_score_mean": 4.4586,
+        "max_score_max": 8.0614
+      },
+      "counts": {
+        "answerable": 15,
+        "unanswerable": 5,
+        "total": 20
+      }
+    },
+    "hybrid": {
+      "recall_at_5": 0.9333,
+      "mrr_at_10": 0.9333,
+      "ndcg_at_10": 0.9144,
+      "latency_ms": {
+        "mean": 33.73,
+        "p50": 31.86,
+        "p95": 46.93
+      },
+      "unanswerable": {
+        "count": 5,
+        "max_score_mean": 0.0327,
+        "max_score_max": 0.0328
+      },
+      "counts": {
+        "answerable": 15,
+        "unanswerable": 5,
+        "total": 20
+      }
+    }
+  }
+}

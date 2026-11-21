@@ -241,3 +241,54 @@ export interface SectionsListResponse {
   run_id?: string | null;
   is_stale?: boolean;
 }
+
+
+export interface RetrievalPassage {
+  chunk_id: string;
+  paper_id: string;
+  paper_title?: string | null;
+  section: string;
+  heading?: string | null;
+  page_start: number;
+  page_end: number;
+  text: string;
+  score: number;
+  rank: number;
+  dense_rank?: number | null;
+  dense_score?: number | null;
+  sparse_rank?: number | null;
+  sparse_score?: number | null;
+  index_version: number;
+  model_name: string;
+  model_revision: string;
+}
+
+export interface RetrievalDiagnostics {
+  total_eligible_chunks: number;
+  dense_candidate_count: number;
+  sparse_candidate_count: number;
+  fused_count: number;
+  timings: {
+    dense_ms: number;
+    sparse_ms: number;
+    fusion_ms: number;
+    total_ms: number;
+  };
+  index_version: number;
+  index_id: string;
+  mode: string;
+  score_explanation: string;
+}
+
+export interface RetrievalQueryData {
+  query: string;
+  workspace_id: string;
+  selected_paper_ids: string[];
+  passages: RetrievalPassage[];
+  diagnostics: RetrievalDiagnostics;
+}
+
+export interface RetrievalQueryResponse {
+  data: RetrievalQueryData;
+  error?: ApiErrorDetail | null;
+}
