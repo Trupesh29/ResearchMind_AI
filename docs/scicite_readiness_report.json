@@ -1,0 +1,50 @@
+{
+  "dataset_name": "allenai/scicite",
+  "taxonomy": [
+    "method",
+    "background",
+    "result"
+  ],
+  "splits": {
+    "train": {
+      "file": "data\\models\\scicite\\dataset\\scicite\\train.jsonl",
+      "sha256": "79e2bf9f40116201730b08cc2158959eac4e7f6f652b63cb053799c06b743048",
+      "count": 8243,
+      "labels": {
+        "background": 4840,
+        "method": 2294,
+        "result": 1109
+      },
+      "avg_text_length": 220.5
+    },
+    "dev": {
+      "file": "data\\models\\scicite\\dataset\\scicite\\dev.jsonl",
+      "sha256": "0da66e583273fe6de50fd91ab586bb7118e77044be2824e4b89472a24858bbef",
+      "count": 916,
+      "labels": {
+        "result": 123,
+        "background": 538,
+        "method": 255
+      },
+      "avg_text_length": 221.5
+    },
+    "test": {
+      "file": "data\\models\\scicite\\dataset\\scicite\\test.jsonl",
+      "sha256": "e35f6f92ed45f75d7c75e56bb0d5aec3bb8134363c384894916f5c9770fa53a6",
+      "count": 1861,
+      "labels": {
+        "background": 997,
+        "result": 259,
+        "method": 605
+      },
+      "avg_text_length": 222.0
+    }
+  },
+  "leakage_checks": {
+    "train_dev_overlap": 2,
+    "train_test_overlap": 0,
+    "dev_test_overlap": 0,
+    "test_split_status": "untouched_and_isolated"
+  },
+  "status": "ready_for_baselines"
+}

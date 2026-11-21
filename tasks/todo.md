@@ -23,10 +23,10 @@ Status: In progress (Milestone M1 completed, Milestone M2 active).
 | [x] | 6.5 Evaluation fixtures (30–50 labeled queries) | 5.1 | Varied docs, unanswerable questions, split calibration / held-out |
 | [x] | 6.6 Metric evaluation CLI (Recall@5, MRR, nDCG@10) | 6.3, 6.5 | Hand-verified metric calculations, latency measurement |
 | [x] | 6.7 Baseline comparison & configuration freeze | 6.6 | Dense vs BM25 vs Hybrid evaluation reports |
-| [ ] | S1 Verify SciCite readiness | Independent | Data splits, labels (`method`, `background`, `result`), leakage checks |
-| [ ] | S2 Train majority & TF-IDF baselines | S1 | Training-only fit, validation metrics & confusion matrix |
-| [ ] | S3 Initial DistilBERT trial & resume check | S1 | Checkpoint, validation curves, interrupt/resume verified |
-| [ ] | Checkpoint: Week 3 acceptance | 6.4, 6.7, S3 | Real-worker demo evidence, metrics saved, Week 4 handoff |
+| [x] | S1 Verify SciCite readiness | Independent | Data splits, labels (`method`, `background`, `result`), leakage checks |
+| [x] | S2 Train majority & TF-IDF baselines | S1 | Training-only fit, validation metrics & confusion matrix |
+| [x] | S3 Initial DistilBERT trial & resume check | S1 | Checkpoint, validation curves, interrupt/resume verified |
+| [x] | Checkpoint: Week 3 acceptance | 6.4, 6.7, S3 | Real-worker demo evidence, metrics saved, Week 4 handoff |
 
 ---
 

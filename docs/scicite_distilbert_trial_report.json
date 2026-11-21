@@ -1,0 +1,79 @@
+{
+  "workstream": "scicite_distilbert_initial_trial",
+  "device": "cpu",
+  "seed": 42,
+  "hyperparameters": {
+    "model": "distilbert-base-uncased",
+    "max_sequence_length": 128,
+    "batch_size": 16,
+    "learning_rate": 2e-05,
+    "epochs": 1,
+    "train_samples": 300
+  },
+  "truncation": {
+    "max_len": 128,
+    "truncated_count": 1,
+    "truncation_rate": 0.0033
+  },
+  "memory": {
+    "initial_rss_mb": 0.0,
+    "peak_rss_mb": 0.0,
+    "net_growth_mb": 0.0
+  },
+  "execution": {
+    "duration_seconds": 866.73,
+    "resumed_from_step": 15,
+    "checkpoint_file": "data\\models\\scicite\\distilbert_checkpoint.pt",
+    "model_file": "data\\models\\scicite\\distilbert_scicite_trial.pt"
+  },
+  "training_curves": [
+    {
+      "step": 19,
+      "loss": 0.9435,
+      "memory_rss_mb": 0.0
+    }
+  ],
+  "validation_metrics": {
+    "val_loss": 0.9114,
+    "accuracy": 0.5873,
+    "macro_f1": 0.2467,
+    "per_class": {
+      "background": {
+        "precision": 0.5873,
+        "recall": 1.0,
+        "f1_score": 0.74,
+        "support": 538
+      },
+      "method": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1_score": 0.0,
+        "support": 255
+      },
+      "result": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1_score": 0.0,
+        "support": 123
+      }
+    },
+    "confusion_matrix": [
+      [
+        538,
+        0,
+        0
+      ],
+      [
+        255,
+        0,
+        0
+      ],
+      [
+        123,
+        0,
+        0
+      ]
+    ]
+  },
+  "test_split_status": "strictly_untouched_reserved_for_week4"
+}

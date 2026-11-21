@@ -1,0 +1,133 @@
+{
+  "workstream": "scicite_baselines",
+  "dataset": "allenai/scicite",
+  "splits_used": {
+    "train_count": 8243,
+    "dev_count": 916,
+    "test_touched": false
+  },
+  "majority_baseline": {
+    "model_type": "MajorityClassifier",
+    "majority_class": "background",
+    "metrics": {
+      "accuracy": 0.5873,
+      "macro_f1": 0.2467,
+      "micro_f1": 0.5873,
+      "weighted_f1": 0.4346,
+      "per_class": {
+        "background": {
+          "precision": 0.5873,
+          "recall": 1.0,
+          "f1_score": 0.74,
+          "support": 538
+        },
+        "method": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1_score": 0.0,
+          "support": 255
+        },
+        "result": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1_score": 0.0,
+          "support": 123
+        }
+      },
+      "confusion_matrix": [
+        [
+          538,
+          0,
+          0
+        ],
+        [
+          255,
+          0,
+          0
+        ],
+        [
+          123,
+          0,
+          0
+        ]
+      ],
+      "classes": [
+        "background",
+        "method",
+        "result"
+      ],
+      "eval_duration_seconds": 0.0005
+    },
+    "artifact_file": "data\\models\\scicite\\majority_baseline.joblib"
+  },
+  "tfidf_baseline": {
+    "model_type": "TfidfVectorizer + LogisticRegression",
+    "hyperparameters": {
+      "max_features": 15000,
+      "ngram_range": [
+        1,
+        2
+      ],
+      "sublinear_tf": true,
+      "C": 1.0,
+      "class_weight": "balanced",
+      "random_state": 42
+    },
+    "vocab_size": 15000,
+    "metrics": {
+      "accuracy": 0.8264,
+      "macro_f1": 0.8045,
+      "micro_f1": 0.8264,
+      "weighted_f1": 0.827,
+      "per_class": {
+        "background": {
+          "precision": 0.8691,
+          "recall": 0.8513,
+          "f1_score": 0.8601,
+          "support": 538
+        },
+        "method": {
+          "precision": 0.7874,
+          "recall": 0.7843,
+          "f1_score": 0.7859,
+          "support": 255
+        },
+        "result": {
+          "precision": 0.7333,
+          "recall": 0.8049,
+          "f1_score": 0.7674,
+          "support": 123
+        }
+      },
+      "confusion_matrix": [
+        [
+          458,
+          49,
+          31
+        ],
+        [
+          50,
+          200,
+          5
+        ],
+        [
+          19,
+          5,
+          99
+        ]
+      ],
+      "classes": [
+        "background",
+        "method",
+        "result"
+      ],
+      "eval_duration_seconds": 1.7296
+    },
+    "artifact_file": "data\\models\\scicite\\tfidf_baseline.joblib"
+  },
+  "comparison": {
+    "accuracy_delta": 0.2391,
+    "macro_f1_delta": 0.5578,
+    "baseline_surpassed": true
+  }
+}
