@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Callable, Generator
 
 import faiss
 import numpy as np
@@ -132,24 +132,19 @@ def release_workspace_publication_slot(
     workspace_id: str,
     ws_dir: Path,
     owner_token: str,
+    _pause_before_delete: Callable[[], None] | None = None,
 ) -> bool:
     """Safely release the publication slot ONLY if owner_token matches the current lock.
 
     Guards against TOCTOU interleaving: verifies token matches before unlinking metadata.
     Never uses recursive directory deletion (shutil.rmtree on lock_dir); only removes lock_dir via
     non-recursive rmdir() so a replacement owner's files or metadata can never be destroyed.
+    Returns True only when the owned directory was actually released.
     """
     lock_dir = ws_dir / ".publication_slot"
     meta_path = lock_dir / "slot_meta.json"
-    if not lock_dir.exists():
+    if not lock_dir.exists() or not meta_path.exists():
         return False
-
-    if not meta_path.exists():
-        try:
-            lock_dir.rmdir()
-            return True
-        except Exception:
-            return False
 
     try:
         with open(meta_path, "r", encoding="utf-8") as f:
@@ -162,16 +157,35 @@ def release_workspace_publication_slot(
             )
             return False
 
+        if _pause_before_delete:
+            _pause_before_delete()
+
+        # Re-verify token immediately before unlinking to eliminate TOCTOU race:
+        # If ownership transitioned while paused, abort immediately without unlinking or deleting!
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("owner_token") != owner_token:
+                logger.warning(
+                    f"Publication slot lost ownership before unlink for {workspace_id}. "
+                    f"Lock owned by {data.get('owner_token')}, release attempted by {owner_token}. Aborting release."
+                )
+                return False
+        except Exception:
+            return False
+
         meta_path.unlink(missing_ok=True)
 
         # Remove lock_dir using non-recursive rmdir with a short retry for Windows handle settlement.
+        released = False
         for _ in range(5):
             try:
                 lock_dir.rmdir()
+                released = True
                 break
             except OSError:
                 time.sleep(0.02)
-        return True
+        return released
     except Exception as exc:
         logger.warning(f"Error during publication slot release for {workspace_id}: {exc}")
         return False
@@ -186,22 +200,30 @@ def acquire_workspace_publication_slot(
     poll_interval: float = 0.05,
     heartbeat_interval: float = 1.0,
     heartbeat_ttl: float = 10.0,
+    _before_slot_rename_hook: Callable[[], None] | None = None,
+    _bypass_thread_lock: bool = False,
 ) -> Generator[dict[str, Any], None, None]:
     """Acquire serialized publication slot for a workspace across threads and processes.
 
-    Uses thread-level lock + atomic filesystem directory reservation (.publication_slot)
-    with owner metadata, continuous background heartbeat thread, and lease takeover fencing.
+    Uses thread-level lock + candidate directory atomic promotion (.publication_slot_candidate_{token}
+    -> .publication_slot) with owner metadata, continuous background heartbeat thread, and lease
+    takeover fencing. Never exposes .publication_slot without complete owner metadata.
     """
     t_lock = _get_process_thread_lock(workspace_id)
-    acquired_thread = t_lock.acquire(timeout=timeout)
-    if not acquired_thread:
-        raise TimeoutError(f"Timed out waiting for publication thread lock for workspace {workspace_id}")
+    acquired_thread = True
+    if not _bypass_thread_lock:
+        acquired_thread = t_lock.acquire(timeout=timeout)
+        if not acquired_thread:
+            raise TimeoutError(f"Timed out waiting for publication thread lock for workspace {workspace_id}")
 
+    ws_dir.mkdir(parents=True, exist_ok=True)
     lock_dir = ws_dir / ".publication_slot"
     meta_path = lock_dir / "slot_meta.json"
     start_time = time.time()
     acquired_fs = False
     owner_token = f"{os.getpid()}_{uuid.uuid4().hex}"
+    candidate_dir = ws_dir / f".publication_slot_candidate_{owner_token}"
+    candidate_meta = candidate_dir / "slot_meta.json"
     slot_info = {
         "owner_id": owner_id,
         "owner_token": owner_token,
@@ -231,9 +253,9 @@ def acquire_workspace_publication_slot(
 
     try:
         while time.time() - start_time < timeout:
+            # 1. Candidate preparation: Never expose .publication_slot without complete metadata
             try:
-                lock_dir.mkdir(parents=True, exist_ok=False)
-                acquired_fs = True
+                candidate_dir.mkdir(parents=True, exist_ok=True)
                 meta_content = {
                     "owner_id": owner_id,
                     "owner_token": owner_token,
@@ -243,13 +265,31 @@ def acquire_workspace_publication_slot(
                     "heartbeat_ttl": heartbeat_ttl,
                     "timeout": timeout,
                 }
-                with open(meta_path, "w", encoding="utf-8") as f:
+                with open(candidate_meta, "w", encoding="utf-8") as f:
                     json.dump(meta_content, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                if _before_slot_rename_hook:
+                    _before_slot_rename_hook()
+
+                # Atomic directory rename attempt to claim the slot
+                candidate_dir.rename(lock_dir)
+                acquired_fs = True
 
                 hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
                 hb_thread.start()
                 break
-            except FileExistsError:
+            except (FileExistsError, OSError):
+                # lock_dir already exists or rename failed: clean up own candidate safely
+                if candidate_meta.exists():
+                    candidate_meta.unlink(missing_ok=True)
+                try:
+                    candidate_dir.rmdir()
+                except Exception:
+                    pass
+
+                # Inspect existing lock_dir for staleness
                 is_stale = False
                 existing_token = None
                 if meta_path.exists():
@@ -261,10 +301,9 @@ def acquire_workspace_publication_slot(
                         hb = data.get("heartbeat_at", data.get("acquired_at", 0))
                         ttl = data.get("heartbeat_ttl", heartbeat_ttl)
 
-                        # P5-F8 Takeover Failsafe:
-                        # 1. If PID is present and definitely alive, NEVER take over,
-                        #    even if heartbeat paused beyond TTL.
-                        # 2. Defensible owner-death evidence: PID confirmed dead AND heartbeat exceeded TTL.
+                        # P5-F8 / P5-F11 Takeover Failsafe:
+                        # 1. If PID is present and definitely alive, NEVER take over, even if heartbeat paused.
+                        # 2. Defensible dead owner evidence: PID confirmed dead AND heartbeat exceeded TTL.
                         if pid and _is_pid_alive(pid):
                             is_stale = False
                         elif pid and not _is_pid_alive(pid) and (time.time() - hb) > ttl:
@@ -272,22 +311,17 @@ def acquire_workspace_publication_slot(
                         else:
                             is_stale = False
                     except (json.JSONDecodeError, PermissionError):
-                        # Transient write or sharing conflict; handle conservatively
+                        # Transient write or sharing conflict; fail closed
                         is_stale = False
                     except Exception:
                         is_stale = False
                 else:
                     # Missing metadata file inside lock_dir.
-                    # Attempt a fast clean rmdir() first; if rmdir succeeds, lock_dir is gone and next loop will mkdir.
-                    try:
-                        lock_dir.rmdir()
-                        continue
-                    except OSError:
-                        pass
-                    # If rmdir failed (e.g. transient file in dir or permission), check directory age:
+                    # P5-F11: Do not immediately remove visible slot.
+                    # Missing or corrupt ownership metadata must fail closed unless orphan status is defensibly established.
                     try:
                         dir_age = time.time() - lock_dir.stat().st_mtime
-                        if dir_age > 0.3:
+                        if dir_age > heartbeat_ttl:
                             is_stale = True
                     except Exception:
                         is_stale = False
@@ -296,7 +330,10 @@ def acquire_workspace_publication_slot(
                     stale_takeover_dir = ws_dir / f".publication_slot_stale_{uuid.uuid4().hex[:8]}"
                     try:
                         lock_dir.rename(stale_takeover_dir)
-                        shutil.rmtree(stale_takeover_dir, ignore_errors=True)
+                        # Clean files inside stale_takeover_dir without recursive rmtree on live path
+                        for item in stale_takeover_dir.iterdir():
+                            item.unlink(missing_ok=True)
+                        stale_takeover_dir.rmdir()
                         logger.info(
                             f"Recovered stale publication slot for workspace {workspace_id} "
                             f"(previous owner token: {existing_token})."
@@ -316,9 +353,18 @@ def acquire_workspace_publication_slot(
         stop_heartbeat.set()
         if hb_thread and hb_thread.is_alive():
             hb_thread.join(timeout=1.0)
+        # Safely clean candidate dir if still present
+        if candidate_meta.exists():
+            candidate_meta.unlink(missing_ok=True)
+        if candidate_dir.exists():
+            try:
+                candidate_dir.rmdir()
+            except Exception:
+                pass
         if acquired_fs:
             release_workspace_publication_slot(workspace_id, ws_dir, owner_token)
-        t_lock.release()
+        if not _bypass_thread_lock and acquired_thread:
+            t_lock.release()
 
 
 def compute_file_sha256(file_path: Path | str) -> str:

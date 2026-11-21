@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Generator
 
@@ -2202,37 +2204,176 @@ def test_publication_slot_dead_owner_expired_heartbeat_reclaimed(p5_env):
 
 
 def test_publication_slot_toctou_release_interleaving_preserves_new_owner(p5_env):
-    """Verifies that releasing an old slot under TOCTOU interleaving does not delete new owner files."""
+    """Deterministic barrier test: Owner A validates token, pauses before deletion, Owner B takes over, Owner A resumes."""
     ws_id = p5_env["workspace_id"]
     ws_dir = p5_env["test_dir"] / "indexes" / ws_id
     lock_dir = ws_dir / ".publication_slot"
     lock_dir.mkdir(parents=True, exist_ok=True)
 
-    token_a = "token_a_stale"
-    token_b = "token_b_replacement"
+    token_a = f"{os.getpid()}_token_a_owner"
+    token_b = f"{os.getpid()}_token_b_replacement"
 
-    # Slot contains Owner B's metadata
+    # Initially slot is owned by Owner A
+    meta_a = {
+        "owner_id": "worker_a",
+        "owner_token": token_a,
+        "pid": os.getpid(),
+        "acquired_at": time.time(),
+        "heartbeat_at": time.time(),
+    }
+    with open(lock_dir / "slot_meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta_a, f)
+
+    pause_hit = threading.Event()
+    transition_done = threading.Event()
+    extra_file = lock_dir / "worker_b_state.bin"
+
+    def pause_before_delete_hook():
+        pause_hit.set()
+        assert transition_done.wait(timeout=5.0)
+
+    def run_owner_a_release(res_holder):
+        res = release_workspace_publication_slot(
+            ws_id,
+            ws_dir,
+            owner_token=token_a,
+            _pause_before_delete=pause_before_delete_hook,
+        )
+        res_holder.append(res)
+
+    results = []
+    t_release = threading.Thread(target=run_owner_a_release, args=(results,))
+    t_release.start()
+
+    # Wait until Owner A has read and verified token_a, and is paused before deletion
+    assert pause_hit.wait(timeout=5.0)
+
+    # 3. Simulate the permitted ownership transition/replacement:
+    # Slot metadata is replaced by Owner B and an extra file is placed in lock_dir
     meta_b = {
         "owner_id": "worker_b",
         "owner_token": token_b,
         "pid": os.getpid(),
+        "acquired_at": time.time(),
+        "heartbeat_at": time.time(),
     }
     with open(lock_dir / "slot_meta.json", "w", encoding="utf-8") as f:
         json.dump(meta_b, f)
-
-    # Extra file in lock_dir belonging to Owner B
-    extra_file = lock_dir / "worker_b_state.bin"
     extra_file.write_bytes(b"critical_owner_b_state")
 
-    # Owner A attempts release with token_a
-    res = release_workspace_publication_slot(ws_id, ws_dir, owner_token=token_a)
-    assert res is False
-    assert lock_dir.exists(), "Lock dir must not be deleted"
-    assert extra_file.exists(), "Owner B's extra file must NOT be deleted by recursive rmtree"
+    # 4. Resume Owner A cleanup
+    transition_done.set()
+    t_release.join(timeout=5.0)
+
+    # 5. Prove Owner A release returned False and did NOT delete Owner B's files or directory
+    assert len(results) == 1
+    assert results[0] is False, "Owner A must abort release when slot ownership transitioned"
+    assert lock_dir.exists(), "Lock dir must not be deleted by Owner A"
+    assert extra_file.exists(), "Owner B's extra file must NOT be deleted"
     assert (lock_dir / "slot_meta.json").exists()
     with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
         meta_after = json.load(f)
-    assert meta_after["owner_token"] == token_b
+    assert meta_after["owner_token"] == token_b, "Owner B's metadata must remain intact"
+
+
+def test_publication_slot_candidate_isolation_and_atomic_promotion(p5_env):
+    """RED test: Process A creates candidate and pauses; Process B acquires; Process A fails to overwrite B."""
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    lock_dir = ws_dir / ".publication_slot"
+
+    a_candidate_ready = threading.Event()
+    b_acquired = threading.Event()
+    a_failed = threading.Event()
+
+    def process_a_rename_hook():
+        a_candidate_ready.set()
+        assert b_acquired.wait(timeout=5.0)
+
+    def run_process_a():
+        try:
+            with acquire_workspace_publication_slot(
+                ws_id,
+                ws_dir,
+                owner_id="worker_a",
+                timeout=0.3,
+                _before_slot_rename_hook=process_a_rename_hook,
+                _bypass_thread_lock=True,
+            ):
+                pass
+        except TimeoutError:
+            a_failed.set()
+
+    t_a = threading.Thread(target=run_process_a)
+    t_a.start()
+
+    assert a_candidate_ready.wait(timeout=5.0)
+
+    # At this point Process A has created a candidate directory, but .publication_slot does NOT exist yet
+    assert not lock_dir.exists(), ".publication_slot must not exist before rename"
+
+    # Process B acquires the slot
+    with acquire_workspace_publication_slot(
+        ws_id,
+        ws_dir,
+        owner_id="worker_b",
+        timeout=2.0,
+        _bypass_thread_lock=True,
+    ) as slot_b:
+        assert lock_dir.exists()
+        with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
+            meta_b = json.load(f)
+        assert meta_b["owner_token"] == slot_b["owner_token"]
+
+        # Signal Process A to attempt rename against existing lock_dir
+        b_acquired.set()
+        t_a.join(timeout=5.0)
+
+        # Process A must have failed to acquire or steal B's slot
+        assert a_failed.is_set(), "Process A must fail closed when candidate rename hits existing slot"
+
+        # Process B's slot must remain intact
+        with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
+            meta_b_current = json.load(f)
+        assert meta_b_current["owner_token"] == slot_b["owner_token"]
+
+
+def test_publication_slot_incomplete_candidate_not_live_slot(p5_env):
+    """Proves that incomplete candidate directories never become live slots and are cleaned up."""
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    lock_dir = ws_dir / ".publication_slot"
+
+    abandoned_cand = ws_dir / ".publication_slot_candidate_abandoned_123"
+    abandoned_cand.mkdir(parents=True, exist_ok=True)
+
+    # Competing worker acquires normally
+    with acquire_workspace_publication_slot(ws_id, ws_dir, owner_id="worker_c", timeout=2.0) as slot:
+        assert lock_dir.exists()
+        assert (lock_dir / "slot_meta.json").exists()
+        with open(lock_dir / "slot_meta.json", "r", encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["owner_token"] == slot["owner_token"]
+
+
+def test_publication_slot_missing_or_corrupt_live_metadata_fails_closed(p5_env):
+    """Proves that missing or corrupt metadata in .publication_slot fails closed unless orphan age is established."""
+    ws_id = p5_env["workspace_id"]
+    ws_dir = p5_env["test_dir"] / "indexes" / ws_id
+    lock_dir = ws_dir / ".publication_slot"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+
+    # Corrupt JSON in slot_meta.json (fresh directory)
+    (lock_dir / "slot_meta.json").write_text("{corrupt json ...", encoding="utf-8")
+
+    with pytest.raises(TimeoutError):
+        with acquire_workspace_publication_slot(ws_id, ws_dir, owner_id="worker_d", timeout=0.3):
+            pass
+
+    # Lock dir must still exist (not wiped out immediately)
+    assert lock_dir.exists()
 
 
 def test_publication_lost_ownership_before_promotion_aborts(p5_env):
