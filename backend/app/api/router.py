@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from backend.app.api.assistant import router as assistant_router
 from backend.app.api.papers import router as papers_router
 from backend.app.api.retrieval import router as retrieval_router
 from backend.app.api.system import router as system_router
@@ -10,3 +11,4 @@ api_router.include_router(system_router)
 api_router.include_router(workspaces_router)
 api_router.include_router(papers_router)
 api_router.include_router(retrieval_router)
+api_router.include_router(assistant_router)

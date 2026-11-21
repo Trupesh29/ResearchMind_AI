@@ -34,12 +34,12 @@ Status: In progress (Milestone M1 completed, Milestone M2 active).
 
 | Done | Task | Depends on | Verification / acceptance |
 |---|---|---|---|
-| [ ] | 7.1 Assistant API & query rewriting | Week 3 | `POST /api/research/query`, conversation persistence, untrusted context framing |
-| [ ] | 8.1 Citation verification engine | 7.1 | Grounding check against source chunks, extraction of numerical/factual claims |
-| [ ] | 8.2 Calibrated abstention | 8.1 | Honest abstention on unanswerable queries with closest evidence |
-| [ ] | 9.1 Assistant UI & split workspace | 7.1, 8.2 | Side-by-side PDF/chat view, citation click jumps to PDF page |
-| [ ] | S4 Final SciCite evaluation on held-out test split | S3 | Final accuracy, macro-F1, confusion matrix persisted |
-| [ ] | Checkpoint: Week 4 acceptance | 9.1, S4 | Verified citations, working abstention, recorded model run |
+| [x] | 7.1 Assistant API & query rewriting | Week 3 | `POST /api/research/query`, conversation persistence, untrusted context framing |
+| [x] | 8.1 Citation verification engine | 7.1 | Grounding check against source chunks, extraction of numerical/factual claims |
+| [x] | 8.2 Calibrated abstention | 8.1 | Honest abstention on unanswerable queries with closest evidence |
+| [x] | 9.1 Assistant UI & split workspace | 7.1, 8.2 | Side-by-side PDF/chat view, citation click jumps to PDF page |
+| [x] | S4 Final SciCite evaluation on held-out test split | S3 | Final accuracy, macro-F1, confusion matrix persisted |
+| [x] | Checkpoint: Week 4 acceptance | 9.1, S4 | Verified citations, working abstention, recorded model run |
 
 ---
 

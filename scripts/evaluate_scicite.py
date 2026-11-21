@@ -58,6 +58,12 @@ def main() -> int:
         default="dev",
         help="Dataset split to evaluate on (default: dev; test reserved for Week 4)",
     )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional path to save JSON metrics report",
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -160,6 +166,35 @@ def main() -> int:
     print("-" * 55)
     for idx, row in enumerate(cm):
         print(f"{CLASSES[idx]:15s} | " + " | ".join(f"{val:>10d}" for val in row))
+
+    if args.output:
+        out_path = Path(args.output)
+        if not out_path.is_absolute():
+            out_path = PROJECT_ROOT / out_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_data = {
+            "model_name": model_name,
+            "split": args.split,
+            "sample_count": len(texts),
+            "accuracy": round(float(acc), 4),
+            "macro_f1": round(float(macro_f1), 4),
+            "micro_f1": round(float(micro_f1), 4),
+            "weighted_f1": round(float(weighted_f1), 4),
+            "per_class": {
+                c: {
+                    "precision": round(float(p[idx]), 4),
+                    "recall": round(float(r[idx]), 4),
+                    "f1_score": round(float(f1[idx]), 4),
+                    "support": int(sup[idx]),
+                }
+                for idx, c in enumerate(CLASSES)
+            },
+            "confusion_matrix": cm.tolist(),
+            "classes": CLASSES,
+        }
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(out_data, f, indent=2)
+        print(f"\nSaved metrics to {out_path}")
 
     print("\n" + "=" * 70)
     print(" EVALUATION COMPLETED SUCCESSFULLY")

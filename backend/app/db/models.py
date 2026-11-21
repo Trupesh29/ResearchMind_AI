@@ -398,3 +398,58 @@ class IndexChunk(Base):
 
     def __repr__(self) -> str:
         return f"<IndexChunk id={self.id} index_id={self.index_id} chunk_id={self.chunk_id} faiss_id={self.faiss_id}>"
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        Index("idx_conversations_workspace", "workspace_id"),
+        Index("idx_conversations_updated_at", "updated_at"),
+    )
+
+    workspace: Mapped["Workspace"] = relationship("Workspace")
+    messages: Mapped[list["Message"]] = relationship("Message", back_populates="conversation", cascade="all, delete-orphan", order_by="Message.created_at")
+
+    def __repr__(self) -> str:
+        return f"<Conversation id={self.id} workspace_id={self.workspace_id} title={self.title}>"
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    selected_paper_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retrieved_passages_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_abstention: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        Index("idx_messages_conversation", "conversation_id"),
+        Index("idx_messages_created_at", "created_at"),
+        CheckConstraint("role IN ('user', 'assistant', 'system')", name="ck_messages_role"),
+        CheckConstraint("is_abstention IN (0, 1)", name="ck_messages_is_abstention"),
+    )
+
+    conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
+
+    def __repr__(self) -> str:
+        return f"<Message id={self.id} conversation_id={self.conversation_id} role={self.role}>"

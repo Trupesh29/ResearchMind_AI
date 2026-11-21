@@ -292,3 +292,67 @@ export interface RetrievalQueryResponse {
   data: RetrievalQueryData;
   error?: ApiErrorDetail | null;
 }
+
+export interface CitationItem {
+  citation_id: string;
+  passage_id: string;
+  paper_id: string;
+  paper_title: string;
+  page_number: number;
+  section_title?: string | null;
+  exact_quote: string;
+  score: number;
+}
+
+export interface ResearchQueryRequest {
+  workspace_id: string;
+  query: string;
+  selected_paper_ids: string[];
+  mode?: "concise" | "detailed" | "comparison";
+  conversation_id?: string | null;
+}
+
+export interface ResearchAssistantResponse {
+  conversation_id: string;
+  message_id: string;
+  query: string;
+  rewritten_query?: string | null;
+  answer: string;
+  is_abstention: boolean;
+  citations: CitationItem[];
+  retrieved_passages: RetrievalPassage[];
+  timings: {
+    retrieval_ms: number;
+    generation_ms: number;
+    total_ms: number;
+  };
+}
+
+export interface MessageResponse {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  is_abstention: boolean;
+  citations: CitationItem[];
+  selected_paper_ids: string[];
+  created_at: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  workspace_id: string;
+  title: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationDetail {
+  id: string;
+  workspace_id: string;
+  title: string;
+  messages: MessageResponse[];
+  created_at: string;
+  updated_at: string;
+}

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RetrievalQueryRequest(BaseModel):
@@ -53,6 +53,34 @@ class RetrievalPassage(BaseModel):
     index_version: int = Field(..., description="Version of the active embedding index used for retrieval")
     model_name: str
     model_revision: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "page_start" not in data and "page_number" in data:
+                data["page_start"] = data["page_number"]
+            if "page_end" not in data and "page_number" in data:
+                data["page_end"] = data["page_number"]
+            if "section" not in data and "section_title" in data:
+                data["section"] = data["section_title"]
+            if "rank" not in data:
+                data["rank"] = 1
+            if "index_version" not in data:
+                data["index_version"] = 1
+            if "model_name" not in data:
+                data["model_name"] = "default"
+            if "model_revision" not in data:
+                data["model_revision"] = "default"
+        return data
+
+    @property
+    def page_number(self) -> int:
+        return self.page_start
+
+    @property
+    def section_title(self) -> str | None:
+        return self.section
 
 
 class RetrievalTimings(BaseModel):

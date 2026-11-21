@@ -17,6 +17,10 @@ import {
   WorkspaceItem,
   WorkspaceListResponse,
   WorkspaceUpdatePayload,
+  ResearchQueryRequest,
+  ResearchAssistantResponse,
+  ConversationSummary,
+  ConversationDetail,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -235,4 +239,28 @@ export const retrievalApi = {
       body: JSON.stringify(payload),
       signal,
     }),
+};
+
+export const assistantApi = {
+  query: (payload: ResearchQueryRequest, signal?: AbortSignal) =>
+    request<ResearchAssistantResponse>("/research/query", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal,
+    }),
+  listConversations: (workspaceId: string, signal?: AbortSignal) =>
+    request<ConversationSummary[]>(
+      `/research/conversations?workspace_id=${encodeURIComponent(workspaceId)}`,
+      { signal },
+    ),
+  getConversation: (conversationId: string, signal?: AbortSignal) =>
+    request<ConversationDetail>(
+      `/research/conversations/${encodeURIComponent(conversationId)}`,
+      { signal },
+    ),
+  deleteConversation: (conversationId: string) =>
+    request<void>(
+      `/research/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "DELETE" },
+    ),
 };
