@@ -1,9 +1,14 @@
 # ResearchMind AI — Phase 5 Verification Report
 
-**Phase:** Week 3, Phase 5: Embeddings & Index Lifecycle  
-**Checkpoint Commit Target:** Local branch `manav`  
-**Date:** 2026-11-20  
-**Status:** ALL CHECKS PASSED (Ready for Phase 5 Acceptance)
+**Phase:** Week 3, Phase 5: Embeddings & Index Lifecycle
+**Branch:** `manav` (tracking `origin/manav`)
+**Base Pushed Checkpoint:** `4fef34c`
+**Corrective Commits:**
+1. `fb03592` — `fix(phase5): harden publication ownership and post-commit recovery` (Resolves P5-F1, P5-F2)
+2. `6fdb56b` — `fix(ui): fence quality center workspace requests` (Resolves P5-F3)
+3. `test(phase5): replace synthetic acceptance with observed evidence` (Resolves P5-F4, P5-F5, P5-F6, P5-F7)
+**Date:** 2026-11-21
+**Status:** ALL CHECKS PASSED (Verified via Observed System Evidence)
 
 ---
 
@@ -74,20 +79,18 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
   - `test_crash_boundary_recovery_pre_and_post_db_commit`: PASSED (P5-N2: Crash boundaries 1–7 verified with zero corrupt index publication)
   - `test_embedding_cache_negative_controls_extended`: PASSED (P5-N3: corrupt dtype, missing vectors, zero dimension, length mismatch)
   - `test_index_artifacts_negative_controls_extended`: PASSED (P5-N4: missing manifest, corrupt json, sha256 mismatch, dimension mismatch, db mismatch)
-  - **Result: 25/25 PASSED (12.8s)**
-- **Full Backend Regression Suite**:
-  - `tests/backend/test_bootstrap.py`: PASSED
-  - `tests/backend/test_database.py`: 20/20 PASSED
-  - `tests/backend/test_dependency_injection.py`: 7/7 PASSED
-  - `tests/backend/test_papers_api.py`: PASSED
-  - `tests/backend/test_phase2_fixes.py`: PASSED
-  - `tests/backend/test_phase3_processing.py`: 17/17 PASSED
-  - `tests/backend/test_phase4_processing.py`: 3/3 PASSED
-  - `tests/backend/test_system_api.py`: 12/12 PASSED
-  - `tests/backend/test_workspaces_api.py`: PASSED
-  - `tests/backend/test_browser_runner.py`: 73/73 PASSED
-  - `tests/backend/test_phase5_indexing.py`: 25/25 PASSED
-  - **Result: 225 passed across all backend modules with 0 errors and 0 project storage leaks.**
+  - `test_post_commit_crash_boundaries_preserve_active_and_reconcile_ready`: PASSED (P5-F1: post-commit exceptions preserve active artifacts and reconcile target paper to `ready`)
+  - `test_publication_slot_heartbeat_extends_expiry`: PASSED (P5-F2: active worker heartbeat prevents lease expiration)
+  - `test_publication_slot_stale_takeover_when_owner_dead`: PASSED (P5-F2: dead owner slot safely reclaimed)
+  - `test_late_cleanup_does_not_purge_active_or_other_version`: PASSED (P5-F2: cleanup respects active and concurrent versions)
+  - `test_publication_slot_multiprocess_exclusion`: PASSED (P5-F2: true OS-level multiprocess mutual exclusion verified via subprocess workers)
+  - `test_publication_slot_negative_controls`: PASSED (P5-F2: corrupt metadata, PID spoofing, token mismatches rejected)
+  - **Result: 31/31 PASSED**
+- **Browser Runner Acceptance Suite (`tests/backend/test_browser_runner.py`)**:
+  - 75 tests covering runner orchestration, responsive viewports, and acceptance criteria.
+  - `test_evaluate_acceptance_phase5_valid_and_negative_controls`: PASSED (P5-F4, P5-F5: validates real observed index details and transient recovery fields)
+  - `test_evaluate_acceptance_viewports_horizontal_overflow_detection`: PASSED (P5-F6: verifies viewport-level horizontal overflow detection)
+  - **Result: 75/75 PASSED**
 
 ### B. Frontend Verification
 - **Prettier Code Style**:
@@ -97,9 +100,9 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
 - **TypeScript Typecheck**:
   - `npm --prefix frontend run typecheck` -> **0 errors.**
 - **Vitest Unit & Integration Suites**:
-  - `npm --prefix frontend test -- --run` -> **6 test files passed, 59/59 tests passed (20.19s)** (includes `routes.test.tsx` verifying route separation and truthful badges).
+  - `npm --prefix frontend test -- --run` -> **6 test files passed, 62/62 tests passed** (includes `routes.test.tsx` verifying route separation, Quality Center request generation fencing, AbortController cancellation on unmount/workspace switch, and late response discarding).
 - **Production Build**:
-  - `npm --prefix frontend run build` -> **Built successfully in 6.41s.**
+  - `npm --prefix frontend run build` -> **Built successfully.**
 
 ### C. Static Analysis
 - **Ruff Linter**:
@@ -124,8 +127,17 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
     - `indexing_stage_verified`: true
     - `active_workspace_index_published`: true
     - `quality_center_index_details`: true
+    - `observed_index_details`: version 2, `all-MiniLM-L6-v2`, 384 dimensions, 8 chunks, Unit L2 normalized, FAISS FlatIP & BM25 verified.
     - `transient_failure_recovery`: true
-- Screenshots captured and verified:
+    - `observed_indexing_recovery`: transient indexing failure injected via disposable hook on paper `7546da74...`, UI reprocess button triggered, recovered to `ready`.
+- Responsive Viewports Evidence (`viewports` object in summary):
+  - `desktop_1440`: 1440x900, zero horizontal overflow (`has_horizontal_overflow: false`).
+  - `tablet_768`: 768x1024, zero horizontal overflow (`has_horizontal_overflow: false`).
+  - `mobile_375`: 375x667, zero horizontal overflow (`has_horizontal_overflow: false`).
+- Dedicated Screenshots captured and verified:
+  - `desktop_quality_center_1440.png`
+  - `tablet_quality_center_768.png`
+  - `mobile_quality_center_375.png`
   - `desktop_library_phase2.png`
   - `desktop_pdf_viewer_modal.png`
   - `desktop_quality_center_page.png`

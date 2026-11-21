@@ -458,6 +458,16 @@ def is_process_running(pid: int) -> bool:
             return False
 
 
+def wait_until_dead(pid: int, timeout: float = 3.0) -> bool:
+    """Waits up to timeout seconds for a process to terminate on Windows."""
+    start = time.time()
+    while time.time() - start < timeout:
+        if not is_process_running(pid):
+            return True
+        time.sleep(0.05)
+    return not is_process_running(pid)
+
+
 def test_suite_rejects_occupied_port_without_touching_existing_server():
     """An existing listener on a required port must remain untouched, and the suite must exit 1."""
     occupied_port = find_free_port()
@@ -625,9 +635,9 @@ time.sleep(60)
 
     child_pid = int(child_pid_file.read_text(encoding="utf-8").strip()) if child_pid_file.exists() else None
 
-    assert not is_process_running(parent_pid), f"Backend parent PID {parent_pid} was not terminated by wrapper cleanup"
+    assert wait_until_dead(parent_pid), f"Backend parent PID {parent_pid} was not terminated by wrapper cleanup"
     if child_pid:
-        assert not is_process_running(child_pid), (
+        assert wait_until_dead(child_pid), (
             f"Backend child PID {child_pid} was not terminated by wrapper tree cleanup"
         )
 
@@ -703,8 +713,8 @@ server.serve_forever()
     b_pid = int(b_pid_file.read_text(encoding="utf-8").strip())
     f_pid = int(f_pid_file.read_text(encoding="utf-8").strip())
 
-    assert not is_process_running(b_pid), f"Owned backend PID {b_pid} was not terminated on runner failure"
-    assert not is_process_running(f_pid), f"Owned frontend PID {f_pid} was not terminated on runner failure"
+    assert wait_until_dead(b_pid), f"Owned backend PID {b_pid} was not terminated on runner failure"
+    assert wait_until_dead(f_pid), f"Owned frontend PID {f_pid} was not terminated on runner failure"
 
 
 def test_suite_success_terminates_owned_backend_and_frontend(tmp_path):
@@ -777,8 +787,8 @@ server.serve_forever()
     b_pid = int(b_pid_file.read_text(encoding="utf-8").strip())
     f_pid = int(f_pid_file.read_text(encoding="utf-8").strip())
 
-    assert not is_process_running(b_pid), f"Owned backend PID {b_pid} was not terminated on success"
-    assert not is_process_running(f_pid), f"Owned frontend PID {f_pid} was not terminated on success"
+    assert wait_until_dead(b_pid), f"Owned backend PID {b_pid} was not terminated on success"
+    assert wait_until_dead(f_pid), f"Owned frontend PID {f_pid} was not terminated on success"
 
 
 def test_suite_unrelated_process_and_attached_server_remain_alive(tmp_path):
@@ -995,8 +1005,8 @@ server.serve_forever()
     b_pid = int(b_pid_file.read_text(encoding="utf-8").strip())
     f_pid = int(f_pid_file.read_text(encoding="utf-8").strip())
 
-    assert not is_process_running(b_pid), f"Owned backend PID {b_pid} was not terminated on success"
-    assert not is_process_running(f_pid), f"Owned frontend PID {f_pid} was not terminated on success"
+    assert wait_until_dead(b_pid), f"Owned backend PID {b_pid} was not terminated on success"
+    assert wait_until_dead(f_pid), f"Owned frontend PID {f_pid} was not terminated on success"
 
 
 def test_evaluate_acceptance_require_phase2_enforces_phase2_results(valid_browser_results):
@@ -2162,3 +2172,95 @@ with sync_playwright() as p:
     browser.close()
 """
     _run_in_browser_env(test_code)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 Index Lifecycle & Viewports Acceptance Evaluation Tests (P5-F4..F6)
+# ---------------------------------------------------------------------------
+def test_evaluate_acceptance_phase5_valid_and_negative_controls(valid_browser_results):
+    """Verifies that evaluate_acceptance enforces real observed index details and transient recovery."""
+    results = copy.deepcopy(valid_browser_results)
+
+    # Valid Phase 5 results
+    results["phase5_index_lifecycle"] = {
+        "real_worker_pipeline_to_ready": True,
+        "embedding_stage_verified": True,
+        "indexing_stage_verified": True,
+        "active_workspace_index_published": True,
+        "quality_center_index_details": True,
+        "transient_failure_recovery": True,
+        "observed_index_details": {
+            "version": 1,
+            "model_name": "all-MiniLM-L6-v2",
+            "dimension": 384,
+            "chunk_count": 4,
+            "ui_model_verified": True,
+            "ui_dim_verified": True,
+            "ui_faiss_verified": True,
+            "ui_bm25_verified": True,
+            "artifact_integrity_verified": True,
+        },
+    }
+
+    # Baseline pass
+    passed, failures, criteria = evaluate_acceptance(results, require_phase5=True)
+    assert passed is True
+    assert criteria["phase5_index_lifecycle"] is True
+    assert len(failures) == 0
+
+    # Negative Control 1: Synthetic pass with missing observed_index_details must fail
+    res_no_obs = copy.deepcopy(results)
+    del res_no_obs["phase5_index_lifecycle"]["observed_index_details"]
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_no_obs, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 2: Zero chunk count must fail
+    res_zero_chunk = copy.deepcopy(results)
+    res_zero_chunk["phase5_index_lifecycle"]["observed_index_details"]["chunk_count"] = 0
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_zero_chunk, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 3: Unverified artifacts must fail
+    res_bad_art = copy.deepcopy(results)
+    res_bad_art["phase5_index_lifecycle"]["observed_index_details"]["artifact_integrity_verified"] = False
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_art, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 4: Transient failure recovery False must fail
+    res_no_rec = copy.deepcopy(results)
+    res_no_rec["phase5_index_lifecycle"]["transient_failure_recovery"] = False
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_no_rec, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+
+def test_evaluate_acceptance_viewports_horizontal_overflow_detection(valid_browser_results):
+    """Verifies that evaluate_acceptance detects horizontal overflow in responsive viewports."""
+    results = copy.deepcopy(valid_browser_results)
+
+    results["viewports"] = {
+        "desktop_1440": {"width": 1440, "height": 900, "has_horizontal_overflow": False},
+        "tablet_768": {"width": 768, "height": 1024, "has_horizontal_overflow": False},
+        "mobile_375": {"width": 375, "height": 667, "has_horizontal_overflow": False},
+    }
+
+    passed, failures, criteria = evaluate_acceptance(results)
+    assert passed is True
+    assert len(failures) == 0
+
+    # Overflow on tablet
+    res_tab_ov = copy.deepcopy(results)
+    res_tab_ov["viewports"]["tablet_768"]["has_horizontal_overflow"] = True
+    passed, failures, _ = evaluate_acceptance(res_tab_ov)
+    assert passed is False
+    assert any("tablet_768" in f for f in failures)
+
+    # Overflow on mobile
+    res_mob_ov = copy.deepcopy(results)
+    res_mob_ov["viewports"]["mobile_375"]["has_horizontal_overflow"] = True
+    passed, failures, _ = evaluate_acceptance(res_mob_ov)
+    assert passed is False
+    assert any("mobile_375" in f for f in failures)

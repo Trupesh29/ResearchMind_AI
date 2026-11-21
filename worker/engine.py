@@ -1080,6 +1080,15 @@ class WorkerEngine:
                         logger.warning(f"Indexing job {job_id} lost ownership prior to publication.")
                         return
 
+                    # Disposable test failure hook: allows testing indexing stage retry & recovery
+                    failure_flag_path = os.environ.get("DISPOSABLE_INJECT_INDEX_FAILURE_ONCE")
+                    if failure_flag_path and os.path.exists(failure_flag_path):
+                        try:
+                            os.remove(failure_flag_path)
+                        except Exception:
+                            pass
+                        raise RuntimeError("Simulated transient indexing failure for recovery test")
+
                     new_index = index_service.build_and_publish_workspace_index(
                         db_action,
                         workspace_id=workspace_id,

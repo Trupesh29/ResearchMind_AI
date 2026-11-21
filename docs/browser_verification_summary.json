@@ -4,11 +4,39 @@
     "base_url": "http://127.0.0.1:15173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-11-20T18:19:44Z",
+    "timestamp": "2026-11-21T06:07:46Z",
     "headless": true,
     "search_delay_ms": 0
   },
-  "viewports": {},
+  "viewports": {
+    "desktop_1440": {
+      "width": 1440,
+      "height": 900,
+      "screenshot_path": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification\\screenshots\\desktop_quality_center_1440.png",
+      "has_horizontal_overflow": false,
+      "h1_visible": true,
+      "workspace_select_usable": false,
+      "pipeline_visible": false
+    },
+    "tablet_768": {
+      "width": 768,
+      "height": 1024,
+      "screenshot_path": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification\\screenshots\\tablet_quality_center_768.png",
+      "has_horizontal_overflow": false,
+      "h1_visible": true,
+      "workspace_select_usable": false,
+      "pipeline_visible": false
+    },
+    "mobile_375": {
+      "width": 375,
+      "height": 667,
+      "screenshot_path": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification\\screenshots\\mobile_quality_center_375.png",
+      "has_horizontal_overflow": false,
+      "h1_visible": true,
+      "workspace_select_usable": false,
+      "pipeline_visible": false
+    }
+  },
   "routes": {
     "landing": {
       "title": "ResearchMind AI \u2014 Universal Research Document Analyzer",
@@ -130,7 +158,7 @@
       "failure": "net::ERR_FAILED"
     },
     {
-      "url": "http://127.0.0.1:15173/api/papers/83a26f86-7f78-42f1-8033-43bdb24f180b/chunks?section=abstract&limit=100",
+      "url": "http://127.0.0.1:15173/api/papers/d30afb03-027f-4e39-b74c-2e169a337117/chunks?section=abstract&limit=100",
       "failure": "net::ERR_FAILED"
     }
   ],
@@ -168,7 +196,26 @@
     "indexing_stage_verified": true,
     "active_workspace_index_published": true,
     "quality_center_index_details": true,
-    "transient_failure_recovery": true
+    "observed_index_details": {
+      "version": 2,
+      "model_name": "all-MiniLM-L6-v2",
+      "dimension": 384,
+      "chunk_count": 8,
+      "ui_model_verified": true,
+      "ui_dim_verified": true,
+      "ui_norm_verified": true,
+      "ui_faiss_verified": true,
+      "ui_bm25_verified": true,
+      "artifact_integrity_verified": true
+    },
+    "transient_failure_recovery": true,
+    "observed_indexing_recovery": {
+      "paper_id": "7546da74-8dc8-4f75-bb80-8d1b6db56e59",
+      "initial_failure_observed": true,
+      "reprocess_triggered": true,
+      "final_status": "ready",
+      "recovered_to_ready": true
+    }
   },
   "acceptance_evaluation": {
     "passed": true,
