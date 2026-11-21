@@ -4,7 +4,7 @@
     "base_url": "http://127.0.0.1:15173",
     "output_dir": "F:\\Projects\\ResearchMind AI\\artifacts\\browser_verification",
     "summary_path": "F:\\Projects\\ResearchMind AI\\docs\\browser_verification_summary.json",
-    "timestamp": "2026-11-21T08:18:45Z",
+    "timestamp": "2026-11-21T13:09:37Z",
     "headless": true,
     "search_delay_ms": 0
   },
@@ -164,7 +164,7 @@
       "failure": "net::ERR_FAILED"
     },
     {
-      "url": "http://127.0.0.1:15173/api/papers/ca1bbbb2-7c85-48de-9c50-ff1d3079b867/chunks?section=abstract&limit=100",
+      "url": "http://127.0.0.1:15173/api/papers/97fd2a87-9f07-4490-8c77-9caf999e66a7/chunks?section=abstract&limit=100",
       "failure": "net::ERR_FAILED"
     }
   ],
@@ -204,7 +204,7 @@
     "quality_center_index_details": true,
     "observed_index_details": {
       "version": 2,
-      "model_name": "all-MiniLM-L6-v2",
+      "model_name": "sentence-transformers/all-MiniLM-L6-v2",
       "dimension": 384,
       "chunk_count": 8,
       "ui_model_verified": true,
@@ -216,7 +216,7 @@
     },
     "transient_failure_recovery": true,
     "observed_indexing_recovery": {
-      "paper_id": "4958a9ad-5b63-4794-8c78-8213c53715e2",
+      "paper_id": "0bc125b9-54ea-4ccc-a8d2-00a93cd1f1c7",
       "initial_failure_observed": true,
       "reprocess_triggered": true,
       "final_status": "ready",

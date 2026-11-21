@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import { App } from "../app/App";
 import * as client from "../api/client";
 
@@ -642,7 +648,7 @@ describe("Role-Specific Route and Page Separation Suite", () => {
       expect(capturedSignal?.aborted).toBe(true);
     });
 
-    it("does not update state or surface errors when listPapers resolves or rejects after unmount", async () => {
+    it("discards late listPapers resolution after QualityCenterPage unmounts without affecting newly mounted view", async () => {
       const wsA = {
         id: "ws-a",
         name: "Workspace A",
@@ -654,12 +660,12 @@ describe("Role-Specific Route and Page Separation Suite", () => {
       vi.spyOn(client.api, "listAllWorkspaces").mockResolvedValue([wsA]);
 
       let resolvePromise: any;
-      let rejectPromise: any;
+      let capturedSignal: AbortSignal | undefined;
       vi.spyOn(client.api, "listPapers").mockImplementation(
-        (_wsId: string, _options?: any) => {
-          return new Promise((resolve, reject) => {
+        (_wsId: string, options?: any) => {
+          capturedSignal = options?.signal;
+          return new Promise((resolve) => {
             resolvePromise = resolve;
-            rejectPromise = reject;
           });
         },
       );
@@ -669,23 +675,103 @@ describe("Role-Specific Route and Page Separation Suite", () => {
 
       await waitFor(() => {
         expect(resolvePromise).toBeDefined();
+        expect(capturedSignal).toBeDefined();
       });
 
-      unmount();
+      expect(capturedSignal?.aborted).toBe(false);
 
-      // Resolving after unmount must not throw or cause state update errors
-      expect(() => {
+      // Unmount the component while request is in flight
+      unmount();
+      expect(capturedSignal?.aborted).toBe(true);
+
+      // Late resolution occurs after unmount
+      await act(async () => {
         resolvePromise({
           items: [mockPaper],
           next_cursor: null,
           total_count: 1,
         });
-      }).not.toThrow();
+        await new Promise((r) => setTimeout(r, 20));
+      });
 
-      // Rejecting after unmount must not throw unhandled errors
-      expect(() => {
-        rejectPromise(new Error("Network failed after unmount"));
-      }).not.toThrow();
+      // Mount another route (e.g. LandingPage) and verify no stale Quality Center state or error leaks
+      window.history.pushState({}, "", "/");
+      render(<App />);
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        /Evidence-First/i,
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Attention Is All You Need"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("ignores late listPapers network or abort rejection after unmount without error banner or unhandled exception", async () => {
+      const wsA = {
+        id: "ws-a",
+        name: "Workspace A",
+        description: "Old Workspace",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+      vi.spyOn(client.api, "listAllWorkspaces").mockResolvedValue([wsA]);
+
+      let rejectPromise: any;
+      let capturedSignal: AbortSignal | undefined;
+      vi.spyOn(client.api, "listPapers").mockImplementation(
+        (_wsId: string, options?: any) => {
+          capturedSignal = options?.signal;
+          return new Promise((_, reject) => {
+            rejectPromise = reject;
+          });
+        },
+      );
+
+      window.history.pushState({}, "", "/quality");
+      const { unmount } = render(<App />);
+
+      await waitFor(() => {
+        expect(rejectPromise).toBeDefined();
+        expect(capturedSignal).toBeDefined();
+      });
+
+      unmount();
+      expect(capturedSignal?.aborted).toBe(true);
+
+      // Late rejection occurs after unmount (simulating network error / abort)
+      let unhandledThrown = false;
+      const errorHandler = (event: ErrorEvent | PromiseRejectionEvent) => {
+        unhandledThrown = true;
+        event.preventDefault();
+      };
+      window.addEventListener("unhandledrejection", errorHandler);
+      window.addEventListener("error", errorHandler);
+
+      try {
+        await act(async () => {
+          rejectPromise(new Error("Network failed or aborted after unmount"));
+          await new Promise((r) => setTimeout(r, 20));
+        });
+      } finally {
+        window.removeEventListener("unhandledrejection", errorHandler);
+        window.removeEventListener("error", errorHandler);
+      }
+
+      expect(unhandledThrown).toBe(false);
+
+      // Mount LandingPage and confirm clean state without error alert
+      window.history.pushState({}, "", "/");
+      render(<App />);
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        /Evidence-First/i,
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/Network failed or aborted after unmount/i),
+      ).not.toBeInTheDocument();
     });
 
     it("handles rapid A -> B -> A switching correctly without stale state leakage", async () => {

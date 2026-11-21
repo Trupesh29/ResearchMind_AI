@@ -2,13 +2,66 @@
 
 **Phase:** Week 3, Phase 5: Embeddings & Index Lifecycle
 **Branch:** `manav` (tracking `origin/manav`)
-**Base Checkpoint:** `47f028d` (retained from prior review cycle)
-**Corrective Commits on top of 47f028d:**
-1. `18c53d4` — `fix(phase5): fence publication lease ownership` (Resolves P5-F8)
-2. `301cf92` — `fix(ui): cancel quality requests on unmount` (Resolves P5-F9)
-3. `test(phase5): require populated responsive evidence` (Resolves P5-F10)
+**Base Checkpoint:** `d3074a1e258d1c62574ba5ecfcae9d387c1bbe97`
+**Corrective Commits on top of d3074a1:**
+1. `3a9faf0` — `fix(phase5): make publication slot initialization atomic` (Resolves P5-F11)
+2. `0366eda` — `test(phase5): enforce complete observed acceptance evidence` (Resolves P5-F12, P5-F13, and responsive viewport evidence)
 **Date:** 2026-11-21
 **Status:** ALL CHECKS PASSED (Verified via Observed System Evidence)
+
+---
+
+## 1. Scope & Objective
+
+Phase 5 implements the versioned workspace vector & keyword index lifecycle:
+- An extracted document transitions to `ready` **only** when its current accepted chunk generation belongs to a validated, published workspace index containing matching FAISS FlatIP and BM25 artifacts.
+- Failures, restarts, concurrent uploads, deletion, and reprocessing preserve coherent state with fail-closed transactional rollback, worker fencing, and atomic filesystem swaps.
+- Strict token limits (<= 256 tokens) with no silent truncation, L2 normalization, finite float32 vectors, and cached generation embeddings verified by SHA-256 checksums.
+- Reference chunks (`is_excluded == 1`) and soft-deleted chunks (`is_deleted == 1`) are excluded from index membership.
+- Comprehensive negative controls, concurrency safety, crash recovery, and active artifact integrity verification.
+
+---
+
+## 2. Integrity Defect Resolutions (P5-F11 .. P5-F13)
+
+### P5-F11: Slot Initialization Atomicity & Interleaving Guard
+- **Root Cause**: Directory creation (`lock_dir.mkdir(...)`) occurred prior to writing `slot_meta.json`. A competitor inspecting the slot between creation and metadata writing encountered an uninitialized directory, either failing with `FileNotFoundError`/corrupt metadata or erroneously treating it as an abandoned slot. Furthermore, `release_workspace_publication_slot` suffered from a TOCTOU window where an expired slot could be acquired by a new owner immediately before the old owner executed deletion, unlinking the new owner's active slot directory.
+- **Resolution**:
+  - Implemented the candidate directory pattern: candidate directory `.publication_slot_candidate_{owner_token}` is created, fully populated with `slot_meta.json` and sync-flushed, and promoted atomically via `candidate_dir.rename(lock_dir)`. On POSIX and Windows (NTFS), directory renames are atomic and fail closed with `FileExistsError` if the destination slot is already held.
+  - In `release_workspace_publication_slot`, re-verified token ownership immediately prior to unlinking, added test interleaving hooks (`_pause_before_delete`), and enforced non-recursive unlinking that fails safely if the slot was replaced.
+  - Added deterministic barrier and interleaving unit tests in `tests/backend/test_phase5_indexing.py`:
+    - `test_publication_slot_candidate_isolation_and_atomic_promotion`: verifies that Process A's candidate directory remains isolated, Process B acquires, and Process A fails closed on promotion.
+    - `test_publication_slot_toctou_release_interleaving_preserves_new_owner`: verifies that when Owner A pauses before delete, Owner B takes over, and Owner A resumes, Owner B's metadata remains intact and Owner A's release returns `False`.
+    - `test_publication_slot_incomplete_candidate_not_live_slot`: verifies incomplete candidates are ignored.
+    - `test_publication_slot_missing_or_corrupt_live_metadata_fails_closed`: verifies missing or corrupt metadata fails closed without premature purging.
+
+### P5-F12: Enforced Observed Recovery & Metadata Evidence
+- **Root Cause**: In `evaluate_acceptance`, `observed_indexing_recovery` was recorded by the runner but never asserted inside the acceptance evaluation function. Additionally, `ui_norm_verified` was omitted from `obs_passed`, and `model_name` and `dimension` were hardcoded rather than dynamically derived from the database.
+- **Resolution**:
+  - Updated `evaluate_acceptance` to enforce all required structured fields under `require_phase5=True`:
+    - `observed_index_details`: requires positive version, non-empty `model_name`, positive dimension, positive chunk count, `artifact_integrity_verified == True`, and all 5 UI flags (`ui_model_verified`, `ui_dim_verified`, `ui_norm_verified`, `ui_faiss_verified`, `ui_bm25_verified`).
+    - `observed_indexing_recovery`: requires non-empty `paper_id`, `initial_failure_observed == True`, `reprocess_triggered == True`, `final_status == "ready"`, and `recovered_to_ready == True`.
+  - In `tests/backend/test_browser_runner.py`, added negative controls for every individual field, and explicitly proved both prior false-positive mutations fail (`p_fail is False` when deleting `observed_indexing_recovery` or setting `ui_norm_verified = False`).
+
+### P5-F13: Asynchronous Unmount Test Rigor
+- **Root Cause**: In `frontend/src/test/routes.test.tsx`, late resolution and late rejection were combined into a single test that resolved a promise and then attempted to reject the same already-settled promise. In JavaScript, settled promises cannot be rejected, leaving the rejection branch completely untested. Furthermore, unmount cancellation signals and microtask settlement were unasserted.
+- **Resolution**:
+  - Split into two distinct, rigorous tests:
+    1. `discards late listPapers resolution after QualityCenterPage unmounts without affecting newly mounted view`: asserts `capturedSignal.aborted === true`, settles resolution within React `act()`, mounts another route, and verifies no stale data leaks or errors appear.
+    2. `ignores late listPapers network or abort rejection after unmount without error banner or unhandled exception`: verifies abort signal on unmount, catches unhandled rejections via window listeners, settles rejection within React `act()`, and asserts that zero alerts or unhandled exceptions occur.
+  - All 18 tests in `routes.test.tsx` pass cleanly with 0 console errors or unhandled rejections.
+
+---
+
+## 3. Responsive Evidence & Visual Verification
+- Populated Quality Center responsive screenshots were captured at the top of the viewport (`window.scrollTo(0, 0)`), ensuring heading, workspace selector, and paper selector are clearly visible and not scrolled down from tab interaction:
+  - `desktop_quality_center_1440.png`: 1440x900, zero horizontal overflow, heading and selectors fully visible.
+  - `tablet_quality_center_768.png`: 768x1024, zero horizontal overflow, clean responsive layout.
+  - `mobile_quality_center_375.png`: 375x667, zero horizontal overflow, compact responsive layout.
+- In addition, full-page detail screenshots of the Index & Membership architecture were captured:
+  - `desktop_1440_index_membership_detail.png`
+  - `tablet_768_index_membership_detail.png`
+  - `mobile_375_index_membership_detail.png`
 
 ---
 
@@ -90,7 +143,10 @@ Phase 5 implements the versioned workspace vector & keyword index lifecycle:
   - `test_publication_slot_toctou_release_interleaving_preserves_new_owner`: PASSED (P5-F8: non-recursive rmdir release does not delete successor owner)
   - `test_publication_lost_ownership_before_promotion_aborts`: PASSED (P5-F8: lost slot ownership before directory promotion rolls back)
   - `test_publication_lost_ownership_before_commit_aborts`: PASSED (P5-F8: lost slot ownership before database commit aborts transaction)
-  - **Result: 36/36 PASSED**
+  - `test_publication_slot_candidate_isolation_and_atomic_promotion`: PASSED (P5-F11: candidate directory pattern eliminates unatomic initialization window)
+  - `test_publication_slot_incomplete_candidate_not_live_slot`: PASSED (P5-F11: incomplete candidates never treated as live slots)
+  - `test_publication_slot_missing_or_corrupt_live_metadata_fails_closed`: PASSED (P5-F11: missing or corrupt metadata fails closed without premature purging)
+  - **Result: 39/39 PASSED**
 - **Browser Runner Acceptance Suite (`tests/backend/test_browser_runner.py`)**:
   - 75 tests covering runner orchestration, responsive viewports, and acceptance criteria.
   - `test_evaluate_acceptance_phase5_valid_and_negative_controls`: PASSED (P5-F4, P5-F5, P5-F10: validates real observed index details, populated viewports, negative controls, and transient recovery)

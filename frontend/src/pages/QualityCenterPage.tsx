@@ -1564,7 +1564,9 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
                     >
                       Embedding Model:
                     </span>
-                    <strong>all-MiniLM-L6-v2 (sentence-transformers)</strong>
+                    <strong>
+                      sentence-transformers/all-MiniLM-L6-v2 (all-MiniLM-L6-v2)
+                    </strong>
                   </div>
                   <div>
                     <span

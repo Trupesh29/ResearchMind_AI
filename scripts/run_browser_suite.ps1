@@ -59,13 +59,18 @@ function Stop-OwnedProcessTree([int]$targetPid) {
         & taskkill.exe /PID $targetPid /T /F 2>$null | Out-Null
     } catch {}
 
-    # 2. Defensive check for any lingering descendant processes
+    # 2. Defensive check for any lingering descendant processes if process still exists
     try {
-        $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $targetPid" -ErrorAction SilentlyContinue
-        foreach ($child in $children) {
-            Stop-OwnedProcessTree -targetPid $child.ProcessId
+        $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($null -ne $proc) {
+            $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $targetPid" -OperationTimeoutSec 2 -ErrorAction SilentlyContinue
+            if ($children) {
+                foreach ($child in $children) {
+                    Stop-OwnedProcessTree -targetPid $child.ProcessId
+                }
+            }
+            Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue
         }
-        Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue
     } catch {}
 }
 

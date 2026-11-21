@@ -746,27 +746,58 @@ def evaluate_acceptance(
     if "phase5_index_lifecycle" in results:
         p5 = results["phase5_index_lifecycle"]
         obs = p5.get("observed_index_details") or {}
-        obs_passed = (
-            (
-                obs.get("artifact_integrity_verified") is True
+        rec = p5.get("observed_indexing_recovery") or {}
+
+        if require_phase5:
+            obs_valid = (
+                isinstance(obs, dict)
+                and obs.get("artifact_integrity_verified") is True
+                and obs.get("version", 0) > 0
+                and bool(obs.get("model_name"))
+                and obs.get("dimension", 0) > 0
                 and obs.get("chunk_count", 0) > 0
                 and obs.get("ui_model_verified") is True
                 and obs.get("ui_dim_verified") is True
+                and obs.get("ui_norm_verified") is True
                 and obs.get("ui_faiss_verified") is True
                 and obs.get("ui_bm25_verified") is True
             )
-            if require_phase5
-            else (obs.get("artifact_integrity_verified") is True and obs.get("chunk_count", 0) > 0 if obs else True)
-        )
-        p5_passed = (
-            p5.get("real_worker_pipeline_to_ready") is True
-            and p5.get("embedding_stage_verified") is True
-            and p5.get("indexing_stage_verified") is True
-            and p5.get("active_workspace_index_published") is True
-            and p5.get("quality_center_index_details") is True
-            and p5.get("transient_failure_recovery") is True
-            and obs_passed
-        )
+            if not obs_valid:
+                failures.append(f"Phase 5 observed index details incomplete or unverified: {obs}")
+
+            rec_valid = (
+                isinstance(rec, dict)
+                and bool(rec.get("paper_id"))
+                and rec.get("initial_failure_observed") is True
+                and rec.get("reprocess_triggered") is True
+                and rec.get("final_status") == "ready"
+                and rec.get("recovered_to_ready") is True
+            )
+            if not rec_valid:
+                failures.append(f"Phase 5 observed indexing recovery incomplete or unverified: {rec}")
+
+            p5_passed = (
+                p5.get("real_worker_pipeline_to_ready") is True
+                and p5.get("embedding_stage_verified") is True
+                and p5.get("indexing_stage_verified") is True
+                and p5.get("active_workspace_index_published") is True
+                and p5.get("quality_center_index_details") is True
+                and p5.get("transient_failure_recovery") is True
+                and obs_valid
+                and rec_valid
+            )
+        else:
+            obs_passed = (obs.get("artifact_integrity_verified") is True and obs.get("chunk_count", 0) > 0) if obs else True
+            p5_passed = (
+                p5.get("real_worker_pipeline_to_ready") is True
+                and p5.get("embedding_stage_verified") is True
+                and p5.get("indexing_stage_verified") is True
+                and p5.get("active_workspace_index_published") is True
+                and p5.get("quality_center_index_details") is True
+                and p5.get("transient_failure_recovery") is True
+                and obs_passed
+            )
+
         if not p5_passed:
             failures.append(f"Phase 5 Index Lifecycle criteria failed: {p5}")
         criteria["phase5_index_lifecycle"] = p5_passed
@@ -905,6 +936,9 @@ def run_checks(
             # Console and network listeners
             def handle_console(msg):
                 if msg.type == "error":
+                    # Ignore external font CDN failures in offline / air-gapped test environments
+                    if "fonts.googleapis.com" in msg.text or "fonts.gstatic.com" in msg.text or "net::ERR_NAME_NOT_RESOLVED" in msg.text:
+                        return
                     # If we are simulating offline or transient errors, network failures are expected
                     if is_simulating_offline and (
                         "net::ERR" in msg.text
@@ -918,6 +952,10 @@ def run_checks(
                     results["unexpected_console_errors"].append({"type": msg.type, "text": msg.text})
 
             def handle_request_failed(req):
+                # Ignore external font CDN failures in offline / air-gapped test environments
+                if "fonts.googleapis.com" in req.url or "fonts.gstatic.com" in req.url or req.failure == "net::ERR_NAME_NOT_RESOLVED":
+                    return
+
                 if is_simulating_offline:
                     results["simulated_offline_requests"].append({"url": req.url, "failure": req.failure})
                     return
@@ -1617,18 +1655,27 @@ def run_checks(
                             idx_tab.first.click()
                             time.sleep(0.3)
 
+                            db_idx_info = get_workspace_index_details(created_workspace_id)
+                            expected_model = db_idx_info.get("model_name", "")
+                            expected_dim = str(db_idx_info.get("dimension", 0))
+
                             main_text = page.locator("main").inner_text()
-                            has_model = "all-MiniLM-L6-v2" in main_text
-                            has_dim = "384 (float32)" in main_text
+                            has_model = bool(
+                                expected_model
+                                and (
+                                    expected_model in main_text
+                                    or expected_model.split("/")[-1] in main_text
+                                )
+                            )
+                            has_dim = bool(expected_dim != "0" and expected_dim in main_text)
                             has_norm = "Unit L2" in main_text
                             has_faiss = "FAISS FlatIP" in main_text
                             has_bm25 = "BM25" in main_text
 
-                            db_idx_info = get_workspace_index_details(created_workspace_id)
                             observed_idx_details = {
                                 "version": db_idx_info.get("version"),
-                                "model_name": "all-MiniLM-L6-v2",
-                                "dimension": 384,
+                                "model_name": expected_model,
+                                "dimension": db_idx_info.get("dimension", 0),
                                 "chunk_count": db_idx_info.get("chunk_count", 0),
                                 "ui_model_verified": has_model,
                                 "ui_dim_verified": has_dim,
@@ -2149,6 +2196,10 @@ def run_checks(
                     page.goto(qc_target_url, wait_until="networkidle")
                     time.sleep(0.5)
 
+                    # Ensure top of page is visible for primary screenshot (heading, workspace selector, paper selector)
+                    page.evaluate("() => window.scrollTo(0, 0)")
+                    time.sleep(0.2)
+
                     overflow = page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth")
                     h1_vis = page.locator("h1:has-text('Quality Center')").count() > 0
                     ws_select = page.locator("select[aria-label='Select Workspace']")
@@ -2167,6 +2218,10 @@ def run_checks(
                         or page.locator("text='Validating'").count() > 0
                     )
 
+                    shot_path = screenshots_dir / fname
+                    page.screenshot(path=str(shot_path))
+
+                    # Secondary detail inspection & full-page screenshot of Index & Membership tab
                     idx_tab = page.locator("button:has-text('Index & Membership')")
                     idx_mem_vis = False
                     if idx_tab.count() > 0:
@@ -2179,13 +2234,15 @@ def run_checks(
                             and "FAISS FlatIP" in main_text
                             and "BM25" in main_text
                         )
+                        detail_shot_path = screenshots_dir / f"{vp_key}_index_membership_detail.png"
+                        page.screenshot(path=str(detail_shot_path), full_page=True)
+
                         pipe_tab = page.locator("button:has-text('Pipeline & History')")
                         if pipe_tab.count() > 0:
                             pipe_tab.first.click()
                             time.sleep(0.2)
-
-                    shot_path = screenshots_dir / fname
-                    page.screenshot(path=str(shot_path))
+                        page.evaluate("() => window.scrollTo(0, 0)")
+                        time.sleep(0.1)
 
                     vp_summary[vp_key] = {
                         "width": w,

@@ -2209,6 +2209,13 @@ def test_evaluate_acceptance_phase5_valid_and_negative_controls(valid_browser_re
             "ui_bm25_verified": True,
             "artifact_integrity_verified": True,
         },
+        "observed_indexing_recovery": {
+            "paper_id": "test-recovery-paper-uuid-1",
+            "initial_failure_observed": True,
+            "reprocess_triggered": True,
+            "final_status": "ready",
+            "recovered_to_ready": True,
+        },
     }
 
     results["viewports"] = {
@@ -2285,6 +2292,76 @@ def test_evaluate_acceptance_phase5_valid_and_negative_controls(valid_browser_re
     res_bad_ui = copy.deepcopy(results)
     res_bad_ui["phase5_index_lifecycle"]["observed_index_details"]["ui_faiss_verified"] = False
     p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_ui, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5b: UI normalization unverified must fail (P5-F12 probe 2)
+    res_bad_norm = copy.deepcopy(results)
+    res_bad_norm["phase5_index_lifecycle"]["observed_index_details"]["ui_norm_verified"] = False
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_norm, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5c: Invalid or non-positive index version must fail
+    res_zero_ver = copy.deepcopy(results)
+    res_zero_ver["phase5_index_lifecycle"]["observed_index_details"]["version"] = 0
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_zero_ver, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5d: Missing or empty model_name must fail
+    res_empty_model = copy.deepcopy(results)
+    res_empty_model["phase5_index_lifecycle"]["observed_index_details"]["model_name"] = ""
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_empty_model, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5e: Non-positive dimension must fail
+    res_zero_dim = copy.deepcopy(results)
+    res_zero_dim["phase5_index_lifecycle"]["observed_index_details"]["dimension"] = 0
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_zero_dim, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5f: Missing observed_indexing_recovery must fail (P5-F12 probe 1)
+    res_no_obs_rec = copy.deepcopy(results)
+    del res_no_obs_rec["phase5_index_lifecycle"]["observed_indexing_recovery"]
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_no_obs_rec, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5g: Incomplete observed_indexing_recovery (empty paper_id) must fail
+    res_bad_rec_id = copy.deepcopy(results)
+    res_bad_rec_id["phase5_index_lifecycle"]["observed_indexing_recovery"]["paper_id"] = ""
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_rec_id, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5h: initial_failure_observed False in recovery must fail
+    res_bad_rec_init = copy.deepcopy(results)
+    res_bad_rec_init["phase5_index_lifecycle"]["observed_indexing_recovery"]["initial_failure_observed"] = False
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_rec_init, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5i: reprocess_triggered False in recovery must fail
+    res_bad_rec_reproc = copy.deepcopy(results)
+    res_bad_rec_reproc["phase5_index_lifecycle"]["observed_indexing_recovery"]["reprocess_triggered"] = False
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_rec_reproc, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5j: final_status != ready in recovery must fail
+    res_bad_rec_status = copy.deepcopy(results)
+    res_bad_rec_status["phase5_index_lifecycle"]["observed_indexing_recovery"]["final_status"] = "failed"
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_rec_status, require_phase5=True)
+    assert p_fail is False
+    assert c_status["phase5_index_lifecycle"] is False
+
+    # Negative Control 5k: recovered_to_ready False in recovery must fail
+    res_bad_rec_rec = copy.deepcopy(results)
+    res_bad_rec_rec["phase5_index_lifecycle"]["observed_indexing_recovery"]["recovered_to_ready"] = False
+    p_fail, f_reasons, c_status = evaluate_acceptance(res_bad_rec_rec, require_phase5=True)
     assert p_fail is False
     assert c_status["phase5_index_lifecycle"] is False
 
