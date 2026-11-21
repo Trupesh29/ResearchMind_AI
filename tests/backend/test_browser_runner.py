@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -1007,6 +1008,87 @@ server.serve_forever()
 
     assert wait_until_dead(b_pid), f"Owned backend PID {b_pid} was not terminated on success"
     assert wait_until_dead(f_pid), f"Owned frontend PID {f_pid} was not terminated on success"
+
+
+def test_suite_removes_owned_temporary_data_and_preserves_unrelated_directories(tmp_path):
+    """The suite must clean up its owned disposable .temp directory on completion, while leaving unrelated directories untouched."""
+    project_temp = Path(__file__).resolve().parents[2] / ".temp"
+    project_temp.mkdir(parents=True, exist_ok=True)
+    unrelated_dir = project_temp / f"unrelated_user_dir_{uuid.uuid4().hex[:8]}"
+    unrelated_dir.mkdir(parents=True, exist_ok=True)
+    canary_file = unrelated_dir / "canary.txt"
+    canary_file.write_text("user canary content", encoding="utf-8")
+
+    b_pid_file = tmp_path / "backend.pid"
+    f_pid_file = tmp_path / "frontend.pid"
+    b_port = find_free_port()
+    f_port = find_free_port()
+
+    server_helper = tmp_path / "disposable_server.py"
+    server_helper.write_text(
+        """
+import sys, os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+pid_file = sys.argv[1]
+port = int(sys.argv[2])
+mode = sys.argv[3]
+
+with open(pid_file, "w") as f:
+    f.write(str(os.getpid()))
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        if mode == "backend":
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status":"ready"}')
+        else:
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"OK")
+    def log_message(self, *args):
+        pass
+
+server = HTTPServer(("127.0.0.1", port), Handler)
+server.serve_forever()
+""",
+        encoding="utf-8",
+    )
+
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(SUITE_SCRIPT),
+        "-BackendPort",
+        str(b_port),
+        "-FrontendPort",
+        str(f_port),
+        "-BackendCommand",
+        f"& '{sys.executable}' '{server_helper}' '{b_pid_file}' {b_port} backend",
+        "-FrontendCommand",
+        f"& '{sys.executable}' '{server_helper}' '{f_pid_file}' {f_port} frontend",
+        "-RunnerCommand",
+        "powershell -NoProfile -Command exit 0",
+        "-TimeoutSeconds",
+        "5",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        assert proc.returncode == 0
+        # Unrelated user directory and file must be preserved
+        assert unrelated_dir.exists(), "Unrelated directory in .temp was erroneously deleted"
+        assert canary_file.exists() and canary_file.read_text(encoding="utf-8") == "user canary content"
+    finally:
+        try:
+            canary_file.unlink(missing_ok=True)
+            unrelated_dir.rmdir()
+        except Exception:
+            pass
 
 
 def test_evaluate_acceptance_require_phase2_enforces_phase2_results(valid_browser_results):

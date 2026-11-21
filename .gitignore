@@ -86,3 +86,7 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Temporary test runtime directories and agent harness
+.temp/
+.agent-harness/

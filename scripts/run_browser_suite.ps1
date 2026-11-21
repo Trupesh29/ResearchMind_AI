@@ -287,9 +287,18 @@ try {
         }
     }
 
-    if ($tempDataDir -and (Test-Path $tempDataDir)) {
+    if ($tempDataDir -and (Test-Path -LiteralPath $tempDataDir)) {
         Write-Host "Removing disposable test storage at $tempDataDir..." -ForegroundColor Cyan
-        Remove-Item -Recurse -Force $tempDataDir -ErrorAction SilentlyContinue
+        for ($i = 1; $i -le 5; $i++) {
+            try {
+                Remove-Item -LiteralPath $tempDataDir -Recurse -Force -ErrorAction Stop
+                break
+            } catch {
+                if ($i -lt 5) {
+                    Start-Sleep -Milliseconds 300
+                }
+            }
+        }
     }
 }
 
