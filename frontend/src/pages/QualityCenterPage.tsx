@@ -288,11 +288,38 @@ export const QualityCenterPage: React.FC<QualityCenterPageProps> = ({
     }
   }, []);
 
+  // Global unmount cleanup: abort all pending inspection AND paper list requests
+  useEffect(() => {
+    return () => {
+      paperListReqIdRef.current += 1;
+      if (paperListAbortCtrlRef.current) {
+        paperListAbortCtrlRef.current.abort();
+        paperListAbortCtrlRef.current = null;
+      }
+      activeReqRef.current += 1;
+      if (abortCtrlRef.current) {
+        abortCtrlRef.current.abort();
+        abortCtrlRef.current = null;
+      }
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, []);
+
   useEffect(() => {
     selectedWorkspaceIdRef.current = selectedWorkspaceId;
     if (selectedWorkspaceId) {
       loadPapers(selectedWorkspaceId);
     }
+    return () => {
+      paperListReqIdRef.current += 1;
+      if (paperListAbortCtrlRef.current) {
+        paperListAbortCtrlRef.current.abort();
+        paperListAbortCtrlRef.current = null;
+      }
+    };
   }, [selectedWorkspaceId, loadPapers]);
 
   // 3. Listen to browser popstate to sync URL ?paper=

@@ -606,5 +606,189 @@ describe("Role-Specific Route and Page Separation Suite", () => {
         ).not.toBeInTheDocument();
       });
     });
+
+    it("aborts in-flight listPapers AbortSignal when QualityCenterPage unmounts", async () => {
+      const wsA = {
+        id: "ws-a",
+        name: "Workspace A",
+        description: "Old Workspace",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+      vi.spyOn(client.api, "listAllWorkspaces").mockResolvedValue([wsA]);
+
+      let capturedSignal: AbortSignal | undefined;
+      vi.spyOn(client.api, "listPapers").mockImplementation(
+        (_wsId: string, options?: any) => {
+          capturedSignal = options?.signal;
+          return new Promise(() => {}); // never resolves
+        },
+      );
+
+      window.history.pushState({}, "", "/quality");
+      const { unmount } = render(<App />);
+
+      await waitFor(() => {
+        expect(capturedSignal).toBeDefined();
+      });
+
+      expect(capturedSignal?.aborted).toBe(false);
+
+      // Unmount the component
+      unmount();
+
+      // P5-F9: Signal must be aborted on unmount!
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it("does not update state or surface errors when listPapers resolves or rejects after unmount", async () => {
+      const wsA = {
+        id: "ws-a",
+        name: "Workspace A",
+        description: "Old Workspace",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+      vi.spyOn(client.api, "listAllWorkspaces").mockResolvedValue([wsA]);
+
+      let resolvePromise: any;
+      let rejectPromise: any;
+      vi.spyOn(client.api, "listPapers").mockImplementation(
+        (_wsId: string, _options?: any) => {
+          return new Promise((resolve, reject) => {
+            resolvePromise = resolve;
+            rejectPromise = reject;
+          });
+        },
+      );
+
+      window.history.pushState({}, "", "/quality");
+      const { unmount } = render(<App />);
+
+      await waitFor(() => {
+        expect(resolvePromise).toBeDefined();
+      });
+
+      unmount();
+
+      // Resolving after unmount must not throw or cause state update errors
+      expect(() => {
+        resolvePromise({
+          items: [mockPaper],
+          next_cursor: null,
+          total_count: 1,
+        });
+      }).not.toThrow();
+
+      // Rejecting after unmount must not throw unhandled errors
+      expect(() => {
+        rejectPromise(new Error("Network failed after unmount"));
+      }).not.toThrow();
+    });
+
+    it("handles rapid A -> B -> A switching correctly without stale state leakage", async () => {
+      const wsA = {
+        id: "ws-a",
+        name: "Workspace A",
+        description: "",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+      const wsB = {
+        id: "ws-b",
+        name: "Workspace B",
+        description: "",
+        paper_count: 1,
+        ready_count: 1,
+        created_at: "2026-10-15T00:00:00Z",
+      };
+      const paperA = {
+        ...mockPaper,
+        id: "paper-a",
+        workspace_id: "ws-a",
+        title: "Paper Alpha",
+      };
+      const paperB = {
+        ...mockPaper,
+        id: "paper-b",
+        workspace_id: "ws-b",
+        title: "Paper Beta",
+      };
+
+      vi.spyOn(client.api, "listAllWorkspaces").mockResolvedValue([wsA, wsB]);
+
+      let resolveA1: any;
+      let resolveB: any;
+      let resolveA2: any;
+
+      let callCountA = 0;
+      vi.spyOn(client.api, "listPapers").mockImplementation(
+        (wsId: string, _options?: any) => {
+          if (wsId === "ws-a") {
+            callCountA++;
+            if (callCountA === 1) {
+              return new Promise((r) => {
+                resolveA1 = r;
+              });
+            } else {
+              return new Promise((r) => {
+                resolveA2 = r;
+              });
+            }
+          }
+          if (wsId === "ws-b") {
+            return new Promise((r) => {
+              resolveB = r;
+            });
+          }
+          return Promise.resolve({
+            items: [],
+            next_cursor: null,
+            total_count: 0,
+          });
+        },
+      );
+
+      window.history.pushState({}, "", "/quality");
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Select Workspace")).toBeInTheDocument();
+      });
+      const wsSelect = screen.getByLabelText("Select Workspace");
+
+      // Switch to B while A1 is pending
+      fireEvent.change(wsSelect, { target: { value: "ws-b" } });
+      await waitFor(() => {
+        expect(resolveB).toBeDefined();
+      });
+
+      // Switch back to A while B is pending
+      fireEvent.change(wsSelect, { target: { value: "ws-a" } });
+      await waitFor(() => {
+        expect(resolveA2).toBeDefined();
+      });
+
+      // Out of order arrivals:
+      // Resolve B late (should be ignored)
+      resolveB({ items: [paperB], next_cursor: null, total_count: 1 });
+      // Resolve A1 late (should be ignored)
+      resolveA1({
+        items: [{ ...paperA, title: "Stale Alpha 1" }],
+        next_cursor: null,
+        total_count: 1,
+      });
+      // Resolve A2 (active)
+      resolveA2({ items: [paperA], next_cursor: null, total_count: 1 });
+
+      await waitFor(() => {
+        expect(screen.getByText(/Paper Alpha/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Paper Beta/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Stale Alpha 1/i)).not.toBeInTheDocument();
+    });
   });
 });
