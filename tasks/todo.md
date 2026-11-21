@@ -60,9 +60,9 @@ Status: In progress (Milestone M1 completed, Milestone M2 active).
 
 | Done | Task | Depends on | Verification / acceptance |
 |---|---|---|---|
-| [ ] | 15.1 Security audit & path isolation | Week 5 | Path traversal guards, prompt injection defense, CORS verification |
-| [ ] | 16.1 Comprehensive E2E regression suite | 15.1 | 250+ backend and frontend tests passing with 0 regressions |
-| [ ] | 17.1 Accessibility & visual polish | 16.1 | WCAG 2.2 AA compliance, 1440/768/375px responsive checks |
-| [ ] | 18.1 Performance profiling | 16.1 | RAM <= 4GB, retrieval < 100ms, batch throughput verified |
-| [ ] | 19.1 Local deployment packaging & final demo | 18.1 | Single-command launch, user guide, final release report in `docs/RELEASE_WEEK_6.md` |
-| [ ] | Checkpoint: Final Six-Week Release | 19.1 | Six-week MVP fully accepted |
+| [x] | 15.1 Security audit & path isolation | Week 5 | Path traversal guards, prompt injection defense, CORS verification |
+| [x] | 16.1 Comprehensive E2E regression suite | 15.1 | 250+ backend and frontend tests passing with 0 regressions |
+| [x] | 17.1 Accessibility & visual polish | 16.1 | WCAG 2.2 AA compliance, 1440/768/375px responsive checks |
+| [x] | 18.1 Performance profiling | 16.1 | RAM <= 4GB, retrieval < 100ms, batch throughput verified |
+| [x] | 19.1 Local deployment packaging & final demo | 18.1 | Single-command launch, user guide, final release report in `docs/RELEASE_WEEK_6.md` |
+| [x] | Checkpoint: Final Six-Week Release | 19.1 | Six-week MVP fully accepted |

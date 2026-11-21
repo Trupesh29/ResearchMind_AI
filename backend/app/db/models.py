@@ -439,7 +439,7 @@ class Message(Base):
     selected_paper_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     retrieved_passages_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     citations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_abstention: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_abstention: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
 
     __table_args__ = (
@@ -465,9 +465,9 @@ class Report(Base):
         nullable=False,
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    summary_style: Mapped[str] = mapped_column(String(64), default="technical", nullable=False)
+    summary_style: Mapped[str] = mapped_column(String(64), default="technical", server_default="technical", nullable=False)
     paper_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="completed", server_default="completed", nullable=False)
     storage_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[str] = mapped_column(String(32), default=utcnow_iso, nullable=False)
